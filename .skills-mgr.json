@@ -10,9 +10,10 @@
     "new-project": true,
     "plan-vertical-slices": true,
     "review-spec": true,
-    "shadcn": true,
+    "shadcn": false,
     "spec-to-contract": true,
     "using-pjdoc": true,
+    "using-shadowtree": true,
     "verify-conformance": true
   }
 }
