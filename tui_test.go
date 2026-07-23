@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -89,6 +93,145 @@ func TestTabsNavigateWithArrowKeys(t *testing.T) {
 	if view := current.View(); !strings.Contains(view, "[Installed]") ||
 		!strings.Contains(view, "skill-00") {
 		t.Fatalf("installed tab omitted local skills:\n%s", view)
+	}
+}
+
+func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
+	manager := newTestManager(t)
+	manager.paths.skillsMP = filepath.Join(t.TempDir(), "skillsmp.json")
+	manager.skillsMP = newSkillsMPRegistry(manager.paths.skillsMP, "")
+	if err := saveSkillsMPCache(manager.paths.skillsMP, skillsMPCache{
+		SchemaRevision: skillsMPSchemaRevision,
+		UpdatedAt:      time.Now(),
+		Skills: []skillsMPSkill{{
+			ID: "alpha-id", Name: "alpha", Author: "owner", Stars: 42,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := model{
+		manager: manager, skills: skillNames(1), selected: map[string]bool{},
+		width: 60, height: 10,
+	}
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+
+	view := current.View()
+	if current.tab != skillsMPTab || current.itemCount() != 1 ||
+		!strings.Contains(view, "[SkillsMP]") ||
+		!strings.Contains(view, "alpha") ||
+		!strings.Contains(view, "owner • 42 stars") {
+		t.Fatalf("SkillsMP tab omitted cached catalog:\n%s", view)
+	}
+}
+
+func TestSkillsMPTabFetchesAndCachesDefaultCatalogOnDemand(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/api/skills" {
+			t.Errorf("request path = %q", request.URL.Path)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"skills": []map[string]any{{
+				"id": "fresh-id", "name": "fresh", "author": "remote", "stars": 12,
+			}},
+		})
+	}))
+	defer server.Close()
+	manager := newTestManager(t)
+	manager.paths.skillsMP = filepath.Join(t.TempDir(), "skillsmp.json")
+	manager.skillsMP = newSkillsMPRegistry(manager.paths.skillsMP, "")
+	manager.skillsMP.baseURL = server.URL
+	manager.skillsMP.client = server.Client()
+	current := model{
+		manager: manager, skills: skillNames(1), selected: map[string]bool{},
+		width: 60, height: 10,
+	}
+
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if command == nil || current.status != "loading SkillsMP" {
+		t.Fatalf("uncached catalog did not start loading: %#v", current)
+	}
+	updated, _ = current.Update(command())
+	current = updated.(model)
+	if requests != 1 || current.itemCount() != 1 ||
+		!strings.Contains(current.View(), "fresh") {
+		t.Fatalf("on-demand catalog was not rendered:\n%s", current.View())
+	}
+	cache, err := loadSkillsMPCache(manager.paths.skillsMP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cache.Skills) != 1 || cache.Skills[0].ID != "fresh-id" {
+		t.Fatalf("on-demand cache = %#v", cache)
+	}
+}
+
+func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api/v1/skills/search" ||
+			request.URL.Query().Get("q") != "beta" {
+			t.Errorf("request URL = %s", request.URL.String())
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"skills": []map[string]any{{
+					"id": "beta-id", "name": "beta", "author": "remote", "stars": 7,
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	manager.skillsMP.baseURL = server.URL
+	manager.skillsMP.client = server.Client()
+	current := model{
+		manager: manager, tab: skillsMPTab, filtering: true,
+		width: 60, height: 10,
+	}
+
+	updated, staleDebounce := current.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("b"),
+	})
+	current = updated.(model)
+	updated, debounce := current.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("eta"),
+	})
+	current = updated.(model)
+	if debounce == nil || staleDebounce == nil || current.itemCount() != 0 ||
+		current.status != "searching SkillsMP" {
+		t.Fatalf("search did not start: %#v", current)
+	}
+	updated, staleSearch := current.Update(skillsMPSearchRequested{
+		request: current.skillsMPRequest,
+		query:   "b",
+	})
+	current = updated.(model)
+	if staleSearch != nil {
+		t.Fatal("stale debounced query started an API request")
+	}
+	updated, search := current.Update(skillsMPSearchRequested{
+		request: current.skillsMPRequest,
+		query:   "beta",
+	})
+	current = updated.(model)
+	if search == nil {
+		t.Fatal("settled debounced query did not start an API request")
+	}
+	updated, _ = current.Update(search())
+	current = updated.(model)
+	view := current.View()
+	if current.itemCount() != 1 || !strings.Contains(view, "beta") ||
+		!strings.Contains(view, "remote • 7 stars") {
+		t.Fatalf("search result was not rendered:\n%s", view)
 	}
 }
 

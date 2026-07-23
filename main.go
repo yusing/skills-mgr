@@ -29,7 +29,8 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	manager := &manager{paths: paths}
+	skillsMP := newSkillsMPRegistry(paths.skillsMP, os.Getenv("SKILLSMP_API_KEY"))
+	manager := &manager{paths: paths, skillsMP: skillsMP}
 
 	switch {
 	case len(args) == 0:

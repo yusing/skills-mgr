@@ -11,6 +11,7 @@ type paths struct {
 	codexHome      string
 	adminSkills    string
 	remoteRegistry string
+	skillsMP       string
 }
 
 func defaultPaths() (paths, error) {
@@ -31,5 +32,6 @@ func defaultPaths() (paths, error) {
 		codexHome:      codexHome,
 		adminSkills:    "/etc/codex/skills",
 		remoteRegistry: filepath.Join(cache, "skills-mgr", "skills-sh.json"),
+		skillsMP:       filepath.Join(cache, "skills-mgr", "skillsmp.json"),
 	}, nil
 }

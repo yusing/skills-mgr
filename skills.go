@@ -29,6 +29,7 @@ const (
 
 type manager struct {
 	paths                paths
+	skillsMP             *skillsMPRegistry
 	runtimeOnce          sync.Once
 	javascriptRuntime    string
 	javascriptRuntimeErr error

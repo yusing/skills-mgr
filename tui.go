@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +23,10 @@ type model struct {
 	remoteTopics    []remoteTopic
 	remoteCollapsed map[string]bool
 	remoteError     string
+	skillsMPSkills  []skillsMPSkill
+	skillsMPError   string
+	skillsMPCancel  context.CancelFunc
+	skillsMPRequest uint64
 	tab             int
 	cursor          int
 	offset          int
@@ -34,11 +40,13 @@ type model struct {
 }
 
 const (
-	tuiHeaderHeight = 5
-	tuiFooterHeight = 2
-	tuiChromeHeight = tuiHeaderHeight + tuiFooterHeight
-	localTab        = 0
-	remoteTab       = 1
+	tuiHeaderHeight  = 5
+	tuiFooterHeight  = 2
+	tuiChromeHeight  = tuiHeaderHeight + tuiFooterHeight
+	localTab         = 0
+	remoteTab        = 1
+	skillsMPTab      = 2
+	skillsMPDebounce = 300 * time.Millisecond
 )
 
 var (
@@ -70,6 +78,24 @@ type editDone struct {
 	selected   map[string]bool
 	editorErr  error
 	refreshErr error
+}
+
+type skillsMPSearchDone struct {
+	request uint64
+	query   string
+	skills  []skillsMPSkill
+	err     error
+}
+
+type skillsMPSearchRequested struct {
+	request uint64
+	query   string
+}
+
+type skillsMPCatalogDone struct {
+	request uint64
+	skills  []skillsMPSkill
+	err     error
 }
 
 func newModel(manager *manager, project string) (model, error) {
@@ -133,6 +159,54 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport()
 		m.status = "saved " + message.skill
+	case skillsMPSearchDone:
+		if message.request != m.skillsMPRequest ||
+			message.query != normalizedSkillsMPQuery(m.filterQuery) ||
+			m.tab != skillsMPTab {
+			break
+		}
+		m.skillsMPCancel = nil
+		if message.err != nil {
+			m.skillsMPSkills = message.skills
+			m.skillsMPError = message.err.Error()
+			if len(message.skills) == 0 {
+				m.status = "error: " + message.err.Error()
+			} else {
+				m.status = "warning: " + message.err.Error()
+			}
+			break
+		}
+		m.skillsMPSkills = message.skills
+		m.skillsMPError = ""
+		m.status = fmt.Sprintf("%d SkillsMP skills", len(message.skills))
+		m.syncViewport()
+	case skillsMPSearchRequested:
+		if message.request != m.skillsMPRequest ||
+			message.query != normalizedSkillsMPQuery(m.filterQuery) ||
+			m.tab != skillsMPTab {
+			break
+		}
+		return m, m.startSkillsMPSearch(message.query)
+	case skillsMPCatalogDone:
+		if message.request != m.skillsMPRequest ||
+			m.tab != skillsMPTab ||
+			normalizedSkillsMPQuery(m.filterQuery) != "" {
+			break
+		}
+		m.skillsMPCancel = nil
+		m.skillsMPSkills = message.skills
+		if message.err != nil {
+			m.skillsMPError = message.err.Error()
+			if len(message.skills) == 0 {
+				m.status = "error: " + message.err.Error()
+			} else {
+				m.status = "warning: " + message.err.Error()
+			}
+			break
+		}
+		m.skillsMPError = ""
+		m.status = fmt.Sprintf("%d SkillsMP skills", len(message.skills))
+		m.syncViewport()
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
@@ -173,31 +247,33 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.filtering {
 			switch message.String() {
 			case "ctrl+c":
+				m.cancelSkillsMPRequest()
 				return m, tea.Quit
 			case "enter", "esc":
 				m.filtering = false
 			case "backspace":
 				if runes := []rune(m.filterQuery); len(runes) > 0 {
 					m.filterQuery = string(runes[:len(runes)-1])
-					m.filterChanged()
+					return m, m.filterChanged()
 				}
 			default:
 				if message.Type == tea.KeyRunes {
 					m.filterQuery += string(message.Runes)
-					m.filterChanged()
+					return m, m.filterChanged()
 				}
 			}
 			return m, nil
 		}
 		switch message.String() {
 		case "q", "ctrl+c":
+			m.cancelSkillsMPRequest()
 			return m, tea.Quit
 		case "f":
 			m.startFiltering()
 		case "left":
-			m.selectTab(localTab)
+			return m, m.selectTab(max(localTab, m.tab-1))
 		case "right":
-			m.selectTab(remoteTab)
+			return m, m.selectTab(min(skillsMPTab, m.tab+1))
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -264,14 +340,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) selectTab(tab int) {
-	if tab < localTab || tab > remoteTab || m.tab == tab {
-		return
+func (m *model) selectTab(tab int) tea.Cmd {
+	if tab < localTab || tab > skillsMPTab || m.tab == tab {
+		return nil
 	}
+	m.cancelSkillsMPRequest()
 	m.tab = tab
 	m.cursor = 0
 	m.offset = 0
-	if tab == remoteTab {
+	switch tab {
+	case remoteTab:
 		if m.manager != nil {
 			m.reloadRemoteCache()
 		}
@@ -286,21 +364,55 @@ func (m *model) selectTab(tab int) {
 		} else {
 			m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
 		}
-	} else {
+	case skillsMPTab:
+		if normalizedSkillsMPQuery(m.filterQuery) != "" {
+			m.status = "searching SkillsMP"
+			m.syncViewport()
+			return m.debounceSkillsMPSearch()
+		}
+		cache := m.reloadSkillsMPCache()
+		if m.skillsMPError == "" && len(cache.Skills) > 0 &&
+			time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
+			m.status = fmt.Sprintf("%d SkillsMP skills", len(m.skillsMPSkills))
+			break
+		}
+		m.status = "loading SkillsMP"
+		m.syncViewport()
+		return m.startSkillsMPCatalog()
+	default:
 		m.status = fmt.Sprintf("%d skills", len(m.skills))
 	}
 	m.syncViewport()
+	return nil
 }
 
 func (m *model) startFiltering() {
 	m.filtering = true
 }
 
-func (m *model) filterChanged() {
+func (m *model) filterChanged() tea.Cmd {
+	m.cancelSkillsMPRequest()
 	m.cursor = 0
 	m.offset = 0
 	m.expanded = ""
+	if m.tab == skillsMPTab {
+		if normalizedSkillsMPQuery(m.filterQuery) == "" {
+			cache := m.reloadSkillsMPCache()
+			if m.skillsMPError == "" && len(cache.Skills) > 0 &&
+				time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
+				m.status = fmt.Sprintf("%d SkillsMP skills", len(m.skillsMPSkills))
+				return nil
+			}
+			m.status = "loading SkillsMP"
+			return m.startSkillsMPCatalog()
+		}
+		m.skillsMPSkills = nil
+		m.skillsMPError = ""
+		m.status = "searching SkillsMP"
+		return m.debounceSkillsMPSearch()
+	}
 	m.syncViewport()
+	return nil
 }
 
 func (m *model) reloadRemoteCache() {
@@ -314,9 +426,80 @@ func (m *model) reloadRemoteCache() {
 	m.remoteError = ""
 }
 
+func (m *model) reloadSkillsMPCache() skillsMPCache {
+	if m.manager == nil {
+		return skillsMPCache{}
+	}
+	cache, err := loadSkillsMPCache(m.manager.paths.skillsMP)
+	if err != nil {
+		m.skillsMPSkills = nil
+		m.skillsMPError = err.Error()
+		return skillsMPCache{}
+	}
+	m.skillsMPSkills = cache.Skills
+	m.skillsMPError = ""
+	return cache
+}
+
+func (m *model) startSkillsMPSearch(query string) tea.Cmd {
+	m.cancelSkillsMPRequest()
+	request := m.skillsMPRequest
+	ctx, cancel := context.WithCancel(context.Background())
+	m.skillsMPCancel = cancel
+	return func() tea.Msg {
+		defer cancel()
+		if m.manager == nil || m.manager.skillsMP == nil {
+			return skillsMPSearchDone{
+				request: request, query: query,
+				err: fmt.Errorf("SkillsMP provider is unavailable"),
+			}
+		}
+		skills, err := m.manager.skillsMP.search(ctx, query)
+		return skillsMPSearchDone{
+			request: request, query: query, skills: skills, err: err,
+		}
+	}
+}
+
+func (m *model) startSkillsMPCatalog() tea.Cmd {
+	m.cancelSkillsMPRequest()
+	request := m.skillsMPRequest
+	ctx, cancel := context.WithCancel(context.Background())
+	m.skillsMPCancel = cancel
+	return func() tea.Msg {
+		defer cancel()
+		if m.manager == nil || m.manager.skillsMP == nil {
+			return skillsMPCatalogDone{
+				request: request, err: fmt.Errorf("SkillsMP provider is unavailable"),
+			}
+		}
+		skills, err := m.manager.skillsMP.catalog(ctx)
+		return skillsMPCatalogDone{request: request, skills: skills, err: err}
+	}
+}
+
+func (m *model) cancelSkillsMPRequest() {
+	m.skillsMPRequest++
+	if m.skillsMPCancel != nil {
+		m.skillsMPCancel()
+		m.skillsMPCancel = nil
+	}
+}
+
+func (m model) debounceSkillsMPSearch() tea.Cmd {
+	request := m.skillsMPRequest
+	query := normalizedSkillsMPQuery(m.filterQuery)
+	return tea.Tick(skillsMPDebounce, func(time.Time) tea.Msg {
+		return skillsMPSearchRequested{request: request, query: query}
+	})
+}
+
 func (m model) itemCount() int {
 	if m.tab == remoteTab {
 		return len(m.remoteRows())
+	}
+	if m.tab == skillsMPTab {
+		return len(m.skillsMPSkills)
 	}
 	return len(m.localSkillIndices())
 }
@@ -373,7 +556,11 @@ func (m *model) toggleExpanded(index int) {
 
 func (m *model) syncViewport() {
 	if m.tab == remoteTab {
-		m.syncRemoteViewport()
+		m.syncFixedRowViewport(len(m.remoteRows()))
+		return
+	}
+	if m.tab == skillsMPTab {
+		m.syncFixedRowViewport(len(m.skillsMPSkills))
 		return
 	}
 	indices := m.localSkillIndices()
@@ -428,6 +615,11 @@ func (m model) View() string {
 			fmt.Fprintln(&view, m.remoteLine(rows[index], index == m.cursor))
 			remaining--
 		}
+	} else if m.tab == skillsMPTab {
+		for index := m.offset; index < len(m.skillsMPSkills) && remaining > 0; index++ {
+			fmt.Fprintln(&view, m.skillsMPLine(m.skillsMPSkills[index], index == m.cursor))
+			remaining--
+		}
 	} else {
 		indices := m.localSkillIndices()
 		for index := m.offset; index < len(indices) && remaining > 0; index++ {
@@ -444,6 +636,8 @@ func (m model) View() string {
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	if m.tab == remoteTab {
 		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter expand/collapse topic • q quit"
+	} else if m.tab == skillsMPTab {
+		help = "←/→ tabs • f search • ↑/k ↓/j move • q quit"
 	}
 	if m.filtering {
 		help = "type to filter • enter/esc done"
@@ -475,14 +669,21 @@ func (m model) filterLine() string {
 func (m model) tabBar() string {
 	local := " Installed "
 	remote := " skills.sh "
+	skillsMP := " SkillsMP "
 	if m.tab == localTab {
 		local = selectedStyle(titleStyle, true).Render("[Installed]")
 		remote = mutedStyle.Render(remote)
-	} else {
+		skillsMP = mutedStyle.Render(skillsMP)
+	} else if m.tab == remoteTab {
 		local = mutedStyle.Render(local)
 		remote = selectedStyle(titleStyle, true).Render("[skills.sh]")
+		skillsMP = mutedStyle.Render(skillsMP)
+	} else {
+		local = mutedStyle.Render(local)
+		remote = mutedStyle.Render(remote)
+		skillsMP = selectedStyle(titleStyle, true).Render("[SkillsMP]")
 	}
-	return boundLine(local+" "+remote, m.width)
+	return boundLine(local+" "+remote+" "+skillsMP, m.width)
 }
 
 type remoteRow struct {
@@ -554,8 +755,7 @@ func (m *model) toggleRemoteTopic() {
 	m.syncViewport()
 }
 
-func (m *model) syncRemoteViewport() {
-	count := len(m.remoteRows())
+func (m *model) syncFixedRowViewport(count int) {
 	if count == 0 {
 		m.cursor = 0
 		m.offset = 0
@@ -573,6 +773,17 @@ func (m *model) syncRemoteViewport() {
 	} else if m.cursor >= m.offset+visible {
 		m.offset = m.cursor - visible + 1
 	}
+}
+
+func (m model) skillsMPLine(skill skillsMPSkill, selected bool) string {
+	name := selectedStyle(lipgloss.NewStyle(), selected).
+		Render(terminalSafeText(skill.Name))
+	label := fmt.Sprintf("%s • %d stars", terminalSafeText(skill.Author), skill.Stars)
+	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
+	line := name + selectedStyle(lipgloss.NewStyle(), selected).
+		Render(strings.Repeat(" ", gap))
+	line += selectedStyle(mutedStyle, selected).Render(label)
+	return boundLine(line, m.width)
 }
 
 func (m model) remoteLine(row remoteRow, selected bool) string {
@@ -616,6 +827,8 @@ func statusStyle(status string) lipgloss.Style {
 		strings.HasPrefix(status, "refresh failed:"):
 		return lipgloss.NewStyle().Foreground(errorColor)
 	case strings.HasPrefix(status, "updating "), strings.HasPrefix(status, "editing "):
+		return lipgloss.NewStyle().Foreground(warningColor)
+	case strings.HasPrefix(status, "warning:"), strings.HasPrefix(status, "loading "):
 		return lipgloss.NewStyle().Foreground(warningColor)
 	case strings.HasPrefix(status, "enabled "), strings.HasPrefix(status, "saved "):
 		return lipgloss.NewStyle().Foreground(successColor)
