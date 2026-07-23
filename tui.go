@@ -155,6 +155,6 @@ func runTUI(manager *manager, project string) error {
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(current).Run()
+	_, err = tea.NewProgram(current, tea.WithAltScreen()).Run()
 	return err
 }
