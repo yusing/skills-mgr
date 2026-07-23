@@ -1,4 +1,4 @@
-module github.com/yusing/skill-mgr
+module github.com/yusing/skills-mgr
 
 go 1.26
 
