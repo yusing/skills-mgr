@@ -1,0 +1,9 @@
+[Unit]
+Description=Skill Manager synchronization daemon
+
+[Service]
+ExecStart=%h/.local/bin/skill-mgr daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

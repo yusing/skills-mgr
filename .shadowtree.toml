@@ -1,0 +1,16 @@
+profile = "go"
+
+[recipes.install-systemd]
+help = "Install and start the skill-mgr user service."
+sandboxed = false
+cmd = '''
+set -eu
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+library_dir="${XDG_DATA_HOME:-$HOME/.local/share}/skill-mgr/skills"
+install -d "$HOME/.local/bin" "$library_dir"
+go build -trimpath -ldflags="-s -w" -o "$HOME/.local/bin/skill-mgr" .
+install -D -m 0644 skill-mgr.service "$unit_dir/skill-mgr.service"
+systemctl --user daemon-reload
+systemctl --user enable skill-mgr.service
+systemctl --user restart skill-mgr.service
+'''
