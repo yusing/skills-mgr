@@ -24,8 +24,8 @@ func TestSkillListScrollsToKeepCursorVisible(t *testing.T) {
 		current = updated.(model)
 	}
 
-	if current.cursor != 5 || current.offset != 2 {
-		t.Fatalf("cursor, offset = %d, %d; want 5, 2", current.cursor, current.offset)
+	if current.cursor != 5 || current.offset != 3 {
+		t.Fatalf("cursor, offset = %d, %d; want 5, 3", current.cursor, current.offset)
 	}
 	view := current.View()
 	for _, want := range []string{"  ▸ skill-04", "> ▸ skill-05 [disabled]"} {
@@ -55,8 +55,124 @@ func TestSkillListStopsAtNavigationBoundaries(t *testing.T) {
 		updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyDown})
 		current = updated.(model)
 	}
-	if current.cursor != 2 || current.offset != 1 {
-		t.Fatalf("down past end moved cursor, offset to %d, %d; want 2, 1", current.cursor, current.offset)
+	if current.cursor != 2 || current.offset != 2 {
+		t.Fatalf("down past end moved cursor, offset to %d, %d; want 2, 2", current.cursor, current.offset)
+	}
+}
+
+func TestTabsNavigateWithArrowKeys(t *testing.T) {
+	current := model{
+		skills:   skillNames(2),
+		selected: map[string]bool{},
+		remoteTopics: []remoteTopic{{
+			Slug: "testing", Name: "Testing",
+			Skills: []remoteSkill{{ID: "owner/repo/alpha", Name: "alpha"}},
+		}},
+		width:  80,
+		height: 10,
+	}
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if current.tab != remoteTab || current.cursor != 0 {
+		t.Fatalf("right selected tab, cursor = %d, %d; want %d, 0", current.tab, current.cursor, remoteTab)
+	}
+	if view := current.View(); !strings.Contains(view, "[skills.sh]") ||
+		!strings.Contains(view, "Testing") || !strings.Contains(view, "alpha") {
+		t.Fatalf("remote tab omitted topic tree:\n%s", view)
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	current = updated.(model)
+	if current.tab != localTab {
+		t.Fatalf("left selected tab = %d, want %d", current.tab, localTab)
+	}
+	if view := current.View(); !strings.Contains(view, "[Installed]") ||
+		!strings.Contains(view, "skill-00") {
+		t.Fatalf("installed tab omitted local skills:\n%s", view)
+	}
+}
+
+func TestRemoteTopicsExpandAndCollapseAsNestedTree(t *testing.T) {
+	current := model{
+		tab: remoteTab,
+		remoteTopics: []remoteTopic{{
+			Slug: "testing", Name: "Testing",
+			Skills: []remoteSkill{
+				{ID: "owner/repo/alpha", Name: "alpha", Source: "owner/repo", Installs: 42},
+				{ID: "owner/repo/beta", Name: "beta", Source: "owner/repo", Installs: 7},
+			},
+		}},
+		width:  60,
+		height: 10,
+	}
+	view := current.View()
+	for _, want := range []string{"▾ Testing (2)", "alpha", "owner/repo • 42 installs", "beta"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("expanded remote tree omitted %q:\n%s", want, view)
+		}
+	}
+
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	current = updated.(model)
+	view = current.View()
+	if !strings.Contains(view, "▸ Testing (2)") || strings.Contains(view, "alpha") {
+		t.Fatalf("collapsed remote tree retained children:\n%s", view)
+	}
+	if current.itemCount() != 1 {
+		t.Fatalf("collapsed tree has %d rows, want 1", current.itemCount())
+	}
+}
+
+func TestRemoteTabReloadsDaemonCache(t *testing.T) {
+	manager := newTestManager(t)
+	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")
+	if err := saveRemoteCache(manager.paths.remoteRegistry, remoteRegistryCache{
+		SchemaRevision: remoteRegistrySchemaRevision,
+		Topics: []remoteTopic{{
+			Slug: "testing", Name: "Testing",
+			Skills: []remoteSkill{{ID: "owner/repo/fresh", Name: "fresh"}},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := model{
+		manager:  manager,
+		skills:   skillNames(1),
+		selected: map[string]bool{},
+		width:    60,
+		height:   10,
+	}
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if len(current.remoteTopics) != 1 ||
+		len(current.remoteTopics[0].Skills) != 1 ||
+		current.remoteTopics[0].Skills[0].Name != "fresh" {
+		t.Fatalf("remote topics = %#v", current.remoteTopics)
+	}
+	if !strings.Contains(current.View(), "fresh") {
+		t.Fatalf("remote view omitted refreshed cache:\n%s", current.View())
+	}
+}
+
+func TestRemoteTabClearsStaleTopicsWhenCacheReloadFails(t *testing.T) {
+	manager := newTestManager(t)
+	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")
+	writeFile(t, manager.paths.remoteRegistry, "{invalid")
+	current := model{
+		manager: manager,
+		remoteTopics: []remoteTopic{{
+			Slug: "testing", Name: "stale",
+		}},
+		width:  60,
+		height: 10,
+	}
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if len(current.remoteTopics) != 0 || !strings.HasPrefix(current.status, "error: ") {
+		t.Fatalf("remote cache failure left model %#v", current)
+	}
+	if strings.Contains(current.View(), "stale") {
+		t.Fatalf("remote cache failure rendered stale topics:\n%s", current.View())
 	}
 }
 
@@ -420,8 +536,8 @@ func TestSkillListResizeKeepsSelectionVisible(t *testing.T) {
 
 	updated, _ := current.Update(tea.WindowSizeMsg{Width: 80, Height: 8})
 	current = updated.(model)
-	if current.offset != 6 {
-		t.Fatalf("offset after resize = %d, want 6", current.offset)
+	if current.offset != 7 {
+		t.Fatalf("offset after resize = %d, want 7", current.offset)
 	}
 	if !strings.Contains(current.View(), "> ▸ skill-07 [disabled]") {
 		t.Fatalf("selected skill is not visible after resize:\n%s", current.View())

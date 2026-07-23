@@ -79,7 +79,7 @@ func run(args []string) error {
 	case len(args) == 1 && args[0] == "daemon":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runDaemon(ctx)
+		return runDaemon(ctx, newRemoteRegistry(paths.remoteRegistry), os.Stderr)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

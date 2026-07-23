@@ -14,23 +14,29 @@ import (
 )
 
 type model struct {
-	manager  *manager
-	project  string
-	skills   []discoveredSkill
-	selected map[string]bool
-	cursor   int
-	offset   int
-	width    int
-	height   int
-	expanded string
-	busy     bool
-	status   string
+	manager         *manager
+	project         string
+	skills          []discoveredSkill
+	selected        map[string]bool
+	remoteTopics    []remoteTopic
+	remoteCollapsed map[string]bool
+	remoteError     string
+	tab             int
+	cursor          int
+	offset          int
+	width           int
+	height          int
+	expanded        string
+	busy            bool
+	status          string
 }
 
 const (
-	tuiHeaderHeight = 3
+	tuiHeaderHeight = 4
 	tuiFooterHeight = 3
 	tuiChromeHeight = tuiHeaderHeight + tuiFooterHeight
+	localTab        = 0
+	remoteTab       = 1
 )
 
 var (
@@ -73,10 +79,13 @@ func newModel(manager *manager, project string) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	return model{
+	current := model{
 		manager: manager, project: project, skills: discovered, selected: selected,
-		status: fmt.Sprintf("%d skills", len(discovered)),
-	}, nil
+		remoteCollapsed: make(map[string]bool),
+		status:          fmt.Sprintf("%d skills", len(discovered)),
+	}
+	current.reloadRemoteCache()
+	return current, nil
 }
 
 func (model) Init() tea.Cmd { return nil }
@@ -126,7 +135,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		m.syncViewport()
 	case tea.MouseMsg:
-		if m.busy {
+		if m.busy || m.tab != localTab {
 			return m, nil
 		}
 		mouse := tea.MouseEvent(message)
@@ -151,19 +160,30 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		switch message.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "left":
+			m.selectTab(localTab)
+		case "right":
+			m.selectTab(remoteTab)
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 			m.syncViewport()
 		case "down", "j":
-			if m.cursor+1 < len(m.skills) {
+			if m.cursor+1 < m.itemCount() {
 				m.cursor++
 			}
 			m.syncViewport()
 		case "enter":
-			m.toggleExpanded(m.cursor)
+			if m.tab == remoteTab {
+				m.toggleRemoteTopic()
+			} else {
+				m.toggleExpanded(m.cursor)
+			}
 		case " ":
+			if m.tab != localTab {
+				break
+			}
 			if m.cursor < 0 || m.cursor >= len(m.skills) {
 				break
 			}
@@ -175,6 +195,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return toggleDone{skill: skill, enabled: enabled, err: err}
 			}
 		case "e":
+			if m.tab != localTab {
+				break
+			}
 			if m.cursor < 0 || m.cursor >= len(m.skills) {
 				break
 			}
@@ -203,6 +226,52 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m *model) selectTab(tab int) {
+	if tab < localTab || tab > remoteTab || m.tab == tab {
+		return
+	}
+	m.tab = tab
+	m.cursor = 0
+	m.offset = 0
+	if tab == remoteTab {
+		if m.manager != nil {
+			m.reloadRemoteCache()
+		}
+		count := 0
+		for _, topic := range m.remoteTopics {
+			count += len(topic.Skills)
+		}
+		if m.remoteError != "" {
+			m.status = "error: " + m.remoteError
+		} else if len(m.remoteTopics) == 0 {
+			m.status = "remote cache is empty; run skills-mgr daemon"
+		} else {
+			m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
+		}
+	} else {
+		m.status = fmt.Sprintf("%d skills", len(m.skills))
+	}
+	m.syncViewport()
+}
+
+func (m *model) reloadRemoteCache() {
+	cache, err := loadRemoteCache(m.manager.paths.remoteRegistry)
+	if err != nil {
+		m.remoteTopics = nil
+		m.remoteError = err.Error()
+		return
+	}
+	m.remoteTopics = cache.Topics
+	m.remoteError = ""
+}
+
+func (m model) itemCount() int {
+	if m.tab == remoteTab {
+		return len(m.remoteRows())
+	}
+	return len(m.skills)
 }
 
 func (m *manager) refreshEditedSkill(
@@ -255,6 +324,10 @@ func (m *model) toggleExpanded(index int) {
 }
 
 func (m *model) syncViewport() {
+	if m.tab == remoteTab {
+		m.syncRemoteViewport()
+		return
+	}
 	if len(m.skills) == 0 {
 		m.cursor = 0
 		m.offset = 0
@@ -292,31 +365,137 @@ func (m model) View() string {
 	var view strings.Builder
 	fmt.Fprintf(
 		&view,
-		"%s\n%s\n\n",
+		"\n%s\n%s\n%s\n",
 		boundLine(titleStyle.Render("Skill Manager"), m.width),
 		boundLine(mutedStyle.Render(terminalSafeText(m.project)), m.width),
+		m.tabBar(),
 	)
 	remaining := m.height - tuiChromeHeight
-	for index := m.offset; index < len(m.skills) && remaining > 0; index++ {
-		lines := m.skillLines(index)
-		if len(lines) > remaining {
-			lines = lines[:remaining]
+	if m.tab == remoteTab {
+		rows := m.remoteRows()
+		for index := m.offset; index < len(rows) && remaining > 0; index++ {
+			fmt.Fprintln(&view, m.remoteLine(rows[index], index == m.cursor))
+			remaining--
 		}
-		for _, line := range lines {
-			fmt.Fprintln(&view, line)
+	} else {
+		for index := m.offset; index < len(m.skills) && remaining > 0; index++ {
+			lines := m.skillLines(index)
+			if len(lines) > remaining {
+				lines = lines[:remaining]
+			}
+			for _, line := range lines {
+				fmt.Fprintln(&view, line)
+			}
+			remaining -= len(lines)
 		}
-		remaining -= len(lines)
+	}
+	help := "←/→ tabs • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
+	if m.tab == remoteTab {
+		help = "←/→ tabs • ↑/k ↓/j move • enter expand/collapse topic • q quit"
 	}
 	fmt.Fprintf(
 		&view,
 		"\n%s\n%s\n",
 		boundLine(
-			mutedStyle.Render("↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"),
+			mutedStyle.Render(help),
 			m.width,
 		),
 		boundLine(statusStyle(m.status).Render(terminalSafeText(m.status)), m.width),
 	)
 	return view.String()
+}
+
+func (m model) tabBar() string {
+	local := " Installed "
+	remote := " skills.sh "
+	if m.tab == localTab {
+		local = selectedStyle(titleStyle, true).Render("[Installed]")
+		remote = mutedStyle.Render(remote)
+	} else {
+		local = mutedStyle.Render(local)
+		remote = selectedStyle(titleStyle, true).Render("[skills.sh]")
+	}
+	return boundLine(local+" "+remote, m.width)
+}
+
+type remoteRow struct {
+	topic int
+	skill int
+}
+
+func (m model) remoteRows() []remoteRow {
+	rows := make([]remoteRow, 0, len(m.remoteTopics))
+	for topicIndex, topic := range m.remoteTopics {
+		rows = append(rows, remoteRow{topic: topicIndex, skill: -1})
+		if m.remoteCollapsed[topic.Slug] {
+			continue
+		}
+		for skillIndex := range topic.Skills {
+			rows = append(rows, remoteRow{topic: topicIndex, skill: skillIndex})
+		}
+	}
+	return rows
+}
+
+func (m *model) toggleRemoteTopic() {
+	rows := m.remoteRows()
+	if m.cursor < 0 || m.cursor >= len(rows) || rows[m.cursor].skill >= 0 {
+		return
+	}
+	topic := m.remoteTopics[rows[m.cursor].topic]
+	if m.remoteCollapsed == nil {
+		m.remoteCollapsed = make(map[string]bool)
+	}
+	m.remoteCollapsed[topic.Slug] = !m.remoteCollapsed[topic.Slug]
+	m.syncViewport()
+}
+
+func (m *model) syncRemoteViewport() {
+	count := len(m.remoteRows())
+	if count == 0 {
+		m.cursor = 0
+		m.offset = 0
+		return
+	}
+	m.cursor = min(max(m.cursor, 0), count-1)
+	m.offset = min(max(m.offset, 0), count-1)
+	visible := m.height - tuiChromeHeight
+	if visible <= 0 {
+		m.offset = m.cursor
+		return
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	} else if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+}
+
+func (m model) remoteLine(row remoteRow, selected bool) string {
+	topic := m.remoteTopics[row.topic]
+	if row.skill < 0 {
+		disclosure := "▾"
+		if m.remoteCollapsed[topic.Slug] {
+			disclosure = "▸"
+		}
+		line := selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
+		line += selectedStyle(lipgloss.NewStyle().Bold(true), selected).
+			Render(terminalSafeText(topic.Name))
+		line += selectedStyle(mutedStyle, selected).
+			Render(fmt.Sprintf(" (%d)", len(topic.Skills)))
+		return boundLine(line, m.width)
+	}
+	skill := topic.Skills[row.skill]
+	name := selectedStyle(lipgloss.NewStyle(), selected).
+		Render("  " + terminalSafeText(skill.Name))
+	installs := fmt.Sprintf("%d installs", skill.Installs)
+	source := terminalSafeText(skill.Source)
+	label := source + " • " + installs
+	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
+	line := name + selectedStyle(lipgloss.NewStyle(), selected).
+		Render(strings.Repeat(" ", gap))
+	line += selectedStyle(mutedStyle, selected).Render(label)
+	return boundLine(line, m.width)
 }
 
 func boundLine(line string, width int) string {

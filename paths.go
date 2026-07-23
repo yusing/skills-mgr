@@ -7,9 +7,10 @@ import (
 )
 
 type paths struct {
-	userSkills  string
-	codexHome   string
-	adminSkills string
+	userSkills     string
+	codexHome      string
+	adminSkills    string
+	remoteRegistry string
 }
 
 func defaultPaths() (paths, error) {
@@ -17,13 +18,18 @@ func defaultPaths() (paths, error) {
 	if err != nil {
 		return paths{}, fmt.Errorf("find home directory: %w", err)
 	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return paths{}, fmt.Errorf("find cache directory: %w", err)
+	}
 	codexHome := os.Getenv("CODEX_HOME")
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
 	return paths{
-		userSkills:  filepath.Join(home, ".agents", "skills"),
-		codexHome:   codexHome,
-		adminSkills: "/etc/codex/skills",
+		userSkills:     filepath.Join(home, ".agents", "skills"),
+		codexHome:      codexHome,
+		adminSkills:    "/etc/codex/skills",
+		remoteRegistry: filepath.Join(cache, "skills-mgr", "skills-sh.json"),
 	}, nil
 }

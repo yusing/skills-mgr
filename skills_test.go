@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -417,7 +418,7 @@ func writeExecutable(t *testing.T, path, content string) {
 func TestDaemonStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := runDaemon(ctx); err != nil {
+	if err := runDaemon(ctx, newRemoteRegistry(""), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 }
