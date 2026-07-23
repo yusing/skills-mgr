@@ -72,7 +72,7 @@ func TestLockSchemaMatchesWriterConstants(t *testing.T) {
 	}
 }
 
-func TestListEnabledSkillsWithReferenceTree(t *testing.T) {
+func TestListEnabledSkillsAsMarkdownWithOwnedReferenceTrees(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), `---
@@ -85,8 +85,15 @@ description: >
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "ignore.txt"), "ignored")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "future.mdx"), "unknown")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "beta", "SKILL.md"), skillFile("beta", "Disabled.", ""))
-	if _, err := manager.toggle(project, "alpha"); err != nil {
+	writeFile(t, filepath.Join(manager.paths.userSkills, "gamma", "SKILL.md"), skillFile("gamma", "No references.", ""))
+	if err := saveLock(project, lock{Skills: map[string]bool{
+		"alpha":  true,
+		"beta":   false,
+		"future": false,
+		"gamma":  true,
+	}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,17 +101,43 @@ description: >
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	want := `alpha — Alpha does one thing. It also does another.
-└── references/
-    ├── nested/
-    │   └── details.md
-    └── overview.md
+	want := `# Skill list
+
+## alpha
+
+Alpha does one thing. It also does another.
+
+### references
+
+references/
+├── nested/
+│   └── details.md
+└── overview.md
+
+## gamma
+
+No references.
 `
 	if output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
-	if strings.Contains(output.String(), "beta") {
-		t.Fatal("list included a disabled skill")
+	for _, unexpected := range []string{"beta", "future", "ignore.txt", "future.mdx"} {
+		if strings.Contains(output.String(), unexpected) {
+			t.Fatalf("list included %q", unexpected)
+		}
+	}
+}
+
+func TestListEmptySelectionWritesDocumentHeading(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "# Skill list\n"; output.String() != want {
+		t.Fatalf("list output = %q, want %q", output.String(), want)
 	}
 }
 
@@ -122,6 +155,23 @@ func TestListRejectsMissingEnabledSkillBeforeWriting(t *testing.T) {
 	var output bytes.Buffer
 	if err := manager.list(project, &output); err == nil {
 		t.Fatal("list accepted a missing enabled skill")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("list wrote partial output: %q", output.String())
+	}
+}
+
+func TestListRejectsMalformedEnabledSkillBeforeWriting(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(t, filepath.Join(manager.paths.userSkills, "malformed", "SKILL.md"), "not frontmatter")
+	if err := saveLock(project, lock{Skills: map[string]bool{"malformed": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err == nil {
+		t.Fatal("list accepted a malformed enabled skill")
 	}
 	if output.Len() != 0 {
 		t.Fatalf("list wrote partial output: %q", output.String())

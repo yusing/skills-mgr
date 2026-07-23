@@ -347,6 +347,9 @@ func (m *manager) list(project string, output io.Writer) error {
 			return fmt.Errorf("enabled skill %q was not discovered", name)
 		}
 	}
+	if _, err := fmt.Fprintln(output, "# Skill list"); err != nil {
+		return err
+	}
 	for _, skill := range skills {
 		if !selected[skill.Name] {
 			continue
@@ -355,11 +358,11 @@ func (m *manager) list(project string, output io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", skill.Name, err)
 		}
-		if _, err := fmt.Fprintf(output, "%s — %s\n", skill.Name, skill.Description); err != nil {
+		if _, err := fmt.Fprintf(output, "\n## %s\n\n%s\n", skill.Name, skill.Description); err != nil {
 			return err
 		}
 		if len(references) > 0 {
-			if _, err := fmt.Fprintln(output, "└── references/"); err != nil {
+			if _, err := fmt.Fprintln(output, "\n### references\n\nreferences/"); err != nil {
 				return err
 			}
 			if err := writeReferenceTree(output, references); err != nil {
@@ -592,7 +595,7 @@ func writeReferenceTree(output io.Writer, files []string) error {
 			node = node.children[part]
 		}
 	}
-	return writeReferenceNodes(output, root, "    ")
+	return writeReferenceNodes(output, root, "")
 }
 
 func writeReferenceNodes(output io.Writer, node *referenceNode, prefix string) error {
