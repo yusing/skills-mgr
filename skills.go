@@ -63,6 +63,14 @@ type skillFrontmatter struct {
 	Description string `yaml:"description"`
 }
 
+type frontmatterStatus uint8
+
+const (
+	frontmatterAbsent frontmatterStatus = iota
+	frontmatterValid
+	frontmatterMalformed
+)
+
 // Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
 func (m *manager) skills(project string) ([]discoveredSkill, error) {
 	discovery := skillDiscovery{
@@ -206,11 +214,11 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 		return discoveredSkill{}, false, err
 	}
 	defer file.Close()
-	frontmatter, _, ok, err := readFrontmatter(file)
+	frontmatter, _, status, err := readFrontmatter(file)
 	if err != nil {
 		return discoveredSkill{}, false, err
 	}
-	if !ok {
+	if status != frontmatterValid {
 		return discoveredSkill{}, false, nil
 	}
 	var metadata skillFrontmatter
@@ -231,32 +239,35 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 	}, true, nil
 }
 
-func readFrontmatter(input io.Reader) (string, io.Reader, bool, error) {
+func readFrontmatter(input io.Reader) (string, io.Reader, frontmatterStatus, error) {
 	reader := bufio.NewReader(input)
 	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", nil, false, nil
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", nil, frontmatterMalformed, err
+	}
+	if frontmatterLine(strings.TrimPrefix(line, "\uFEFF")) != "---" {
+		return "", io.MultiReader(strings.NewReader(line), reader), frontmatterAbsent, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return "", nil, frontmatterMalformed, nil
 	}
 	size := len(line)
-	if frontmatterLine(strings.TrimPrefix(line, "\uFEFF")) != "---" {
-		return "", nil, false, nil
-	}
 	var metadata []string
 	for {
 		line, err = reader.ReadString('\n')
 		size += len(line)
 		if size > maxFrontmatterBytes {
-			return "", nil, false, nil
+			return "", nil, frontmatterMalformed, nil
 		}
 		normalized := frontmatterLine(line)
 		if normalized == "---" {
-			return strings.Join(metadata, "\n"), reader, true, nil
+			return strings.Join(metadata, "\n"), reader, frontmatterValid, nil
 		}
 		if errors.Is(err, io.EOF) {
-			return "", nil, false, nil
+			return "", nil, frontmatterMalformed, nil
 		}
 		if err != nil {
-			return "", nil, false, err
+			return "", nil, frontmatterMalformed, err
 		}
 		metadata = append(metadata, normalized)
 	}
@@ -408,15 +419,22 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 		}
 	}
 	var input io.Reader = file
-	if filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md" {
-		_, body, ok, err := readFrontmatter(file)
+	if strings.EqualFold(filepath.Ext(relative), ".md") {
+		_, body, status, err := readFrontmatter(file)
 		if err != nil {
 			return fmt.Errorf("read %s frontmatter: %w", target, err)
 		}
-		if !ok {
+		switch status {
+		case frontmatterValid:
+			input = body
+		case frontmatterAbsent:
+			if filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md" {
+				return fmt.Errorf("%s has invalid frontmatter", target)
+			}
+			input = body
+		case frontmatterMalformed:
 			return fmt.Errorf("%s has invalid frontmatter", target)
 		}
-		input = body
 	}
 	if lineRange == "" {
 		_, err := io.Copy(output, input)

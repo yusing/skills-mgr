@@ -214,7 +214,7 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 }
 
-func TestGetSkillStripsUnknownFrontmatterWithoutStrippingReferences(t *testing.T) {
+func TestGetStripsMarkdownFrontmatter(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeFile(
@@ -227,6 +227,18 @@ func TestGetSkillStripsUnknownFrontmatterWithoutStrippingReferences(t *testing.T
 		t,
 		filepath.Join(manager.paths.userSkills, "alpha", "references", "SKILL.md"),
 		reference,
+	)
+	plainReference := "# Plain reference\n\nNo metadata.\n"
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "references", "plain.md"),
+		plainReference,
+	)
+	delimiterText := "---\nnot markdown frontmatter"
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "references", "fixture.txt"),
+		delimiterText,
 	)
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
@@ -244,8 +256,24 @@ func TestGetSkillStripsUnknownFrontmatterWithoutStrippingReferences(t *testing.T
 	if err := manager.get(project, "alpha/references/SKILL.md", "", &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != reference {
-		t.Fatalf("unrelated reference frontmatter was stripped: %q", output.String())
+	if output.String() != "# Reference\n" {
+		t.Fatalf("reference Markdown output = %q", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "alpha/references/plain.md", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != plainReference {
+		t.Fatalf("plain Markdown output = %q", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "alpha/references/fixture.txt", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != delimiterText {
+		t.Fatalf("non-Markdown delimiter output = %q", output.String())
 	}
 }
 
@@ -268,6 +296,18 @@ func TestGetMalformedSkillWritesNoOutput(t *testing.T) {
 	if output.Len() != 0 {
 		t.Fatalf("get wrote malformed skill output: %q", output.String())
 	}
+
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "malformed", "references", "guide.md"),
+		"---\ntitle: Missing closing delimiter.\n",
+	)
+	if err := manager.get(project, "malformed/references/guide.md", "", &output); err == nil {
+		t.Fatal("get accepted malformed reference frontmatter")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("get wrote malformed reference output: %q", output.String())
+	}
 }
 
 func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
@@ -276,6 +316,9 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 
 	var output bytes.Buffer
+	if err := manager.get(project, "unknown", "", &output); err == nil {
+		t.Fatal("get accepted an unknown skill")
+	}
 	if err := manager.get(project, "alpha", "", &output); err == nil {
 		t.Fatal("get read a disabled skill")
 	}
