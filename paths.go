@@ -8,7 +8,6 @@ import (
 
 type paths struct {
 	library string
-	state   string
 	source  string
 }
 
@@ -21,13 +20,8 @@ func defaultPaths() (paths, error) {
 	if data == "" {
 		data = filepath.Join(home, ".local", "share")
 	}
-	state := os.Getenv("XDG_STATE_HOME")
-	if state == "" {
-		state = filepath.Join(home, ".local", "state")
-	}
 	return paths{
 		library: filepath.Join(data, "skill-mgr", "skills"),
-		state:   filepath.Join(state, "skill-mgr", "state.json"),
 		source:  filepath.Join(home, ".agents", "skills"),
 	}, nil
 }

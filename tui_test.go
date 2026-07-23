@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,4 +25,27 @@ func TestEditorTargetsCanonicalSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, skill, "edited")
+}
+
+func TestToggleErrorPreservesSelection(t *testing.T) {
+	current := model{
+		selected: map[string]bool{"alpha": true},
+		busy:     true,
+	}
+
+	updated, _ := current.Update(toggleDone{
+		skill:   "alpha",
+		enabled: false,
+		err:     errors.New("write failed"),
+	})
+	got := updated.(model)
+	if !got.selected["alpha"] {
+		t.Fatal("toggle error changed the displayed selection")
+	}
+	if got.busy {
+		t.Fatal("toggle error left the model busy")
+	}
+	if got.status != "error: write failed" {
+		t.Fatalf("status = %q", got.status)
+	}
 }

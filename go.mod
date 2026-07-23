@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
-	github.com/fsnotify/fsnotify v1.10.1
 	github.com/mattn/go-shellwords v1.0.14
 	golang.org/x/term v0.45.0
 )

@@ -54,13 +54,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case toggleDone:
 		m.busy = false
-		m.selected[message.skill] = message.enabled
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
-		} else if message.enabled {
-			m.status = "installed " + message.skill
 		} else {
-			m.status = "removed " + message.skill
+			m.selected[message.skill] = message.enabled
+			if message.enabled {
+				m.status = "enabled " + message.skill
+			} else {
+				m.status = "disabled " + message.skill
+			}
 		}
 	case editDone:
 		m.busy = false

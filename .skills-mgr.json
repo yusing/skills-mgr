@@ -1,0 +1,18 @@
+{
+  "schema_revision": 1,
+  "skills": {
+    "build-code-skeleton": true,
+    "deliver-vertical-slice": true,
+    "draft-spec": true,
+    "go": true,
+    "golang-best-practices": true,
+    "harden-release": true,
+    "new-project": true,
+    "plan-vertical-slices": true,
+    "review-spec": true,
+    "shadcn": true,
+    "spec-to-contract": true,
+    "using-pjdoc": true,
+    "verify-conformance": true
+  }
+}

@@ -1,8 +1,8 @@
 [Unit]
-Description=Skill Manager synchronization daemon
+Description=Skill Manager daemon
 
 [Service]
-ExecStart=%h/.local/bin/skill-mgr daemon
+ExecStart=%h/.local/bin/skills-mgr daemon
 Restart=on-failure
 
 [Install]
