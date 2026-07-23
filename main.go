@@ -2,14 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
+		if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
+			code := exitError.ExitCode()
+			if code < 0 {
+				code = 1
+			}
+			os.Exit(code)
+		}
 		fmt.Fprintln(os.Stderr, "skills-mgr:", err)
 		os.Exit(1)
 	}
@@ -51,6 +60,22 @@ func run(args []string) error {
 			lineRange = args[2]
 		}
 		return manager.get(project, args[1], lineRange, os.Stdout)
+	case args[0] == "run":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: skills-mgr run <skill-name>/<relative/script> [args...]")
+		}
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		command, err := manager.scriptCommand(project, args[1], args[2:])
+		if err != nil {
+			return err
+		}
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		return command.Run()
 	case len(args) == 1 && args[0] == "migrate":
 		count, err := manager.migrate()
 		if err != nil {

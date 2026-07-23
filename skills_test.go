@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -177,6 +178,188 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 	}
 	if err := manager.get(project, "alpha/escape.md", "", &output); err == nil {
 		t.Fatal("get followed a symlink outside the skill")
+	}
+}
+
+func TestRunSkillScripts(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	root := filepath.Join(manager.paths.library, "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	interpreter := filepath.Join(t.TempDir(), "interpreter")
+	writeExecutable(t, interpreter, "#!/bin/sh\nprintf 'shebang|%s|%s' \"$PWD\" \"$2\"")
+	writeExecutable(t, filepath.Join(root, "scripts", "echo.sh"), "#!"+interpreter+"\n")
+	writeFile(t, filepath.Join(root, "scripts", "echo.py"), "import os, sys\nprint(f'{os.getcwd()}|{sys.argv[1]}', end='')")
+	if _, err := manager.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, target := range []string{"alpha/scripts/echo.sh", "alpha/scripts/echo.py"} {
+		t.Run(filepath.Ext(target), func(t *testing.T) {
+			if filepath.Ext(target) == ".py" {
+				if _, err := exec.LookPath("python3"); err != nil {
+					t.Skip("python3 is not installed")
+				}
+			}
+			command, err := manager.scriptCommand(project, target, []string{"argument"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			command.Stdout = &output
+			if err := command.Run(); err != nil {
+				t.Fatal(err)
+			}
+			want := root + "|argument"
+			if filepath.Ext(target) == ".sh" {
+				want = "shebang|" + want
+			}
+			if output.String() != want {
+				t.Fatalf("script output = %q, want %q", output.String(), want)
+			}
+		})
+	}
+}
+
+func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
+	primary := newTestManager(t)
+	project := t.TempDir()
+	root := filepath.Join(primary.paths.library, "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	for _, extension := range []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"} {
+		writeFile(t, filepath.Join(root, "script"+extension), "")
+	}
+	if _, err := primary.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeBin := t.TempDir()
+	node := filepath.Join(nodeBin, "node")
+	writeExecutable(t, node, "#!/bin/sh\nexit 0")
+	t.Setenv("PATH", nodeBin)
+	for _, extension := range []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"} {
+		command, err := primary.scriptCommand(project, "alpha/script"+extension, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if command.Path != node {
+			t.Fatalf("%s runtime = %q, want %q", extension, command.Path, node)
+		}
+	}
+
+	bunBin := t.TempDir()
+	bun := filepath.Join(bunBin, "bun")
+	writeExecutable(t, bun, "#!/bin/sh\nexit 0")
+	t.Setenv("PATH", bunBin)
+	command, err := primary.scriptCommand(project, "alpha/script.js", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Path != node {
+		t.Fatalf("cached runtime = %q, want %q", command.Path, node)
+	}
+
+	fallbackManager := &manager{paths: primary.paths}
+	command, err = fallbackManager.scriptCommand(project, "alpha/script.ts", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Path != bun {
+		t.Fatalf("fallback runtime = %q, want %q", command.Path, bun)
+	}
+}
+
+func TestRunJavaScriptRejectsMissingRuntimeAndUnrelatedNames(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	root := filepath.Join(manager.paths.library, "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	writeFile(t, filepath.Join(root, "script.js"), "")
+	if _, err := manager.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "nodejs"), "#!/bin/sh\nexit 0")
+	t.Setenv("PATH", bin)
+	if _, err := manager.scriptCommand(project, "alpha/script.js", nil); err == nil ||
+		!strings.Contains(err.Error(), "neither node nor bun") {
+		t.Fatalf("missing runtime error = %v", err)
+	}
+}
+
+func TestRunCommandInvokesSkillScript(t *testing.T) {
+	project := t.TempDir()
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	t.Chdir(project)
+	root := filepath.Join(data, "skill-mgr", "skills", "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	writeExecutable(t, filepath.Join(root, "scripts", "record.sh"), "#!/bin/sh\nprintf '%s' \"$1\" > result")
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run([]string{"run", "alpha/scripts/record.sh", "argument with spaces"}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "result"), "argument with spaces")
+
+	writeExecutable(t, filepath.Join(root, "scripts", "fail.sh"), "#!/bin/sh\nexit 23")
+	err := run([]string{"run", "alpha/scripts/fail.sh"})
+	exitError, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitError.ExitCode() != 23 {
+		t.Fatalf("script exit error = %v, want exit code 23", err)
+	}
+}
+
+func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	root := filepath.Join(manager.paths.library, "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	writeFile(t, filepath.Join(root, "script.sh"), "exit 0")
+
+	if _, err := manager.scriptCommand(project, "alpha/script.sh", nil); err == nil {
+		t.Fatal("run accepted a script from a disabled skill")
+	}
+	if _, err := manager.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.scriptCommand(project, "alpha/../outside.sh", nil); err == nil {
+		t.Fatal("run accepted a path outside the skill")
+	}
+	if _, err := manager.scriptCommand(project, "alpha", nil); err == nil {
+		t.Fatal("run accepted a malformed script target")
+	}
+	if _, err := manager.scriptCommand(project, "alpha/scripts", nil); err == nil {
+		t.Fatal("run accepted a directory")
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.sh")
+	writeFile(t, outside, "exit 0")
+	if err := os.Symlink(outside, filepath.Join(root, "escape.sh")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.scriptCommand(project, "alpha/escape.sh", nil); err == nil {
+		t.Fatal("run followed a symlink outside the skill")
+	}
+
+	writeFile(t, filepath.Join(root, "future.jsx"), "")
+	command, err := manager.scriptCommand(project, "alpha/future.jsx", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Path != filepath.Join(root, "future.jsx") {
+		t.Fatalf("unknown extension command = %q, want direct execution", command.Path)
+	}
+}
+
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	writeFile(t, path, content)
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

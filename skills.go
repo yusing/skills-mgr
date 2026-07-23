@@ -8,14 +8,19 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type manager struct {
-	paths paths
+	paths                paths
+	runtimeOnce          sync.Once
+	javascriptRuntime    string
+	javascriptRuntimeErr error
 }
 
 func (m *manager) skills() ([]string, error) {
@@ -106,20 +111,9 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 	if err != nil {
 		return err
 	}
-	selected, err := m.selection(project)
+	root, err := m.openSkill(project, skill)
 	if err != nil {
 		return err
-	}
-	if !selected[skill] {
-		return fmt.Errorf("skill %q is not enabled", skill)
-	}
-	rootPath, err := filepath.EvalSymlinks(filepath.Join(m.paths.library, skill))
-	if err != nil {
-		return fmt.Errorf("resolve skill %q: %w", skill, err)
-	}
-	root, err := os.OpenRoot(rootPath)
-	if err != nil {
-		return fmt.Errorf("open skill %q: %w", skill, err)
 	}
 	defer root.Close()
 	file, err := root.Open(filepath.FromSlash(relative))
@@ -143,6 +137,93 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 		return err
 	}
 	return writeLineRange(output, file, start, end)
+}
+
+func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {
+	if !strings.Contains(target, "/") {
+		return nil, fmt.Errorf("invalid script target %q; want <skill-name>/<relative/script>", target)
+	}
+	skill, relative, err := splitTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	root, err := m.openSkill(project, skill)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	info, err := root.Stat(filepath.FromSlash(relative))
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", target, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", target)
+	}
+
+	script := filepath.Join(root.Name(), filepath.FromSlash(relative))
+	extension := filepath.Ext(relative)
+	var command *exec.Cmd
+	switch {
+	case info.Mode()&0o111 != 0:
+		command = exec.Command(script, args...)
+	case extension == ".py":
+		command = exec.Command("python3", append([]string{script}, args...)...)
+	case isJavaScript(extension):
+		runtime, err := m.cachedJavaScriptRuntime()
+		if err != nil {
+			return nil, err
+		}
+		command = exec.Command(runtime, append([]string{script}, args...)...)
+	default:
+		command = exec.Command(script, args...)
+	}
+	if command.Err != nil {
+		return nil, fmt.Errorf("run %s: %w", target, command.Err)
+	}
+	command.Dir = root.Name()
+	return command, nil
+}
+
+func isJavaScript(extension string) bool {
+	switch extension {
+	case ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *manager) cachedJavaScriptRuntime() (string, error) {
+	m.runtimeOnce.Do(func() {
+		for _, name := range []string{"node", "bun"} {
+			path, err := exec.LookPath(name)
+			if err == nil {
+				m.javascriptRuntime = path
+				return
+			}
+		}
+		m.javascriptRuntimeErr = fmt.Errorf("run JavaScript or TypeScript: neither node nor bun was found in PATH")
+	})
+	return m.javascriptRuntime, m.javascriptRuntimeErr
+}
+
+func (m *manager) openSkill(project, skill string) (*os.Root, error) {
+	selected, err := m.selection(project)
+	if err != nil {
+		return nil, err
+	}
+	if !selected[skill] {
+		return nil, fmt.Errorf("skill %q is not enabled", skill)
+	}
+	rootPath, err := filepath.EvalSymlinks(filepath.Join(m.paths.library, skill))
+	if err != nil {
+		return nil, fmt.Errorf("resolve skill %q: %w", skill, err)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return nil, fmt.Errorf("open skill %q: %w", skill, err)
+	}
+	return root, nil
 }
 
 func splitTarget(target string) (skill, relative string, err error) {
