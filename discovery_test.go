@@ -32,8 +32,10 @@ func TestDiscoverSkillsFromStandardRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 	names := make([]string, 0, len(skills))
+	sources := make(map[string]string, len(skills))
 	for _, skill := range skills {
 		names = append(names, skill.Name)
+		sources[skill.Name] = skill.Source
 	}
 	want := []string{
 		"admin-skill",
@@ -45,6 +47,19 @@ func TestDiscoverSkillsFromStandardRoots(t *testing.T) {
 	}
 	if !slices.Equal(names, want) {
 		t.Fatalf("skills = %q, want %q", names, want)
+	}
+	wantSources := map[string]string{
+		"admin-skill":   "admin",
+		"codex-skill":   "codex",
+		"plugin-skill":  "plugin",
+		"project-skill": "project",
+		"system-skill":  "bundled",
+		"user-skill":    "user",
+	}
+	for name, wantSource := range wantSources {
+		if sources[name] != wantSource {
+			t.Errorf("source of %s = %q, want %q", name, sources[name], wantSource)
+		}
 	}
 }
 

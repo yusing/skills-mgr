@@ -39,6 +39,7 @@ type discoveredSkill struct {
 	Description string
 	Path        string
 	Root        string
+	Source      string
 	Editable    bool
 }
 
@@ -50,6 +51,7 @@ type skillDiscovery struct {
 
 type skillRoot struct {
 	path          string
+	source        string
 	includeSystem bool
 	editable      bool
 }
@@ -66,10 +68,10 @@ func (m *manager) skills(project string) ([]discoveredSkill, error) {
 		seenNames: make(map[string]struct{}),
 	}
 	roots := []skillRoot{
-		{path: filepath.Join(project, ".agents", "skills"), editable: true},
-		{path: m.paths.userSkills, editable: true},
-		{path: filepath.Join(m.paths.codexHome, "skills"), includeSystem: true, editable: true},
-		{path: m.paths.adminSkills},
+		{path: filepath.Join(project, ".agents", "skills"), source: "project", editable: true},
+		{path: m.paths.userSkills, source: "user", editable: true},
+		{path: filepath.Join(m.paths.codexHome, "skills"), source: "codex", includeSystem: true, editable: true},
+		{path: m.paths.adminSkills, source: "admin"},
 	}
 	for _, root := range roots {
 		if err := discovery.discoverRoot(root); err != nil {
@@ -110,7 +112,7 @@ func (d *skillDiscovery) scanDirectSkillRoot(root skillRoot) error {
 	for _, entry := range entries {
 		path := filepath.Join(root.path, entry.Name())
 		if entry.Name() == ".system" && root.includeSystem {
-			if err := d.scanDirectSkillRoot(skillRoot{path: path}); err != nil {
+			if err := d.scanDirectSkillRoot(skillRoot{path: path, source: "bundled"}); err != nil {
 				return err
 			}
 			continue
@@ -153,7 +155,7 @@ func (d *skillDiscovery) discoverPluginCache(root string) error {
 		if entry.Name() != "skills" {
 			return nil
 		}
-		if err := d.scanDirectSkillRoot(skillRoot{path: path}); err != nil {
+		if err := d.scanDirectSkillRoot(skillRoot{path: path, source: "plugin"}); err != nil {
 			return err
 		}
 		return filepath.SkipDir
@@ -185,6 +187,7 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	}
 	skill.Path = resolvedSkill
 	skill.Root = resolvedRoot
+	skill.Source = root.source
 	skill.Editable = root.editable
 	d.seenPaths[resolvedSkill] = struct{}{}
 	d.seenNames[skill.Name] = struct{}{}
@@ -588,7 +591,7 @@ func writeReferenceTree(output io.Writer, files []string) error {
 	root := &referenceNode{children: make(map[string]*referenceNode)}
 	for _, file := range files {
 		node := root
-		for _, part := range strings.Split(file, "/") {
+		for part := range strings.SplitSeq(file, "/") {
 			if node.children[part] == nil {
 				node.children[part] = &referenceNode{children: make(map[string]*referenceNode)}
 			}
