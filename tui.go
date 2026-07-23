@@ -17,9 +17,13 @@ type model struct {
 	skills   []string
 	selected map[string]bool
 	cursor   int
+	offset   int
+	height   int
 	busy     bool
 	status   string
 }
+
+const tuiChromeHeight = 6
 
 type toggleDone struct {
 	skill   string
@@ -74,6 +78,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "saved " + message.skill
 		}
+	case tea.WindowSizeMsg:
+		m.height = message.Height
+		m.syncViewport()
 	case tea.KeyMsg:
 		if m.busy {
 			if message.String() == "ctrl+c" {
@@ -88,12 +95,14 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			m.syncViewport()
 		case "down", "j":
 			if m.cursor+1 < len(m.skills) {
 				m.cursor++
 			}
+			m.syncViewport()
 		case " ", "enter":
-			if len(m.skills) == 0 {
+			if m.cursor < 0 || m.cursor >= len(m.skills) {
 				break
 			}
 			skill := m.skills[m.cursor]
@@ -104,7 +113,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return toggleDone{skill: skill, enabled: enabled, err: err}
 			}
 		case "e":
-			if len(m.skills) == 0 {
+			if m.cursor < 0 || m.cursor >= len(m.skills) {
 				break
 			}
 			skill := m.skills[m.cursor]
@@ -123,10 +132,52 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) syncViewport() {
+	if len(m.skills) == 0 {
+		m.cursor = 0
+		m.offset = 0
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	} else if m.cursor >= len(m.skills) {
+		m.cursor = len(m.skills) - 1
+	}
+
+	visible := m.height - tuiChromeHeight
+	if visible <= 0 {
+		m.offset = m.cursor
+		return
+	}
+	maxOffset := len(m.skills) - visible
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	} else if m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	} else if m.cursor >= m.offset+visible {
+		m.offset = m.cursor - visible + 1
+	}
+}
+
 func (m model) View() string {
+	m.syncViewport()
 	var view strings.Builder
 	fmt.Fprintf(&view, "Skill Manager\n%s\n\n", m.project)
-	for index, skill := range m.skills {
+	visible := m.height - tuiChromeHeight
+	end := m.offset + visible
+	if visible < 0 {
+		end = m.offset
+	} else if end > len(m.skills) {
+		end = len(m.skills)
+	}
+	for index := m.offset; index < end; index++ {
+		skill := m.skills[index]
 		cursor, mark := " ", " "
 		if index == m.cursor {
 			cursor = ">"
