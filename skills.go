@@ -14,6 +14,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/goccy/go-yaml"
+)
+
+const (
+	pluginMaxDepth      = 10
+	maxSkillNameLen     = 80
+	maxSkillDescLen     = 300
+	maxFrontmatterBytes = 64 * 1024
 )
 
 type manager struct {
@@ -23,20 +34,278 @@ type manager struct {
 	javascriptRuntimeErr error
 }
 
-func (m *manager) skills() ([]string, error) {
-	entries, err := os.ReadDir(m.paths.library)
-	if err != nil {
-		return nil, fmt.Errorf("read skill library: %w", err)
+type discoveredSkill struct {
+	Name        string
+	Description string
+	Path        string
+	Root        string
+	Editable    bool
+}
+
+type skillDiscovery struct {
+	skills    []discoveredSkill
+	seenPaths map[string]struct{}
+	seenNames map[string]struct{}
+}
+
+type skillRoot struct {
+	path          string
+	includeSystem bool
+	editable      bool
+}
+
+type skillFrontmatter struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+// Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
+func (m *manager) skills(project string) ([]discoveredSkill, error) {
+	discovery := skillDiscovery{
+		seenPaths: make(map[string]struct{}),
+		seenNames: make(map[string]struct{}),
 	}
-	var names []string
-	for _, entry := range entries {
-		info, err := os.Stat(filepath.Join(m.paths.library, entry.Name(), "SKILL.md"))
-		if err == nil && info.Mode().IsRegular() {
-			names = append(names, entry.Name())
+	roots := []skillRoot{
+		{path: filepath.Join(project, ".agents", "skills"), editable: true},
+		{path: m.paths.userSkills, editable: true},
+		{path: filepath.Join(m.paths.codexHome, "skills"), includeSystem: true, editable: true},
+		{path: m.paths.adminSkills},
+	}
+	for _, root := range roots {
+		if err := discovery.discoverRoot(root); err != nil {
+			return nil, err
 		}
 	}
-	slices.Sort(names)
-	return names, nil
+	if err := discovery.discoverPluginCache(filepath.Join(m.paths.codexHome, "plugins", "cache")); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(discovery.skills, func(a, b discoveredSkill) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return discovery.skills, nil
+}
+
+func (d *skillDiscovery) discoverRoot(root skillRoot) error {
+	info, err := os.Stat(root.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return nil
+		}
+		return fmt.Errorf("inspect skill root %s: %w", root.path, err)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return d.scanDirectSkillRoot(root)
+}
+
+func (d *skillDiscovery) scanDirectSkillRoot(root skillRoot) error {
+	entries, err := os.ReadDir(root.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return nil
+		}
+		return fmt.Errorf("read skill root %s: %w", root.path, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(root.path, entry.Name())
+		if entry.Name() == ".system" && root.includeSystem {
+			if err := d.scanDirectSkillRoot(skillRoot{path: path}); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := d.addSkill(root, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *skillDiscovery) discoverPluginCache(root string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return nil
+		}
+		return fmt.Errorf("inspect plugin cache %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrPermission) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return nil
+		}
+		if relative != "." && pathDepth(relative) > pluginMaxDepth {
+			return filepath.SkipDir
+		}
+		if entry.Name() != "skills" {
+			return nil
+		}
+		if err := d.scanDirectSkillRoot(skillRoot{path: path}); err != nil {
+			return err
+		}
+		return filepath.SkipDir
+	})
+}
+
+func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
+	resolvedRoot, err := filepath.EvalSymlinks(candidateRoot)
+	if err != nil {
+		return nil
+	}
+	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, "SKILL.md"))
+	if err != nil {
+		return nil
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedSkill)
+	if err != nil || !filepath.IsLocal(relative) {
+		return nil
+	}
+	skill, ok, err := parseSkill(resolvedSkill)
+	if err != nil || !ok {
+		return err
+	}
+	if _, exists := d.seenPaths[resolvedSkill]; exists {
+		return nil
+	}
+	if _, exists := d.seenNames[skill.Name]; exists {
+		return nil
+	}
+	skill.Path = resolvedSkill
+	skill.Root = resolvedRoot
+	skill.Editable = root.editable
+	d.seenPaths[resolvedSkill] = struct{}{}
+	d.seenNames[skill.Name] = struct{}{}
+	d.skills = append(d.skills, skill)
+	return nil
+}
+
+func parseSkill(path string) (discoveredSkill, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return discoveredSkill{}, false, nil
+		}
+		return discoveredSkill{}, false, err
+	}
+	defer file.Close()
+	frontmatter, ok, err := readFrontmatter(file)
+	if err != nil {
+		return discoveredSkill{}, false, err
+	}
+	if !ok {
+		return discoveredSkill{}, false, nil
+	}
+	var metadata skillFrontmatter
+	if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
+		return discoveredSkill{}, false, nil
+	}
+	metadata.Name = strings.TrimSpace(metadata.Name)
+	metadata.Description = truncateMetadata(
+		strings.Join(strings.Fields(metadata.Description), " "),
+		maxSkillDescLen,
+	)
+	if !validSkillName(metadata.Name) || !validSkillDescription(metadata.Description) {
+		return discoveredSkill{}, false, nil
+	}
+	return discoveredSkill{
+		Name:        metadata.Name,
+		Description: metadata.Description,
+	}, true, nil
+}
+
+func readFrontmatter(input io.Reader) (string, bool, error) {
+	reader := bufio.NewReader(input)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", false, nil
+	}
+	size := len(line)
+	if frontmatterLine(strings.TrimPrefix(line, "\uFEFF")) != "---" {
+		return "", false, nil
+	}
+	var metadata []string
+	for {
+		line, err = reader.ReadString('\n')
+		size += len(line)
+		if size > maxFrontmatterBytes {
+			return "", false, nil
+		}
+		normalized := frontmatterLine(line)
+		if normalized == "---" {
+			return strings.Join(metadata, "\n"), true, nil
+		}
+		if errors.Is(err, io.EOF) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		metadata = append(metadata, normalized)
+	}
+}
+
+func frontmatterLine(line string) string {
+	line = strings.TrimSuffix(line, "\n")
+	return strings.TrimSuffix(line, "\r")
+}
+
+func validSkillName(name string) bool {
+	if name == "" || len(name) > maxSkillNameLen {
+		return false
+	}
+	for _, character := range name {
+		if character >= 'A' && character <= 'Z' ||
+			character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' ||
+			character == '.' || character == '_' || character == '-' || character == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validSkillDescription(description string) bool {
+	if description == "" {
+		return false
+	}
+	for _, character := range description {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
+}
+
+func truncateMetadata(text string, maxBytes int) string {
+	if maxBytes <= 0 || len(text) <= maxBytes {
+		return text
+	}
+	text = text[:maxBytes]
+	for !utf8.ValidString(text) && len(text) > 0 {
+		text = text[:len(text)-1]
+	}
+	return strings.TrimSpace(text)
+}
+
+func pathDepth(relative string) int {
+	if relative == "." || relative == "" {
+		return 0
+	}
+	return len(strings.Split(filepath.ToSlash(relative), "/"))
 }
 
 func (m *manager) selection(project string) (map[string]bool, error) {
@@ -65,33 +334,28 @@ func (m *manager) list(project string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	names, err := m.skills()
+	skills, err := m.skills(project)
 	if err != nil {
 		return err
 	}
-	available := make(map[string]bool, len(names))
-	for _, name := range names {
-		available[name] = true
+	available := make(map[string]bool, len(skills))
+	for _, skill := range skills {
+		available[skill.Name] = true
 	}
 	for name, enabled := range selected {
 		if enabled && !available[name] {
-			return fmt.Errorf("enabled skill %q is missing from the library", name)
+			return fmt.Errorf("enabled skill %q was not discovered", name)
 		}
 	}
-	for _, name := range names {
-		if !selected[name] {
+	for _, skill := range skills {
+		if !selected[skill.Name] {
 			continue
 		}
-		root := filepath.Join(m.paths.library, name)
-		description, err := skillDescription(filepath.Join(root, "SKILL.md"))
+		references, err := referenceFiles(skill.Root)
 		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
+			return fmt.Errorf("%s: %w", skill.Name, err)
 		}
-		references, err := referenceFiles(root)
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
-		if _, err := fmt.Fprintf(output, "%s — %s\n", name, description); err != nil {
+		if _, err := fmt.Fprintf(output, "%s — %s\n", skill.Name, skill.Description); err != nil {
 			return err
 		}
 		if len(references) > 0 {
@@ -215,15 +479,28 @@ func (m *manager) openSkill(project, skill string) (*os.Root, error) {
 	if !selected[skill] {
 		return nil, fmt.Errorf("skill %q is not enabled", skill)
 	}
-	rootPath, err := filepath.EvalSymlinks(filepath.Join(m.paths.library, skill))
+	discovered, err := m.findSkill(project, skill)
 	if err != nil {
-		return nil, fmt.Errorf("resolve skill %q: %w", skill, err)
+		return nil, err
 	}
-	root, err := os.OpenRoot(rootPath)
+	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
 		return nil, fmt.Errorf("open skill %q: %w", skill, err)
 	}
 	return root, nil
+}
+
+func (m *manager) findSkill(project, name string) (discoveredSkill, error) {
+	skills, err := m.skills(project)
+	if err != nil {
+		return discoveredSkill{}, err
+	}
+	for _, skill := range skills {
+		if skill.Name == name {
+			return skill, nil
+		}
+	}
+	return discoveredSkill{}, fmt.Errorf("skill %q was not discovered", name)
 }
 
 func splitTarget(target string) (skill, relative string, err error) {
@@ -275,64 +552,6 @@ func writeLineRange(output io.Writer, input io.Reader, start, end int) error {
 			return nil
 		}
 	}
-}
-
-func skillDescription(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read metadata: %w", err)
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return "", fmt.Errorf("missing front matter")
-	}
-	for index := 1; index < len(lines); index++ {
-		line := lines[index]
-		if strings.TrimSpace(line) == "---" {
-			break
-		}
-		key, value, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(key) != "description" {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		if strings.HasPrefix(value, ">") || strings.HasPrefix(value, "|") {
-			var parts []string
-			for index++; index < len(lines); index++ {
-				if strings.TrimSpace(lines[index]) == "---" || len(lines[index]) == 0 || lines[index][0] != ' ' && lines[index][0] != '\t' {
-					index--
-					break
-				}
-				if part := strings.TrimSpace(lines[index]); part != "" {
-					parts = append(parts, part)
-				}
-			}
-			value = strings.Join(parts, " ")
-		} else {
-			value, err = yamlScalar(value)
-			if err != nil {
-				return "", fmt.Errorf("decode description: %w", err)
-			}
-		}
-		if value == "" {
-			return "", fmt.Errorf("empty description")
-		}
-		return value, nil
-	}
-	return "", fmt.Errorf("missing description")
-}
-
-func yamlScalar(value string) (string, error) {
-	if strings.HasPrefix(value, `"`) {
-		return strconv.Unquote(value)
-	}
-	if strings.HasPrefix(value, "'") {
-		if len(value) < 2 || !strings.HasSuffix(value, "'") {
-			return "", fmt.Errorf("unterminated single-quoted value")
-		}
-		return strings.ReplaceAll(value[1:len(value)-1], "''", "'"), nil
-	}
-	return value, nil
 }
 
 func referenceFiles(skillRoot string) ([]string, error) {

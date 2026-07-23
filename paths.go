@@ -7,8 +7,9 @@ import (
 )
 
 type paths struct {
-	library string
-	source  string
+	userSkills  string
+	codexHome   string
+	adminSkills string
 }
 
 func defaultPaths() (paths, error) {
@@ -16,12 +17,13 @@ func defaultPaths() (paths, error) {
 	if err != nil {
 		return paths{}, fmt.Errorf("find home directory: %w", err)
 	}
-	data := os.Getenv("XDG_DATA_HOME")
-	if data == "" {
-		data = filepath.Join(home, ".local", "share")
+	codexHome := os.Getenv("CODEX_HOME")
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
 	}
 	return paths{
-		library: filepath.Join(data, "skill-mgr", "skills"),
-		source:  filepath.Join(home, ".agents", "skills"),
+		userSkills:  filepath.Join(home, ".agents", "skills"),
+		codexHome:   codexHome,
+		adminSkills: "/etc/codex/skills",
 	}, nil
 }

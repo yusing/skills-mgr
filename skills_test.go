@@ -15,7 +15,7 @@ import (
 func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	skill := filepath.Join(manager.paths.library, "alpha", "SKILL.md")
+	skill := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, skill, skillFile("alpha", "Alpha description.", "body"))
 
 	enabled, err := manager.toggle(project, "alpha")
@@ -75,17 +75,17 @@ func TestLockSchemaMatchesWriterConstants(t *testing.T) {
 func TestListEnabledSkillsWithReferenceTree(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "SKILL.md"), `---
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), `---
 name: alpha
 description: >
   Alpha does one thing.
   It also does another.
 ---
 `)
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "references", "overview.md"), "overview")
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "references", "nested", "details.md"), "details")
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "references", "ignore.txt"), "ignored")
-	writeFile(t, filepath.Join(manager.paths.library, "beta", "SKILL.md"), skillFile("beta", "Disabled.", ""))
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "ignore.txt"), "ignored")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "beta", "SKILL.md"), skillFile("beta", "Disabled.", ""))
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ description: >
 func TestListRejectsMissingEnabledSkillBeforeWriting(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	if err := saveLock(project, lock{Skills: map[string]bool{
 		"alpha":   true,
 		"missing": true,
@@ -132,8 +132,8 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	skill := skillFile("alpha", `"Quoted description."`, "first\nsecond\nthird\nfourth\n")
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "SKILL.md"), skill)
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "references", "guide.md"), "one\ntwo\nthree\nfour\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skill)
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "guide.md"), "one\ntwo\nthree\nfour\n")
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	writeFile(t, filepath.Join(manager.paths.library, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 
 	var output bytes.Buffer
 	if err := manager.get(project, "alpha", "", &output); err == nil {
@@ -173,7 +173,7 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 
 	outside := filepath.Join(t.TempDir(), "outside.md")
 	writeFile(t, outside, "outside")
-	if err := os.Symlink(outside, filepath.Join(manager.paths.library, "alpha", "escape.md")); err != nil {
+	if err := os.Symlink(outside, filepath.Join(manager.paths.userSkills, "alpha", "escape.md")); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.get(project, "alpha/escape.md", "", &output); err == nil {
@@ -184,7 +184,7 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 func TestRunSkillScripts(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	root := filepath.Join(manager.paths.library, "alpha")
+	root := filepath.Join(manager.paths.userSkills, "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	interpreter := filepath.Join(t.TempDir(), "interpreter")
 	writeExecutable(t, interpreter, "#!/bin/sh\nprintf 'shebang|%s|%s' \"$PWD\" \"$2\"")
@@ -224,7 +224,7 @@ func TestRunSkillScripts(t *testing.T) {
 func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
 	primary := newTestManager(t)
 	project := t.TempDir()
-	root := filepath.Join(primary.paths.library, "alpha")
+	root := filepath.Join(primary.paths.userSkills, "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	for _, extension := range []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"} {
 		writeFile(t, filepath.Join(root, "script"+extension), "")
@@ -272,7 +272,7 @@ func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
 func TestRunJavaScriptRejectsMissingRuntimeAndUnrelatedNames(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	root := filepath.Join(manager.paths.library, "alpha")
+	root := filepath.Join(manager.paths.userSkills, "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeFile(t, filepath.Join(root, "script.js"), "")
 	if _, err := manager.toggle(project, "alpha"); err != nil {
@@ -290,10 +290,11 @@ func TestRunJavaScriptRejectsMissingRuntimeAndUnrelatedNames(t *testing.T) {
 
 func TestRunCommandInvokesSkillScript(t *testing.T) {
 	project := t.TempDir()
-	data := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", data)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
 	t.Chdir(project)
-	root := filepath.Join(data, "skill-mgr", "skills", "alpha")
+	root := filepath.Join(home, ".agents", "skills", "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeExecutable(t, filepath.Join(root, "scripts", "record.sh"), "#!/bin/sh\nprintf '%s' \"$1\" > result")
 	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
@@ -316,7 +317,7 @@ func TestRunCommandInvokesSkillScript(t *testing.T) {
 func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	root := filepath.Join(manager.paths.library, "alpha")
+	root := filepath.Join(manager.paths.userSkills, "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeFile(t, filepath.Join(root, "script.sh"), "exit 0")
 

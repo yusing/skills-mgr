@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,9 +33,13 @@ type editDone struct {
 }
 
 func newModel(manager *manager, project string) (model, error) {
-	skills, err := manager.skills()
+	discovered, err := manager.skills(project)
 	if err != nil {
 		return model{}, err
+	}
+	skills := make([]string, 0, len(discovered))
+	for _, skill := range discovered {
+		skills = append(skills, skill.Name)
 	}
 	selected, err := manager.selection(project)
 	if err != nil {
@@ -142,7 +145,14 @@ func (m model) editor(skill string) (*exec.Cmd, error) {
 	if err != nil || len(parts) == 0 {
 		return nil, fmt.Errorf("$EDITOR is not set or invalid")
 	}
-	file := filepath.Join(m.manager.paths.library, skill, "SKILL.md")
+	discovered, err := m.manager.findSkill(m.project, skill)
+	if err != nil {
+		return nil, err
+	}
+	if !discovered.Editable {
+		return nil, fmt.Errorf("skill %q is not editable at its discovered source", skill)
+	}
+	file := discovered.Path
 	if info, err := os.Stat(file); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("missing %s", file)
 	}

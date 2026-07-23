@@ -4,20 +4,22 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestEditorTargetsCanonicalSkill(t *testing.T) {
 	manager := newTestManager(t)
-	skill := filepath.Join(manager.paths.library, "alpha", "SKILL.md")
-	writeFile(t, skill, "before")
+	project := t.TempDir()
+	skill := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, skill, skillFile("alpha", "Alpha.", "before"))
 	editor := filepath.Join(t.TempDir(), "editor")
 	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf edited > \"$2\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("EDITOR", editor+" --flag")
 
-	command, err := (model{manager: manager}).editor("alpha")
+	command, err := (model{manager: manager, project: project}).editor("alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,5 +49,17 @@ func TestToggleErrorPreservesSelection(t *testing.T) {
 	}
 	if got.status != "error: write failed" {
 		t.Fatalf("status = %q", got.status)
+	}
+}
+
+func TestEditorRejectsNonEditableSkillSource(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin"), "admin")
+	t.Setenv("EDITOR", "editor")
+
+	_, err := (model{manager: manager, project: project}).editor("admin")
+	if err == nil || !strings.Contains(err.Error(), "not editable") {
+		t.Fatalf("error = %v, want non-editable source error", err)
 	}
 }

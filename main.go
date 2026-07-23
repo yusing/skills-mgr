@@ -76,13 +76,6 @@ func run(args []string) error {
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
 		return command.Run()
-	case len(args) == 1 && args[0] == "migrate":
-		count, err := manager.migrate()
-		if err != nil {
-			return err
-		}
-		fmt.Printf("Managed %d skills in %s\n", count, paths.library)
-		return nil
 	case len(args) == 1 && args[0] == "daemon":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
