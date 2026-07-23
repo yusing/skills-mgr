@@ -29,8 +29,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	remote := newRemoteRegistry(paths.remoteRegistry)
 	skillsMP := newSkillsMPRegistry(paths.skillsMP, os.Getenv("SKILLSMP_API_KEY"))
-	manager := &manager{paths: paths, skillsMP: skillsMP}
+	manager := &manager{paths: paths, remote: remote, skillsMP: skillsMP}
 
 	switch {
 	case len(args) == 0:
@@ -80,7 +81,7 @@ func run(args []string) error {
 	case len(args) == 1 && args[0] == "daemon":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runDaemon(ctx, newRemoteRegistry(paths.remoteRegistry), os.Stderr)
+		return runDaemon(ctx, remote, os.Stderr)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

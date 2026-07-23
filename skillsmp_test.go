@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,7 +93,8 @@ func TestSkillsMPSearchUsesAPIAndProvidedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skills) != 1 || skills[0].Name != "testing" || skills[0].Author != "gopher" {
+	if len(skills) != 1 || skills[0].Name != "testing" ||
+		skills[0].Label != "gopher • 99 stars" {
 		t.Fatalf("skills = %#v", skills)
 	}
 	cached, err := registry.search(t.Context(), "  GO   TESTING ")
@@ -125,5 +128,37 @@ func TestSkillsMPSearchUsesAPIAndProvidedKey(t *testing.T) {
 	}
 	if requests != 2 {
 		t.Fatalf("expired cache made %d requests, want 2", requests)
+	}
+}
+
+func TestSkillsMPSearchPreservesResultsWhenCacheWriteFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"data": map[string]any{
+				"skills": []map[string]any{{
+					"id": "result-id", "name": "result", "author": "owner", "stars": 3,
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	blockedDirectory := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockedDirectory, []byte("block"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := newSkillsMPRegistry(
+		filepath.Join(blockedDirectory, "skillsmp.json"),
+		"",
+	)
+	registry.baseURL = server.URL
+	registry.client = server.Client()
+
+	skills, err := registry.search(t.Context(), "result")
+	if err == nil || !strings.Contains(err.Error(), "create SkillsMP cache directory") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(skills) != 1 || skills[0].ID != "result-id" {
+		t.Fatalf("cache error discarded fetched skills: %#v", skills)
 	}
 }

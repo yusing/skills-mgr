@@ -193,8 +193,16 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	if err := manager.get(project, "alpha", "", &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != skill {
-		t.Fatalf("skill output = %q, want %q", output.String(), skill)
+	if output.String() != "first\nsecond\nthird\nfourth\n" {
+		t.Fatalf("skill Markdown output = %q", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "alpha/SKILL.md", "2:3", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "second\nthird\n" {
+		t.Fatalf("skill Markdown range output = %q", output.String())
 	}
 
 	output.Reset()
@@ -203,6 +211,62 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 	if output.String() != "two\nthree\n" {
 		t.Fatalf("range output = %q", output.String())
+	}
+}
+
+func TestGetSkillStripsUnknownFrontmatterWithoutStrippingReferences(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"),
+		"---\nname: alpha\ndescription: Alpha.\nfuture-key: future-value\n---\n# Body\n\nText.\n",
+	)
+	reference := "---\ntitle: Reference metadata\n---\n# Reference\n"
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "references", "SKILL.md"),
+		reference,
+	)
+	if _, err := manager.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.get(project, "alpha", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "# Body\n\nText.\n" {
+		t.Fatalf("future frontmatter output = %q", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "alpha/references/SKILL.md", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != reference {
+		t.Fatalf("unrelated reference frontmatter was stripped: %q", output.String())
+	}
+}
+
+func TestGetMalformedSkillWritesNoOutput(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "malformed", "SKILL.md"),
+		"---\nname: malformed\ndescription: Missing closing delimiter.\n",
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{"malformed": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.get(project, "malformed", "", &output); err == nil {
+		t.Fatal("get accepted malformed skill frontmatter")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("get wrote malformed skill output: %q", output.String())
 	}
 }
 

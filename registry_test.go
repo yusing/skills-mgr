@@ -98,6 +98,36 @@ func TestRemoteRegistryPreservesCacheWhenRefreshFails(t *testing.T) {
 	}
 }
 
+func TestRemoteRegistrySearchNormalizesAndValidatesResults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("q") != "go testing" {
+			t.Errorf("query = %q", request.URL.Query().Get("q"))
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"skills": []map[string]any{
+				{
+					"id": "owner/repo/testing", "name": "Testing",
+					"source": "owner/repo", "installs": 9,
+				},
+				{"id": "owner/repo/testing", "name": "collision"},
+				{"id": "", "name": "missing identifier"},
+				{"id": "owner/repo/missing-name", "name": ""},
+			},
+		})
+	}))
+	defer server.Close()
+	registry := &remoteRegistry{baseURL: server.URL, client: server.Client()}
+
+	skills, err := registry.search(t.Context(), "  GO   TESTING ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].ID != "owner/repo/testing" ||
+		skills[0].Label != "owner/repo • 9 installs" {
+		t.Fatalf("skills = %#v", skills)
+	}
+}
+
 func TestDaemonRefreshFailureIsReportedWithoutReturning(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		http.Error(response, `{"error":"unavailable","message":"try later"}`, http.StatusServiceUnavailable)

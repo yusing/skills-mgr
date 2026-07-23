@@ -210,16 +210,18 @@ func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
 		current.status != "searching SkillsMP" {
 		t.Fatalf("search did not start: %#v", current)
 	}
-	updated, staleSearch := current.Update(skillsMPSearchRequested{
-		request: current.skillsMPRequest,
+	updated, staleSearch := current.Update(registrySearchRequested{
+		request: current.registryRequest,
+		tab:     skillsMPTab,
 		query:   "b",
 	})
 	current = updated.(model)
 	if staleSearch != nil {
 		t.Fatal("stale debounced query started an API request")
 	}
-	updated, search := current.Update(skillsMPSearchRequested{
-		request: current.skillsMPRequest,
+	updated, search := current.Update(registrySearchRequested{
+		request: current.registryRequest,
+		tab:     skillsMPTab,
 		query:   "beta",
 	})
 	current = updated.(model)
@@ -232,6 +234,51 @@ func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
 	if current.itemCount() != 1 || !strings.Contains(view, "beta") ||
 		!strings.Contains(view, "remote • 7 stars") {
 		t.Fatalf("search result was not rendered:\n%s", view)
+	}
+}
+
+func TestRegistrySearchWarningRetainsResults(t *testing.T) {
+	current := model{
+		tab:             skillsMPTab,
+		filterQuery:     "result",
+		registryRequest: 4,
+		width:           60,
+		height:          10,
+	}
+	updated, _ := current.Update(registrySearchDone{
+		request: 4,
+		tab:     skillsMPTab,
+		query:   "result",
+		skills: []registrySearchSkill{{
+			ID: "result-id", Name: "result", Label: "owner • 3 stars",
+		}},
+		err: errors.New("cache write failed"),
+	})
+	got := updated.(model)
+	if len(got.registrySkills) != 1 ||
+		got.status != "warning: cache write failed" ||
+		!strings.Contains(got.View(), "result") {
+		t.Fatalf("partial result warning = %#v\n%s", got, got.View())
+	}
+}
+
+func TestRegistryTabSwitchClearsPreviousProviderResults(t *testing.T) {
+	current := model{
+		tab:         remoteTab,
+		filterQuery: "active query",
+		registrySkills: []registrySearchSkill{{
+			ID: "skills-sh-result", Name: "skills.sh result",
+		}},
+		width:  60,
+		height: 10,
+	}
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got := updated.(model)
+	if command == nil || got.tab != skillsMPTab ||
+		len(got.registrySkills) != 0 ||
+		got.status != "searching SkillsMP" ||
+		strings.Contains(got.View(), "skills.sh result") {
+		t.Fatalf("tab switch retained previous provider state: %#v\n%s", got, got.View())
 	}
 }
 
@@ -444,24 +491,74 @@ func TestFilterInputActivatesByMouseAndCanBeCleared(t *testing.T) {
 	}
 }
 
-func TestFilterAppliesToRemoteSkills(t *testing.T) {
+func TestSkillsShFilterUsesSharedRequestSearch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Path != "/api/search" ||
+			request.URL.Query().Get("q") != "beta testing" {
+			t.Errorf("request URL = %s", request.URL.String())
+		}
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"skills": []map[string]any{{
+				"id": "owner/repo/beta", "name": "beta",
+				"source": "owner/repo", "installs": 17,
+			}},
+		})
+	}))
+	defer server.Close()
+	manager := newTestManager(t)
+	manager.remote = newRemoteRegistry("")
+	manager.remote.baseURL = server.URL
+	manager.remote.client = server.Client()
 	current := model{
-		tab: remoteTab,
+		manager: manager,
+		tab:     remoteTab,
 		remoteTopics: []remoteTopic{{
 			Slug: "testing", Name: "Testing",
-			Skills: []remoteSkill{
-				{ID: "owner/repo/alpha", Name: "alpha"},
-				{ID: "owner/repo/beta", Name: "beta"},
-			},
+			Skills: []remoteSkill{{ID: "owner/repo/unrelated", Name: "beta testing collision"}},
 		}},
-		filterQuery: "beta",
-		width:       60,
-		height:      10,
+		filtering: true,
+		width:     60,
+		height:    10,
 	}
+
+	updated, debounce := current.Update(tea.KeyMsg{
+		Type: tea.KeyRunes, Runes: []rune("  BETA   TESTING "),
+	})
+	current = updated.(model)
+	if debounce == nil || current.itemCount() != 0 ||
+		current.status != "searching skills.sh" {
+		t.Fatalf("search did not debounce: %#v", current)
+	}
+	updated, search := current.Update(registrySearchRequested{
+		request: current.registryRequest,
+		tab:     remoteTab,
+		query:   "beta testing",
+	})
+	current = updated.(model)
+	if search == nil {
+		t.Fatal("settled skills.sh query did not start a request")
+	}
+	updated, _ = current.Update(search())
+	current = updated.(model)
 	view := current.View()
-	if current.itemCount() != 2 || strings.Contains(view, "alpha") ||
-		!strings.Contains(view, "Testing (1)") || !strings.Contains(view, "beta") {
-		t.Fatalf("remote filter did not retain only the matching skill:\n%s", view)
+	if requests != 1 || current.itemCount() != 1 ||
+		!strings.Contains(view, "beta") ||
+		!strings.Contains(view, "owner/repo • 17 installs") ||
+		strings.Contains(view, "collision") {
+		t.Fatalf("request search result was not rendered exclusively:\n%s", view)
+	}
+
+	updated, command := current.Update(registrySearchDone{
+		request: current.registryRequest,
+		tab:     skillsMPTab,
+		query:   "beta testing",
+		skills:  []registrySearchSkill{{ID: "collision", Name: "wrong provider"}},
+	})
+	got := updated.(model)
+	if command != nil || got.registrySkills[0].ID != "owner/repo/beta" {
+		t.Fatalf("unrelated provider result replaced skills.sh search: %#v", got)
 	}
 }
 

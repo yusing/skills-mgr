@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
@@ -88,9 +87,32 @@ func (r *skillsMPRegistry) catalog(ctx context.Context) ([]skillsMPSkill, error)
 	return skills, nil
 }
 
-func (r *skillsMPRegistry) search(ctx context.Context, query string) ([]skillsMPSkill, error) {
+func (r *skillsMPRegistry) search(
+	ctx context.Context,
+	query string,
+) ([]registrySearchSkill, error) {
+	skills, err := r.searchSkills(ctx, query)
+	return presentSkillsMP(skills), err
+}
+
+func presentSkillsMP(skills []skillsMPSkill) []registrySearchSkill {
+	results := make([]registrySearchSkill, len(skills))
+	for index, skill := range skills {
+		results[index] = registrySearchSkill{
+			ID:    skill.ID,
+			Name:  skill.Name,
+			Label: fmt.Sprintf("%s • %d stars", skill.Author, skill.Stars),
+		}
+	}
+	return results
+}
+
+func (r *skillsMPRegistry) searchSkills(
+	ctx context.Context,
+	query string,
+) ([]skillsMPSkill, error) {
 	r.mu.Lock()
-	query = normalizedSkillsMPQuery(query)
+	query = normalizedRegistryQuery(query)
 	cache, err := loadSkillsMPCache(r.searchCachePath)
 	if err == nil {
 		removeExpiredSkillsMPSearches(cache.Searches, time.Now())
@@ -136,10 +158,6 @@ func (r *skillsMPRegistry) search(ctx context.Context, query string) ([]skillsMP
 	return skills, nil
 }
 
-func normalizedSkillsMPQuery(query string) string {
-	return strings.ToLower(strings.Join(strings.Fields(query), " "))
-}
-
 func trimSkillsMPSearches(searches map[string]skillsMPSearchResult) {
 	for len(searches) > skillsMPMaxSearches {
 		var oldestQuery string
@@ -172,54 +190,18 @@ func (r *skillsMPRegistry) fetch(
 	nested bool,
 ) ([]skillsMPSkill, error) {
 	endpoint := r.baseURL + path + "?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept", "application/json")
+	authorization := ""
 	if r.apiKey != "" {
-		request.Header.Set("Authorization", "Bearer "+r.apiKey)
+		authorization = "Bearer " + r.apiKey
 	}
-	response, err := r.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(response.Body, remoteResponseLimit+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > remoteResponseLimit {
-		return nil, fmt.Errorf("response exceeds %d bytes", remoteResponseLimit)
-	}
-	if response.StatusCode != http.StatusOK {
-		var apiError struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(body, &apiError) == nil {
-			message := apiError.Error.Message
-			if message == "" {
-				message = apiError.Message
-			}
-			if message != "" {
-				return nil, fmt.Errorf("%s: %s", response.Status, message)
-			}
-		}
-		return nil, fmt.Errorf("unexpected HTTP status %s", response.Status)
-	}
-
 	var result struct {
 		Skills []skillsMPSkill `json:"skills"`
 		Data   struct {
 			Skills []skillsMPSkill `json:"skills"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := fetchRegistryJSON(ctx, r.client, endpoint, authorization, &result); err != nil {
+		return nil, err
 	}
 	skills := result.Skills
 	if nested {

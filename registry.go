@@ -78,7 +78,7 @@ func (r *remoteRegistry) refresh(ctx context.Context) error {
 		Topics:         make([]remoteTopic, 0, len(skillsRegistryTopics)),
 	}
 	for _, spec := range skillsRegistryTopics {
-		skills, err := r.search(ctx, spec.Query)
+		skills, err := r.fetch(ctx, spec.Query)
 		if err != nil {
 			return fmt.Errorf("refresh %s topic: %w", spec.Name, err)
 		}
@@ -89,41 +89,32 @@ func (r *remoteRegistry) refresh(ctx context.Context) error {
 	return saveRemoteCache(r.cachePath, cache)
 }
 
-func (r *remoteRegistry) search(ctx context.Context, query string) ([]remoteSkill, error) {
-	endpoint := r.baseURL + "/api/search?q=" + url.QueryEscape(query) + "&limit=200"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+func (r *remoteRegistry) search(
+	ctx context.Context,
+	query string,
+) ([]registrySearchSkill, error) {
+	skills, err := r.fetch(ctx, normalizedRegistryQuery(query))
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Accept", "application/json")
-	response, err := r.client.Do(request)
-	if err != nil {
-		return nil, err
+	results := make([]registrySearchSkill, len(skills))
+	for index, skill := range skills {
+		results[index] = registrySearchSkill{
+			ID:    skill.ID,
+			Name:  skill.Name,
+			Label: fmt.Sprintf("%s • %d installs", skill.Source, skill.Installs),
+		}
 	}
-	defer response.Body.Close()
+	return results, nil
+}
 
-	body, err := io.ReadAll(io.LimitReader(response.Body, remoteResponseLimit+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(body) > remoteResponseLimit {
-		return nil, fmt.Errorf("response exceeds %d bytes", remoteResponseLimit)
-	}
-	if response.StatusCode != http.StatusOK {
-		var apiError struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}
-		if json.Unmarshal(body, &apiError) == nil && apiError.Message != "" {
-			return nil, fmt.Errorf("%s: %s", response.Status, apiError.Message)
-		}
-		return nil, fmt.Errorf("unexpected HTTP status %s", response.Status)
-	}
+func (r *remoteRegistry) fetch(ctx context.Context, query string) ([]remoteSkill, error) {
+	endpoint := r.baseURL + "/api/search?q=" + url.QueryEscape(query) + "&limit=200"
 	var result struct {
 		Skills []remoteSkill `json:"skills"`
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
+	if err := fetchRegistryJSON(ctx, r.client, endpoint, "", &result); err != nil {
+		return nil, err
 	}
 	seen := make(map[string]struct{}, len(result.Skills))
 	skills := result.Skills[:0]

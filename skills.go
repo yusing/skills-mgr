@@ -29,6 +29,7 @@ const (
 
 type manager struct {
 	paths                paths
+	remote               *remoteRegistry
 	skillsMP             *skillsMPRegistry
 	runtimeOnce          sync.Once
 	javascriptRuntime    string
@@ -205,7 +206,7 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 		return discoveredSkill{}, false, err
 	}
 	defer file.Close()
-	frontmatter, ok, err := readFrontmatter(file)
+	frontmatter, _, ok, err := readFrontmatter(file)
 	if err != nil {
 		return discoveredSkill{}, false, err
 	}
@@ -230,32 +231,32 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 	}, true, nil
 }
 
-func readFrontmatter(input io.Reader) (string, bool, error) {
+func readFrontmatter(input io.Reader) (string, io.Reader, bool, error) {
 	reader := bufio.NewReader(input)
 	line, err := reader.ReadString('\n')
 	if err != nil {
-		return "", false, nil
+		return "", nil, false, nil
 	}
 	size := len(line)
 	if frontmatterLine(strings.TrimPrefix(line, "\uFEFF")) != "---" {
-		return "", false, nil
+		return "", nil, false, nil
 	}
 	var metadata []string
 	for {
 		line, err = reader.ReadString('\n')
 		size += len(line)
 		if size > maxFrontmatterBytes {
-			return "", false, nil
+			return "", nil, false, nil
 		}
 		normalized := frontmatterLine(line)
 		if normalized == "---" {
-			return strings.Join(metadata, "\n"), true, nil
+			return strings.Join(metadata, "\n"), reader, true, nil
 		}
 		if errors.Is(err, io.EOF) {
-			return "", false, nil
+			return "", nil, false, nil
 		}
 		if err != nil {
-			return "", false, err
+			return "", nil, false, err
 		}
 		metadata = append(metadata, normalized)
 	}
@@ -399,15 +400,29 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", target)
 	}
+	var start, end int
+	if lineRange != "" {
+		start, end, err = parseLineRange(lineRange)
+		if err != nil {
+			return err
+		}
+	}
+	var input io.Reader = file
+	if filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md" {
+		_, body, ok, err := readFrontmatter(file)
+		if err != nil {
+			return fmt.Errorf("read %s frontmatter: %w", target, err)
+		}
+		if !ok {
+			return fmt.Errorf("%s has invalid frontmatter", target)
+		}
+		input = body
+	}
 	if lineRange == "" {
-		_, err := io.Copy(output, file)
+		_, err := io.Copy(output, input)
 		return err
 	}
-	start, end, err := parseLineRange(lineRange)
-	if err != nil {
-		return err
-	}
-	return writeLineRange(output, file, start, end)
+	return writeLineRange(output, input, start, end)
 }
 
 func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {

@@ -23,10 +23,10 @@ type model struct {
 	remoteTopics    []remoteTopic
 	remoteCollapsed map[string]bool
 	remoteError     string
-	skillsMPSkills  []skillsMPSkill
-	skillsMPError   string
-	skillsMPCancel  context.CancelFunc
-	skillsMPRequest uint64
+	registrySkills  []registrySearchSkill
+	registryError   string
+	registryCancel  context.CancelFunc
+	registryRequest uint64
 	tab             int
 	cursor          int
 	offset          int
@@ -46,7 +46,7 @@ const (
 	localTab         = 0
 	remoteTab        = 1
 	skillsMPTab      = 2
-	skillsMPDebounce = 300 * time.Millisecond
+	registryDebounce = 300 * time.Millisecond
 )
 
 var (
@@ -80,22 +80,18 @@ type editDone struct {
 	refreshErr error
 }
 
-type skillsMPSearchDone struct {
+type registrySearchDone struct {
 	request uint64
+	tab     int
 	query   string
-	skills  []skillsMPSkill
+	skills  []registrySearchSkill
 	err     error
 }
 
-type skillsMPSearchRequested struct {
+type registrySearchRequested struct {
 	request uint64
+	tab     int
 	query   string
-}
-
-type skillsMPCatalogDone struct {
-	request uint64
-	skills  []skillsMPSkill
-	err     error
 }
 
 func newModel(manager *manager, project string) (model, error) {
@@ -159,16 +155,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport()
 		m.status = "saved " + message.skill
-	case skillsMPSearchDone:
-		if message.request != m.skillsMPRequest ||
-			message.query != normalizedSkillsMPQuery(m.filterQuery) ||
-			m.tab != skillsMPTab {
+	case registrySearchDone:
+		if message.request != m.registryRequest ||
+			message.query != normalizedRegistryQuery(m.filterQuery) ||
+			message.tab != m.tab {
 			break
 		}
-		m.skillsMPCancel = nil
+		m.registryCancel = nil
 		if message.err != nil {
-			m.skillsMPSkills = message.skills
-			m.skillsMPError = message.err.Error()
+			m.registrySkills = message.skills
+			m.registryError = message.err.Error()
 			if len(message.skills) == 0 {
 				m.status = "error: " + message.err.Error()
 			} else {
@@ -176,37 +172,17 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
-		m.skillsMPSkills = message.skills
-		m.skillsMPError = ""
-		m.status = fmt.Sprintf("%d SkillsMP skills", len(message.skills))
+		m.registrySkills = message.skills
+		m.registryError = ""
+		m.status = fmt.Sprintf("%d %s skills", len(message.skills), registryName(message.tab))
 		m.syncViewport()
-	case skillsMPSearchRequested:
-		if message.request != m.skillsMPRequest ||
-			message.query != normalizedSkillsMPQuery(m.filterQuery) ||
-			m.tab != skillsMPTab {
+	case registrySearchRequested:
+		if message.request != m.registryRequest ||
+			message.query != normalizedRegistryQuery(m.filterQuery) ||
+			message.tab != m.tab {
 			break
 		}
-		return m, m.startSkillsMPSearch(message.query)
-	case skillsMPCatalogDone:
-		if message.request != m.skillsMPRequest ||
-			m.tab != skillsMPTab ||
-			normalizedSkillsMPQuery(m.filterQuery) != "" {
-			break
-		}
-		m.skillsMPCancel = nil
-		m.skillsMPSkills = message.skills
-		if message.err != nil {
-			m.skillsMPError = message.err.Error()
-			if len(message.skills) == 0 {
-				m.status = "error: " + message.err.Error()
-			} else {
-				m.status = "warning: " + message.err.Error()
-			}
-			break
-		}
-		m.skillsMPError = ""
-		m.status = fmt.Sprintf("%d SkillsMP skills", len(message.skills))
-		m.syncViewport()
+		return m, m.startRegistrySearch(message.tab, message.query)
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
@@ -247,7 +223,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.filtering {
 			switch message.String() {
 			case "ctrl+c":
-				m.cancelSkillsMPRequest()
+				m.cancelRegistryRequest()
 				return m, tea.Quit
 			case "enter", "esc":
 				m.filtering = false
@@ -266,7 +242,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch message.String() {
 		case "q", "ctrl+c":
-			m.cancelSkillsMPRequest()
+			m.cancelRegistryRequest()
 			return m, tea.Quit
 		case "f":
 			m.startFiltering()
@@ -344,36 +320,37 @@ func (m *model) selectTab(tab int) tea.Cmd {
 	if tab < localTab || tab > skillsMPTab || m.tab == tab {
 		return nil
 	}
-	m.cancelSkillsMPRequest()
+	m.cancelRegistryRequest()
 	m.tab = tab
 	m.cursor = 0
 	m.offset = 0
 	switch tab {
 	case remoteTab:
+		if normalizedRegistryQuery(m.filterQuery) != "" {
+			m.registrySkills = nil
+			m.registryError = ""
+			m.status = "searching skills.sh"
+			m.syncViewport()
+			return m.debounceRegistrySearch()
+		}
+		m.registrySkills = nil
+		m.registryError = ""
 		if m.manager != nil {
 			m.reloadRemoteCache()
 		}
-		count := 0
-		for _, topic := range m.remoteTopics {
-			count += len(topic.Skills)
-		}
-		if m.remoteError != "" {
-			m.status = "error: " + m.remoteError
-		} else if len(m.remoteTopics) == 0 {
-			m.status = "remote cache is empty; run skills-mgr daemon"
-		} else {
-			m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
-		}
+		m.setRemoteStatus()
 	case skillsMPTab:
-		if normalizedSkillsMPQuery(m.filterQuery) != "" {
+		if normalizedRegistryQuery(m.filterQuery) != "" {
+			m.registrySkills = nil
+			m.registryError = ""
 			m.status = "searching SkillsMP"
 			m.syncViewport()
-			return m.debounceSkillsMPSearch()
+			return m.debounceRegistrySearch()
 		}
 		cache := m.reloadSkillsMPCache()
-		if m.skillsMPError == "" && len(cache.Skills) > 0 &&
+		if m.registryError == "" && len(cache.Skills) > 0 &&
 			time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
-			m.status = fmt.Sprintf("%d SkillsMP skills", len(m.skillsMPSkills))
+			m.status = fmt.Sprintf("%d SkillsMP skills", len(m.registrySkills))
 			break
 		}
 		m.status = "loading SkillsMP"
@@ -391,25 +368,35 @@ func (m *model) startFiltering() {
 }
 
 func (m *model) filterChanged() tea.Cmd {
-	m.cancelSkillsMPRequest()
+	m.cancelRegistryRequest()
 	m.cursor = 0
 	m.offset = 0
 	m.expanded = ""
-	if m.tab == skillsMPTab {
-		if normalizedSkillsMPQuery(m.filterQuery) == "" {
+	if m.tab == remoteTab || m.tab == skillsMPTab {
+		if normalizedRegistryQuery(m.filterQuery) == "" {
+			m.registrySkills = nil
+			m.registryError = ""
+			if m.tab == remoteTab {
+				if m.manager != nil {
+					m.reloadRemoteCache()
+				}
+				m.setRemoteStatus()
+				m.syncViewport()
+				return nil
+			}
 			cache := m.reloadSkillsMPCache()
-			if m.skillsMPError == "" && len(cache.Skills) > 0 &&
+			if m.registryError == "" && len(cache.Skills) > 0 &&
 				time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
-				m.status = fmt.Sprintf("%d SkillsMP skills", len(m.skillsMPSkills))
+				m.status = fmt.Sprintf("%d SkillsMP skills", len(m.registrySkills))
 				return nil
 			}
 			m.status = "loading SkillsMP"
 			return m.startSkillsMPCatalog()
 		}
-		m.skillsMPSkills = nil
-		m.skillsMPError = ""
-		m.status = "searching SkillsMP"
-		return m.debounceSkillsMPSearch()
+		m.registrySkills = nil
+		m.registryError = ""
+		m.status = "searching " + registryName(m.tab)
+		return m.debounceRegistrySearch()
 	}
 	m.syncViewport()
 	return nil
@@ -426,80 +413,125 @@ func (m *model) reloadRemoteCache() {
 	m.remoteError = ""
 }
 
+func (m *model) setRemoteStatus() {
+	count := 0
+	for _, topic := range m.remoteTopics {
+		count += len(topic.Skills)
+	}
+	if m.remoteError != "" {
+		m.status = "error: " + m.remoteError
+	} else if len(m.remoteTopics) == 0 {
+		m.status = "remote cache is empty; run skills-mgr daemon"
+	} else {
+		m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
+	}
+}
+
 func (m *model) reloadSkillsMPCache() skillsMPCache {
 	if m.manager == nil {
 		return skillsMPCache{}
 	}
 	cache, err := loadSkillsMPCache(m.manager.paths.skillsMP)
 	if err != nil {
-		m.skillsMPSkills = nil
-		m.skillsMPError = err.Error()
+		m.registrySkills = nil
+		m.registryError = err.Error()
 		return skillsMPCache{}
 	}
-	m.skillsMPSkills = cache.Skills
-	m.skillsMPError = ""
+	m.registrySkills = presentSkillsMP(cache.Skills)
+	m.registryError = ""
 	return cache
 }
 
-func (m *model) startSkillsMPSearch(query string) tea.Cmd {
-	m.cancelSkillsMPRequest()
-	request := m.skillsMPRequest
+func (m *model) startRegistrySearch(tab int, query string) tea.Cmd {
+	request := m.registryRequest
 	ctx, cancel := context.WithCancel(context.Background())
-	m.skillsMPCancel = cancel
+	m.registryCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
-		if m.manager == nil || m.manager.skillsMP == nil {
-			return skillsMPSearchDone{
-				request: request, query: query,
-				err: fmt.Errorf("SkillsMP provider is unavailable"),
+		provider := m.registryProvider(tab)
+		if provider == nil {
+			return registrySearchDone{
+				request: request, tab: tab, query: query,
+				err: fmt.Errorf("%s provider is unavailable", registryName(tab)),
 			}
 		}
-		skills, err := m.manager.skillsMP.search(ctx, query)
-		return skillsMPSearchDone{
-			request: request, query: query, skills: skills, err: err,
+		skills, err := provider.search(ctx, query)
+		return registrySearchDone{
+			request: request, tab: tab, query: query, skills: skills, err: err,
 		}
 	}
+}
+
+func (m model) registryProvider(tab int) registrySearchProvider {
+	if m.manager == nil {
+		return nil
+	}
+	switch tab {
+	case remoteTab:
+		return m.manager.remote
+	case skillsMPTab:
+		return m.manager.skillsMP
+	default:
+		return nil
+	}
+}
+
+func registryName(tab int) string {
+	if tab == remoteTab {
+		return "skills.sh"
+	}
+	if tab == skillsMPTab {
+		return "SkillsMP"
+	}
+	return "registry"
 }
 
 func (m *model) startSkillsMPCatalog() tea.Cmd {
-	m.cancelSkillsMPRequest()
-	request := m.skillsMPRequest
+	request := m.registryRequest
 	ctx, cancel := context.WithCancel(context.Background())
-	m.skillsMPCancel = cancel
+	m.registryCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
 		if m.manager == nil || m.manager.skillsMP == nil {
-			return skillsMPCatalogDone{
-				request: request, err: fmt.Errorf("SkillsMP provider is unavailable"),
+			return registrySearchDone{
+				request: request, tab: skillsMPTab,
+				err: fmt.Errorf("SkillsMP provider is unavailable"),
 			}
 		}
 		skills, err := m.manager.skillsMP.catalog(ctx)
-		return skillsMPCatalogDone{request: request, skills: skills, err: err}
+		return registrySearchDone{
+			request: request, tab: skillsMPTab,
+			skills: presentSkillsMP(skills), err: err,
+		}
 	}
 }
 
-func (m *model) cancelSkillsMPRequest() {
-	m.skillsMPRequest++
-	if m.skillsMPCancel != nil {
-		m.skillsMPCancel()
-		m.skillsMPCancel = nil
+func (m *model) cancelRegistryRequest() {
+	m.registryRequest++
+	if m.registryCancel != nil {
+		m.registryCancel()
+		m.registryCancel = nil
 	}
 }
 
-func (m model) debounceSkillsMPSearch() tea.Cmd {
-	request := m.skillsMPRequest
-	query := normalizedSkillsMPQuery(m.filterQuery)
-	return tea.Tick(skillsMPDebounce, func(time.Time) tea.Msg {
-		return skillsMPSearchRequested{request: request, query: query}
+func (m model) debounceRegistrySearch() tea.Cmd {
+	request := m.registryRequest
+	tab := m.tab
+	query := normalizedRegistryQuery(m.filterQuery)
+	return tea.Tick(registryDebounce, func(time.Time) tea.Msg {
+		return registrySearchRequested{request: request, tab: tab, query: query}
 	})
 }
 
 func (m model) itemCount() int {
 	if m.tab == remoteTab {
+		if normalizedRegistryQuery(m.filterQuery) != "" {
+			return len(m.registrySkills)
+		}
 		return len(m.remoteRows())
 	}
 	if m.tab == skillsMPTab {
-		return len(m.skillsMPSkills)
+		return len(m.registrySkills)
 	}
 	return len(m.localSkillIndices())
 }
@@ -556,11 +588,15 @@ func (m *model) toggleExpanded(index int) {
 
 func (m *model) syncViewport() {
 	if m.tab == remoteTab {
+		if normalizedRegistryQuery(m.filterQuery) != "" {
+			m.syncFixedRowViewport(len(m.registrySkills))
+			return
+		}
 		m.syncFixedRowViewport(len(m.remoteRows()))
 		return
 	}
 	if m.tab == skillsMPTab {
-		m.syncFixedRowViewport(len(m.skillsMPSkills))
+		m.syncFixedRowViewport(len(m.registrySkills))
 		return
 	}
 	indices := m.localSkillIndices()
@@ -609,15 +645,15 @@ func (m model) View() string {
 	)
 	fmt.Fprintln(&view, m.filterLine())
 	remaining := m.height - tuiChromeHeight
-	if m.tab == remoteTab {
+	if m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "" {
 		rows := m.remoteRows()
 		for index := m.offset; index < len(rows) && remaining > 0; index++ {
 			fmt.Fprintln(&view, m.remoteLine(rows[index], index == m.cursor))
 			remaining--
 		}
-	} else if m.tab == skillsMPTab {
-		for index := m.offset; index < len(m.skillsMPSkills) && remaining > 0; index++ {
-			fmt.Fprintln(&view, m.skillsMPLine(m.skillsMPSkills[index], index == m.cursor))
+	} else if m.tab == remoteTab || m.tab == skillsMPTab {
+		for index := m.offset; index < len(m.registrySkills) && remaining > 0; index++ {
+			fmt.Fprintln(&view, m.registrySkillLine(m.registrySkills[index], index == m.cursor))
 			remaining--
 		}
 	} else {
@@ -635,7 +671,7 @@ func (m model) View() string {
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	if m.tab == remoteTab {
-		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter expand/collapse topic • q quit"
+		help = "←/→ tabs • f search • ↑/k ↓/j move • enter expand/collapse topic • q quit"
 	} else if m.tab == skillsMPTab {
 		help = "←/→ tabs • f search • ↑/k ↓/j move • q quit"
 	}
@@ -694,36 +730,16 @@ type remoteRow struct {
 
 func (m model) remoteRows() []remoteRow {
 	rows := make([]remoteRow, 0, len(m.remoteTopics))
-	query := strings.ToLower(m.filterQuery)
 	for topicIndex, topic := range m.remoteTopics {
-		topicMatches := matchesNormalizedFilter(
-			query,
-			topic.Name,
-			topic.Slug,
-		)
-		matchingSkills := make([]int, 0, len(topic.Skills))
-		for skillIndex, skill := range topic.Skills {
-			if topicMatches || matchesNormalizedFilter(
-				query,
-				skill.Name,
-				skill.ID,
-				skill.Source,
-			) {
-				matchingSkills = append(matchingSkills, skillIndex)
-			}
-		}
-		if query != "" && !topicMatches && len(matchingSkills) == 0 {
-			continue
-		}
 		rows = append(rows, remoteRow{
 			topic: topicIndex,
 			skill: -1,
-			count: len(matchingSkills),
+			count: len(topic.Skills),
 		})
 		if m.remoteCollapsed[topic.Slug] {
 			continue
 		}
-		for _, skillIndex := range matchingSkills {
+		for skillIndex := range topic.Skills {
 			rows = append(rows, remoteRow{topic: topicIndex, skill: skillIndex})
 		}
 	}
@@ -743,6 +759,9 @@ func matchesNormalizedFilter(query string, values ...string) bool {
 }
 
 func (m *model) toggleRemoteTopic() {
+	if normalizedRegistryQuery(m.filterQuery) != "" {
+		return
+	}
 	rows := m.remoteRows()
 	if m.cursor < 0 || m.cursor >= len(rows) || rows[m.cursor].skill >= 0 {
 		return
@@ -775,10 +794,10 @@ func (m *model) syncFixedRowViewport(count int) {
 	}
 }
 
-func (m model) skillsMPLine(skill skillsMPSkill, selected bool) string {
+func (m model) registrySkillLine(skill registrySearchSkill, selected bool) string {
 	name := selectedStyle(lipgloss.NewStyle(), selected).
 		Render(terminalSafeText(skill.Name))
-	label := fmt.Sprintf("%s • %d stars", terminalSafeText(skill.Author), skill.Stars)
+	label := terminalSafeText(skill.Label)
 	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
 	line := name + selectedStyle(lipgloss.NewStyle(), selected).
 		Render(strings.Repeat(" ", gap))
