@@ -29,11 +29,13 @@ type model struct {
 	expanded        string
 	busy            bool
 	status          string
+	filtering       bool
+	filterQuery     string
 }
 
 const (
-	tuiHeaderHeight = 4
-	tuiFooterHeight = 3
+	tuiHeaderHeight = 5
+	tuiFooterHeight = 2
 	tuiChromeHeight = tuiHeaderHeight + tuiFooterHeight
 	localTab        = 0
 	remoteTab       = 1
@@ -118,7 +120,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.skills = message.skills
 		m.selected = message.selected
 		m.expanded = ""
-		for index, skill := range m.skills {
+		for index, skillIndex := range m.localSkillIndices() {
+			skill := m.skills[skillIndex]
 			if skill.Path != message.path {
 				continue
 			}
@@ -135,7 +138,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		m.syncViewport()
 	case tea.MouseMsg:
-		if m.busy || m.tab != localTab {
+		if m.busy {
 			return m, nil
 		}
 		mouse := tea.MouseEvent(message)
@@ -143,6 +146,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if mouse.X < 0 || mouse.X >= m.width {
+			return m, nil
+		}
+		if mouse.Y == tuiHeaderHeight-1 {
+			m.startFiltering()
+			return m, nil
+		}
+		if m.filtering {
+			return m, nil
+		}
+		if m.tab != localTab {
 			return m, nil
 		}
 		index, ok := m.skillIndexAtHeaderRow(mouse.Y)
@@ -157,9 +170,30 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.filtering {
+			switch message.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "enter", "esc":
+				m.filtering = false
+			case "backspace":
+				if runes := []rune(m.filterQuery); len(runes) > 0 {
+					m.filterQuery = string(runes[:len(runes)-1])
+					m.filterChanged()
+				}
+			default:
+				if message.Type == tea.KeyRunes {
+					m.filterQuery += string(message.Runes)
+					m.filterChanged()
+				}
+			}
+			return m, nil
+		}
 		switch message.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "f":
+			m.startFiltering()
 		case "left":
 			m.selectTab(localTab)
 		case "right":
@@ -184,10 +218,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tab != localTab {
 				break
 			}
-			if m.cursor < 0 || m.cursor >= len(m.skills) {
+			skillIndex, ok := m.localSkillIndex(m.cursor)
+			if !ok {
 				break
 			}
-			skill := m.skills[m.cursor].Name
+			skill := m.skills[skillIndex].Name
 			m.busy = true
 			m.status = "updating " + skill
 			return m, func() tea.Msg {
@@ -198,10 +233,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.tab != localTab {
 				break
 			}
-			if m.cursor < 0 || m.cursor >= len(m.skills) {
+			skillIndex, ok := m.localSkillIndex(m.cursor)
+			if !ok {
 				break
 			}
-			skill := m.skills[m.cursor]
+			skill := m.skills[skillIndex]
 			command, err := m.editor(skill.Name)
 			if err != nil {
 				m.status = "error: " + err.Error()
@@ -256,6 +292,17 @@ func (m *model) selectTab(tab int) {
 	m.syncViewport()
 }
 
+func (m *model) startFiltering() {
+	m.filtering = true
+}
+
+func (m *model) filterChanged() {
+	m.cursor = 0
+	m.offset = 0
+	m.expanded = ""
+	m.syncViewport()
+}
+
 func (m *model) reloadRemoteCache() {
 	cache, err := loadRemoteCache(m.manager.paths.remoteRegistry)
 	if err != nil {
@@ -271,7 +318,7 @@ func (m model) itemCount() int {
 	if m.tab == remoteTab {
 		return len(m.remoteRows())
 	}
-	return len(m.skills)
+	return len(m.localSkillIndices())
 }
 
 func (m *manager) refreshEditedSkill(
@@ -310,11 +357,12 @@ func (m *manager) refreshEditedSkill(
 }
 
 func (m *model) toggleExpanded(index int) {
-	if index < 0 || index >= len(m.skills) {
+	skillIndex, ok := m.localSkillIndex(index)
+	if !ok {
 		return
 	}
 	m.cursor = index
-	skill := m.skills[index].Name
+	skill := m.skills[skillIndex].Name
 	if m.expanded == skill {
 		m.expanded = ""
 	} else {
@@ -328,15 +376,17 @@ func (m *model) syncViewport() {
 		m.syncRemoteViewport()
 		return
 	}
-	if len(m.skills) == 0 {
+	indices := m.localSkillIndices()
+	count := len(indices)
+	if count == 0 {
 		m.cursor = 0
 		m.offset = 0
 		return
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
-	} else if m.cursor >= len(m.skills) {
-		m.cursor = len(m.skills) - 1
+	} else if m.cursor >= count {
+		m.cursor = count - 1
 	}
 
 	visible := m.height - tuiChromeHeight
@@ -346,16 +396,16 @@ func (m *model) syncViewport() {
 	}
 	if m.offset < 0 {
 		m.offset = 0
-	} else if m.offset >= len(m.skills) {
-		m.offset = len(m.skills) - 1
+	} else if m.offset >= count {
+		m.offset = count - 1
 	}
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
-	for m.offset < m.cursor && m.rowCount(m.offset, m.cursor+1) > visible {
+	for m.offset < m.cursor && m.rowCount(indices, m.offset, m.cursor+1) > visible {
 		m.offset++
 	}
-	for m.offset > 0 && m.rowCount(m.offset-1, m.cursor+1) <= visible {
+	for m.offset > 0 && m.rowCount(indices, m.offset-1, m.cursor+1) <= visible {
 		m.offset--
 	}
 }
@@ -370,6 +420,7 @@ func (m model) View() string {
 		boundLine(mutedStyle.Render(terminalSafeText(m.project)), m.width),
 		m.tabBar(),
 	)
+	fmt.Fprintln(&view, m.filterLine())
 	remaining := m.height - tuiChromeHeight
 	if m.tab == remoteTab {
 		rows := m.remoteRows()
@@ -378,8 +429,9 @@ func (m model) View() string {
 			remaining--
 		}
 	} else {
-		for index := m.offset; index < len(m.skills) && remaining > 0; index++ {
-			lines := m.skillLines(index)
+		indices := m.localSkillIndices()
+		for index := m.offset; index < len(indices) && remaining > 0; index++ {
+			lines := m.skillLines(indices, index)
 			if len(lines) > remaining {
 				lines = lines[:remaining]
 			}
@@ -389,13 +441,16 @@ func (m model) View() string {
 			remaining -= len(lines)
 		}
 	}
-	help := "←/→ tabs • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
+	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	if m.tab == remoteTab {
-		help = "←/→ tabs • ↑/k ↓/j move • enter expand/collapse topic • q quit"
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter expand/collapse topic • q quit"
+	}
+	if m.filtering {
+		help = "type to filter • enter/esc done"
 	}
 	fmt.Fprintf(
 		&view,
-		"\n%s\n%s\n",
+		"%s\n%s\n",
 		boundLine(
 			mutedStyle.Render(help),
 			m.width,
@@ -403,6 +458,18 @@ func (m model) View() string {
 		boundLine(statusStyle(m.status).Render(terminalSafeText(m.status)), m.width),
 	)
 	return view.String()
+}
+
+func (m model) filterLine() string {
+	query := m.filterQuery
+	if m.filtering {
+		query += "▏"
+	}
+	line := " Filter: " + terminalSafeText(query)
+	if m.filtering {
+		return boundLine(selectedStyle(lipgloss.NewStyle(), true).Render(line), m.width)
+	}
+	return boundLine(mutedStyle.Render(line), m.width)
 }
 
 func (m model) tabBar() string {
@@ -421,20 +488,57 @@ func (m model) tabBar() string {
 type remoteRow struct {
 	topic int
 	skill int
+	count int
 }
 
 func (m model) remoteRows() []remoteRow {
 	rows := make([]remoteRow, 0, len(m.remoteTopics))
+	query := strings.ToLower(m.filterQuery)
 	for topicIndex, topic := range m.remoteTopics {
-		rows = append(rows, remoteRow{topic: topicIndex, skill: -1})
+		topicMatches := matchesNormalizedFilter(
+			query,
+			topic.Name,
+			topic.Slug,
+		)
+		matchingSkills := make([]int, 0, len(topic.Skills))
+		for skillIndex, skill := range topic.Skills {
+			if topicMatches || matchesNormalizedFilter(
+				query,
+				skill.Name,
+				skill.ID,
+				skill.Source,
+			) {
+				matchingSkills = append(matchingSkills, skillIndex)
+			}
+		}
+		if query != "" && !topicMatches && len(matchingSkills) == 0 {
+			continue
+		}
+		rows = append(rows, remoteRow{
+			topic: topicIndex,
+			skill: -1,
+			count: len(matchingSkills),
+		})
 		if m.remoteCollapsed[topic.Slug] {
 			continue
 		}
-		for skillIndex := range topic.Skills {
+		for _, skillIndex := range matchingSkills {
 			rows = append(rows, remoteRow{topic: topicIndex, skill: skillIndex})
 		}
 	}
 	return rows
+}
+
+func matchesNormalizedFilter(query string, values ...string) bool {
+	if query == "" {
+		return true
+	}
+	for _, value := range values {
+		if strings.Contains(strings.ToLower(value), query) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *model) toggleRemoteTopic() {
@@ -482,7 +586,7 @@ func (m model) remoteLine(row remoteRow, selected bool) string {
 		line += selectedStyle(lipgloss.NewStyle().Bold(true), selected).
 			Render(terminalSafeText(topic.Name))
 		line += selectedStyle(mutedStyle, selected).
-			Render(fmt.Sprintf(" (%d)", len(topic.Skills)))
+			Render(fmt.Sprintf(" (%d)", row.count))
 		return boundLine(line, m.width)
 	}
 	skill := topic.Skills[row.skill]
@@ -528,27 +632,31 @@ func (m model) skillIndexAtHeaderRow(y int) (int, bool) {
 	}
 	row := tuiHeaderHeight
 	remaining := m.height - tuiChromeHeight
-	for index := m.offset; index < len(m.skills) && remaining > 0; index++ {
+	indices := m.localSkillIndices()
+	for index := m.offset; index < len(indices) && remaining > 0; index++ {
 		if y == row {
 			return index, true
 		}
-		rendered := min(m.skillLineCount(index), remaining)
+		rendered := min(m.skillLineCount(indices, index), remaining)
 		row += rendered
 		remaining -= rendered
 	}
 	return 0, false
 }
 
-func (m model) rowCount(start, end int) int {
+func (m model) rowCount(indices []int, start, end int) int {
 	rows := 0
 	for index := start; index < end; index++ {
-		rows += m.skillLineCount(index)
+		rows += m.skillLineCount(indices, index)
 	}
 	return rows
 }
 
-func (m model) skillLineCount(index int) int {
-	skill := m.skills[index]
+func (m model) skillLineCount(indices []int, index int) int {
+	if index < 0 || index >= len(indices) {
+		return 0
+	}
+	skill := m.skills[indices[index]]
 	if m.expanded != skill.Name {
 		return 1
 	}
@@ -557,8 +665,11 @@ func (m model) skillLineCount(index int) int {
 		pathLineCount(terminalSafeText(skill.Path), m.width)
 }
 
-func (m model) skillLines(index int) []string {
-	skill := m.skills[index]
+func (m model) skillLines(indices []int, index int) []string {
+	if index < 0 || index >= len(indices) {
+		return nil
+	}
+	skill := m.skills[indices[index]]
 	cursor, disclosure := " ", "▸"
 	if index == m.cursor {
 		cursor = ">"
@@ -595,6 +706,31 @@ func (m model) skillLines(index int) []string {
 	}
 	lines = append(lines, styledPathLines(terminalSafeText(skill.Path), m.width)...)
 	return lines
+}
+
+func (m model) localSkillIndices() []int {
+	indices := make([]int, 0, len(m.skills))
+	query := strings.ToLower(m.filterQuery)
+	for index, skill := range m.skills {
+		if matchesNormalizedFilter(
+			query,
+			skill.Name,
+			skill.Description,
+			skill.Path,
+			skill.Source,
+		) {
+			indices = append(indices, index)
+		}
+	}
+	return indices
+}
+
+func (m model) localSkillIndex(index int) (int, bool) {
+	indices := m.localSkillIndices()
+	if index < 0 || index >= len(indices) {
+		return 0, false
+	}
+	return indices[index], true
 }
 
 func selectedStyle(style lipgloss.Style, selected bool) lipgloss.Style {

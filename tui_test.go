@@ -219,6 +219,109 @@ func TestSkillListIgnoresUnknownInputAndFutureMessages(t *testing.T) {
 	}
 }
 
+func TestFilterInputDynamicallyFiltersInstalledSkillsAndActions(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{
+			{Name: "alpha", Description: "first", Source: "user"},
+			{Name: "beta", Description: "second", Source: "user"},
+		},
+		selected: map[string]bool{},
+		width:    60,
+		height:   10,
+	}
+
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	current = updated.(model)
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("SECOND")})
+	current = updated.(model)
+	view := current.View()
+	if !current.filtering || current.itemCount() != 1 ||
+		strings.Contains(view, "alpha") || !strings.Contains(view, "beta") ||
+		!strings.Contains(view, "Filter: SECOND") {
+		t.Fatalf("typing did not dynamically filter to beta:\n%s", view)
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	current = updated.(model)
+	if current.filtering {
+		t.Fatal("enter did not leave the filter input")
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	current = updated.(model)
+	if current.expanded != "beta" {
+		t.Fatalf("filtered enter expanded %q, want beta", current.expanded)
+	}
+}
+
+func TestFilterInputActivatesByMouseAndCanBeCleared(t *testing.T) {
+	current := model{
+		skills:   skillNames(2),
+		selected: map[string]bool{},
+		width:    40,
+		height:   10,
+	}
+	updated, _ := current.Update(tea.MouseMsg{
+		X:      3,
+		Y:      tuiHeaderHeight - 1,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	current = updated.(model)
+	if !current.filtering {
+		t.Fatal("clicking filter row did not focus the input")
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("missing")})
+	current = updated.(model)
+	if current.itemCount() != 0 {
+		t.Fatalf("typed unmatched filter has %d items, want 0", current.itemCount())
+	}
+	updated, _ = current.Update(tea.MouseMsg{
+		X:      3,
+		Y:      tuiHeaderHeight,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	})
+	current = updated.(model)
+	if current.expanded != "" {
+		t.Fatalf("click while editing filter expanded %q", current.expanded)
+	}
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	current = updated.(model)
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	current = updated.(model)
+	for range len([]rune("missing")) {
+		updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		current = updated.(model)
+	}
+	if current.itemCount() != 2 {
+		t.Fatalf("dynamically cleared filter has %d items, want 2", current.itemCount())
+	}
+}
+
+func TestFilterAppliesToRemoteSkills(t *testing.T) {
+	current := model{
+		tab: remoteTab,
+		remoteTopics: []remoteTopic{{
+			Slug: "testing", Name: "Testing",
+			Skills: []remoteSkill{
+				{ID: "owner/repo/alpha", Name: "alpha"},
+				{ID: "owner/repo/beta", Name: "beta"},
+			},
+		}},
+		filterQuery: "beta",
+		width:       60,
+		height:      10,
+	}
+	view := current.View()
+	if current.itemCount() != 2 || strings.Contains(view, "alpha") ||
+		!strings.Contains(view, "Testing (1)") || !strings.Contains(view, "beta") {
+		t.Fatalf("remote filter did not retain only the matching skill:\n%s", view)
+	}
+}
+
 func TestSkillListPrimaryClickSelectsAndTogglesHeader(t *testing.T) {
 	current := model{
 		skills:   skillNames(4),
@@ -261,7 +364,8 @@ func TestSkillListClickAccountsForExpandedRows(t *testing.T) {
 		height:   14,
 	}
 	current.syncViewport()
-	secondHeader := tuiHeaderHeight + len(current.skillLines(0))
+	indices := current.localSkillIndices()
+	secondHeader := tuiHeaderHeight + len(current.skillLines(indices, 0))
 
 	updated, _ := current.Update(tea.MouseMsg{
 		X:      1,
