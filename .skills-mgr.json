@@ -1,19 +1,28 @@
 {
   "schema_revision": 1,
   "skills": {
+    "authoring-shadowtree-recipes": true,
     "build-code-skeleton": true,
+    "context7-mcp": true,
     "deliver-vertical-slice": true,
     "draft-spec": true,
+    "frontend-design": false,
     "go": true,
     "golang-best-practices": true,
     "harden-release": true,
-    "new-project": true,
+    "js-ts-best-practices": false,
+    "migrate-to-shadowtree": false,
+    "minimalist-ui": false,
+    "new-project": false,
     "plan-vertical-slices": true,
+    "postgres-patterns": false,
     "review-spec": true,
+    "rust-patterns": false,
     "shadcn": false,
     "spec-to-contract": true,
-    "using-pjdoc": true,
+    "using-pjdoc": false,
     "using-shadowtree": true,
-    "verify-conformance": true
+    "verify-conformance": true,
+    "writing-great-skills": false
   }
 }
