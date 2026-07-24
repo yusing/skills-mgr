@@ -581,16 +581,7 @@ func (m model) debounceRegistrySearch() tea.Cmd {
 }
 
 func (m model) itemCount() int {
-	if m.tab == remoteTab {
-		if normalizedRegistryQuery(m.filterQuery) != "" {
-			return len(m.registrySkills)
-		}
-		return len(m.remoteRows())
-	}
-	if m.tab == skillsMPTab {
-		return len(m.registrySkills)
-	}
-	return len(m.localSkillIndices())
+	return m.currentList().count
 }
 
 func remoteRefAtCursor(m model) (remoteSkillRef, bool) {
@@ -647,24 +638,13 @@ func (m *manager) refreshEditedSkill(
 	return skills, value.Skills, nil
 }
 
-func (m *model) toggleExpanded(index int) {
-	skillIndex, ok := m.localSkillIndex(index)
-	if !ok {
-		return
-	}
-	m.cursor = index
-	skill := m.skills[skillIndex].Name
-	if m.expanded == skill {
-		m.expanded = ""
-	} else {
-		m.expanded = skill
-	}
-	m.syncViewport()
-}
-
 func (m *model) toggleCurrentExpanded(index int) {
 	if m.tab == localTab {
-		m.toggleExpanded(index)
+		skillIndex, ok := m.localSkillIndex(index)
+		if !ok {
+			return
+		}
+		m.toggleCollapsible(index, m.skills[skillIndex].Name)
 		return
 	}
 	if m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "" {
@@ -678,19 +658,20 @@ func (m *model) toggleCurrentExpanded(index int) {
 			m.toggleRemoteTopic()
 			return
 		}
-		m.cursor = index
-		m.toggleRemoteRef(m.remoteTopics[row.topic].Skills[row.skill].ref())
+		m.toggleCollapsible(
+			index,
+			m.remoteTopics[row.topic].Skills[row.skill].ref().key(),
+		)
 		return
 	}
 	if index < 0 || index >= len(m.registrySkills) {
 		return
 	}
-	m.cursor = index
-	m.toggleRemoteRef(m.registrySkills[index].ref())
+	m.toggleCollapsible(index, m.registrySkills[index].ref().key())
 }
 
-func (m *model) toggleRemoteRef(ref remoteSkillRef) {
-	key := ref.key()
+func (m *model) toggleCollapsible(index int, key string) {
+	m.cursor = index
 	if m.expanded == key {
 		m.expanded = ""
 	} else {
@@ -699,99 +680,99 @@ func (m *model) toggleRemoteRef(ref remoteSkillRef) {
 	m.syncViewport()
 }
 
-func (m *model) syncViewport() {
-	if m.tab == remoteTab {
-		if normalizedRegistryQuery(m.filterQuery) != "" {
-			m.syncRemoteViewport(
-				len(m.registrySkills),
-				func(index int) int { return m.registrySkillLineCount(m.registrySkills[index]) },
-			)
-			return
-		}
-		rows := m.remoteRows()
-		m.syncRemoteViewport(
-			len(rows),
-			func(index int) int { return m.remoteLineCount(rows[index]) },
-		)
-		return
-	}
-	if m.tab == skillsMPTab {
-		m.syncRemoteViewport(
-			len(m.registrySkills),
-			func(index int) int { return m.registrySkillLineCount(m.registrySkills[index]) },
-		)
-		return
-	}
-	indices := m.localSkillIndices()
-	count := len(indices)
-	if count == 0 {
-		m.cursor = 0
-		m.offset = 0
-		return
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	} else if m.cursor >= count {
-		m.cursor = count - 1
-	}
+type renderedList struct {
+	count int
+	lines func(index int) []string
+}
 
-	visible := m.height - tuiChromeHeight
-	if visible <= 0 {
-		m.offset = m.cursor
-		return
-	}
-	if m.offset < 0 {
-		m.offset = 0
-	} else if m.offset >= count {
-		m.offset = count - 1
-	}
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	for m.offset < m.cursor && m.rowCount(indices, m.offset, m.cursor+1) > visible {
-		m.offset++
-	}
-	for m.offset > 0 && m.rowCount(indices, m.offset-1, m.cursor+1) <= visible {
-		m.offset--
+func newRenderedList(count int, render func(index int) []string) renderedList {
+	var cache map[int][]string
+	return renderedList{
+		count: count,
+		lines: func(index int) []string {
+			if lines, ok := cache[index]; ok {
+				return lines
+			}
+			if cache == nil {
+				cache = make(map[int][]string)
+			}
+			lines := render(index)
+			cache[index] = lines
+			return lines
+		},
 	}
 }
 
-func (m *model) syncRemoteViewport(count int, lineCount func(int) int) {
-	if count == 0 {
+func (m model) currentList() renderedList {
+	switch {
+	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
+		rows := m.remoteRows()
+		return newRenderedList(
+			len(rows),
+			func(index int) []string {
+				return m.remoteLines(rows[index], index == m.cursor)
+			},
+		)
+	case m.tab == remoteTab || m.tab == skillsMPTab:
+		return newRenderedList(
+			len(m.registrySkills),
+			func(index int) []string {
+				return m.registrySkillLines(
+					m.registrySkills[index],
+					index == m.cursor,
+				)
+			},
+		)
+	default:
+		indices := m.localSkillIndices()
+		return newRenderedList(
+			len(indices),
+			func(index int) []string {
+				return m.skillLines(indices, index)
+			},
+		)
+	}
+}
+
+func (m *model) syncViewport() renderedList {
+	list := m.currentList()
+	if list.count == 0 {
 		m.cursor = 0
 		m.offset = 0
-		return
+		return list
 	}
-	m.cursor = min(max(m.cursor, 0), count-1)
-	m.offset = min(max(m.offset, 0), count-1)
+	m.cursor = min(max(m.cursor, 0), list.count-1)
+	m.offset = min(max(m.offset, 0), list.count-1)
+	list = m.currentList()
 	visible := m.height - tuiChromeHeight
 	if visible <= 0 {
 		m.offset = m.cursor
-		return
+		return list
 	}
 	if m.cursor < m.offset {
 		m.offset = m.cursor
 	}
 	for m.offset < m.cursor &&
-		remoteRowCount(m.offset, m.cursor+1, lineCount) > visible {
+		listLineCount(list, m.offset, m.cursor+1) > visible {
 		m.offset++
 	}
 	for m.offset > 0 &&
-		remoteRowCount(m.offset-1, m.cursor+1, lineCount) <= visible {
+		listLineCount(list, m.offset-1, m.cursor+1) <= visible {
 		m.offset--
 	}
+	return list
 }
 
-func remoteRowCount(start, end int, lineCount func(int) int) int {
+func listLineCount(list renderedList, start, end int) int {
 	rows := 0
 	for index := start; index < end; index++ {
-		rows += lineCount(index)
+		rows += len(list.lines(index))
 	}
 	return rows
 }
 
 func (m model) View() string {
-	m.syncViewport()
+	list := m.syncViewport()
 	var view strings.Builder
 	fmt.Fprintf(
 		&view,
@@ -802,47 +783,21 @@ func (m model) View() string {
 	)
 	fmt.Fprintln(&view, m.filterLine())
 	remaining := m.height - tuiChromeHeight
-	if m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "" {
-		rows := m.remoteRows()
-		for index := m.offset; index < len(rows) && remaining > 0; index++ {
-			lines := m.remoteLines(rows[index], index == m.cursor)
-			if len(lines) > remaining {
-				lines = lines[:remaining]
-			}
-			for _, line := range lines {
-				fmt.Fprintln(&view, line)
-			}
-			remaining -= len(lines)
+	for index := m.offset; index < list.count && remaining > 0; index++ {
+		lines := list.lines(index)
+		if len(lines) > remaining {
+			lines = lines[:remaining]
 		}
-	} else if m.tab == remoteTab || m.tab == skillsMPTab {
-		for index := m.offset; index < len(m.registrySkills) && remaining > 0; index++ {
-			lines := m.registrySkillLines(m.registrySkills[index], index == m.cursor)
-			if len(lines) > remaining {
-				lines = lines[:remaining]
-			}
-			for _, line := range lines {
-				fmt.Fprintln(&view, line)
-			}
-			remaining -= len(lines)
+		for _, line := range lines {
+			fmt.Fprintln(&view, line)
 		}
-	} else {
-		indices := m.localSkillIndices()
-		for index := m.offset; index < len(indices) && remaining > 0; index++ {
-			lines := m.skillLines(indices, index)
-			if len(lines) > remaining {
-				lines = lines[:remaining]
-			}
-			for _, line := range lines {
-				fmt.Fprintln(&view, line)
-			}
-			remaining -= len(lines)
-		}
+		remaining -= len(lines)
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	if m.tab == remoteTab {
-		help = "←/→ tabs • f search • ↑/k ↓/j move • enter topics • space toggle • q quit"
+		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
 	} else if m.tab == skillsMPTab {
-		help = "←/→ tabs • f search • ↑/k ↓/j move • space toggle • q quit"
+		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details • space toggle • q quit"
 	}
 	if m.filtering {
 		help = "type to filter • enter/esc done"
@@ -970,49 +925,27 @@ func (m model) registrySkillLines(skill registrySearchSkill, selected bool) []st
 	if m.remoteSelected[skill.ref().key()] {
 		displayName += " [enabled]"
 	}
-	disclosure := "▸"
-	if m.expanded == skill.ref().key() {
-		disclosure = "▾"
-	}
+	expanded := m.expanded == skill.ref().key()
+	disclosure := disclosureIndicator(expanded)
 	name := selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).
 		Render(terminalSafeText(displayName))
 	label := terminalSafeText(skill.Label)
-	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
-	line := name + selectedStyle(lipgloss.NewStyle(), selected).
-		Render(strings.Repeat(" ", gap))
-	line += selectedStyle(mutedStyle, selected).Render(label)
-	lines := []string{boundLine(line, m.width)}
-	if m.expanded != skill.ref().key() {
-		return lines
-	}
-	return append(lines, remoteDetailLines(
-		skill.Description,
-		skill.Provider,
-		skill.Locator,
-		m.width,
-	)...)
-}
-
-func (m model) registrySkillLineCount(skill registrySearchSkill) int {
-	if m.expanded != skill.ref().key() {
-		return 1
-	}
-	return 1 + len(remoteDetailLines(
-		skill.Description,
-		skill.Provider,
-		skill.Locator,
-		m.width,
-	))
+	header := labeledListLine(name, label, selected, m.width)
+	return collapsibleLines(header, expanded, func() []string {
+		return remoteDetailLines(
+			skill.Description,
+			skill.Provider,
+			skill.Locator,
+			m.width,
+		)
+	})
 }
 
 func (m model) remoteLines(row remoteRow, selected bool) []string {
 	topic := m.remoteTopics[row.topic]
 	if row.skill < 0 {
-		disclosure := "▾"
-		if m.remoteCollapsed[topic.Slug] {
-			disclosure = "▸"
-		}
+		disclosure := disclosureIndicator(!m.remoteCollapsed[topic.Slug])
 		line := selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 		line += selectedStyle(lipgloss.NewStyle().Bold(true), selected).
 			Render(terminalSafeText(topic.Name))
@@ -1025,10 +958,8 @@ func (m model) remoteLines(row remoteRow, selected bool) []string {
 	if m.remoteSelected[skill.ref().key()] {
 		displayName += " [enabled]"
 	}
-	disclosure := "▸"
-	if m.expanded == skill.ref().key() {
-		disclosure = "▾"
-	}
+	expanded := m.expanded == skill.ref().key()
+	disclosure := disclosureIndicator(expanded)
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render("  ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).
@@ -1036,51 +967,63 @@ func (m model) remoteLines(row remoteRow, selected bool) []string {
 	installs := fmt.Sprintf("%d installs", skill.Installs)
 	source := terminalSafeText(skill.Source)
 	label := source + " • " + installs
-	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
+	header := labeledListLine(name, label, selected, m.width)
+	return collapsibleLines(header, expanded, func() []string {
+		return remoteDetailLines(
+			skill.Description,
+			skillsShProvider,
+			skill.ID,
+			m.width,
+		)
+	})
+}
+
+func disclosureIndicator(expanded bool) string {
+	if expanded {
+		return "▾"
+	}
+	return "▸"
+}
+
+func collapsibleLines(
+	header string,
+	expanded bool,
+	details func() []string,
+) []string {
+	lines := []string{header}
+	if expanded {
+		lines = append(lines, details()...)
+	}
+	return lines
+}
+
+func labeledListLine(name, label string, selected bool, width int) string {
+	gap := max(width-lipgloss.Width(name)-lipgloss.Width(label), 1)
 	line := name + selectedStyle(lipgloss.NewStyle(), selected).
 		Render(strings.Repeat(" ", gap))
 	line += selectedStyle(mutedStyle, selected).Render(label)
-	lines := []string{boundLine(line, m.width)}
-	if m.expanded != skill.ref().key() {
-		return lines
-	}
-	return append(lines, remoteDetailLines(
-		skill.Description,
-		skillsShProvider,
-		skill.ID,
-		m.width,
-	)...)
-}
-
-func (m model) remoteLineCount(row remoteRow) int {
-	if row.skill < 0 {
-		return 1
-	}
-	skill := m.remoteTopics[row.topic].Skills[row.skill]
-	if m.expanded != skill.ref().key() {
-		return 1
-	}
-	return 1 + len(remoteDetailLines(
-		skill.Description,
-		skillsShProvider,
-		skill.ID,
-		m.width,
-	))
+	return boundLine(line, width)
 }
 
 func remoteDetailLines(description, provider, locator string, width int) []string {
-	lines := make([]string, 0)
-	if description != "" {
-		for _, detail := range wrapDetail(terminalSafeText(description), width) {
-			lines = append(lines, boundLine(mutedStyle.Render(detail), width))
-		}
-	}
+	lines := descriptionLines(description, width)
 	if locator != "" {
 		label := "id"
 		if provider == skillsMPProvider {
 			label = "url"
 		}
 		lines = append(lines, styledMetadataLines(label, terminalSafeText(locator), width)...)
+	}
+	return lines
+}
+
+func descriptionLines(description string, width int) []string {
+	if description == "" {
+		return nil
+	}
+	lines := make([]string, 0)
+	for _, detail := range wrapDetail(terminalSafeText(description), width) {
+		lines = append(lines, boundLine(mutedStyle.Render(detail), width))
 	}
 	return lines
 }
@@ -1119,55 +1062,18 @@ func (m model) itemIndexAtHeaderRow(y int) (int, bool) {
 	if y < tuiHeaderHeight || y >= m.height-tuiFooterHeight {
 		return 0, false
 	}
-	var count int
-	var lineCount func(int) int
-	switch {
-	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
-		rows := m.remoteRows()
-		count = len(rows)
-		lineCount = func(index int) int { return m.remoteLineCount(rows[index]) }
-	case m.tab == remoteTab || m.tab == skillsMPTab:
-		count = len(m.registrySkills)
-		lineCount = func(index int) int {
-			return m.registrySkillLineCount(m.registrySkills[index])
-		}
-	default:
-		indices := m.localSkillIndices()
-		count = len(indices)
-		lineCount = func(index int) int { return m.skillLineCount(indices, index) }
-	}
+	list := m.currentList()
 	row := tuiHeaderHeight
 	remaining := m.height - tuiChromeHeight
-	for index := m.offset; index < count && remaining > 0; index++ {
+	for index := m.offset; index < list.count && remaining > 0; index++ {
 		if y == row {
 			return index, true
 		}
-		rendered := min(lineCount(index), remaining)
+		rendered := min(len(list.lines(index)), remaining)
 		row += rendered
 		remaining -= rendered
 	}
 	return 0, false
-}
-
-func (m model) rowCount(indices []int, start, end int) int {
-	rows := 0
-	for index := start; index < end; index++ {
-		rows += m.skillLineCount(indices, index)
-	}
-	return rows
-}
-
-func (m model) skillLineCount(indices []int, index int) int {
-	if index < 0 || index >= len(indices) {
-		return 0
-	}
-	skill := m.skills[indices[index]]
-	if m.expanded != skill.Name {
-		return 1
-	}
-	return 1 +
-		len(wrapDetail(skill.Description, m.width)) +
-		pathLineCount(terminalSafeText(skill.Path), m.width)
 }
 
 func (m model) skillLines(indices []int, index int) []string {
@@ -1175,23 +1081,17 @@ func (m model) skillLines(indices []int, index int) []string {
 		return nil
 	}
 	skill := m.skills[indices[index]]
-	cursor, disclosure := " ", "▸"
+	cursor := " "
 	if index == m.cursor {
 		cursor = ">"
 	}
-	if m.expanded == skill.Name {
-		disclosure = "▾"
-	}
-	prefix := fmt.Sprintf("%s %s %s", cursor, disclosure, skill.Name)
-	if !m.selected[skill.Name] {
-		prefix += " [disabled]"
-	}
+	expanded := m.expanded == skill.Name
+	disclosure := disclosureIndicator(expanded)
 	source := skill.Source
 	if source == "" {
 		source = "unknown"
 	}
 	label := "(" + source + ")"
-	gap := max(m.width-lipgloss.Width(prefix)-lipgloss.Width(label), 1)
 	selected := index == m.cursor
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render(cursor + " ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
@@ -1199,18 +1099,14 @@ func (m model) skillLines(indices []int, index int) []string {
 	if !m.selected[skill.Name] {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")
 	}
-	line := name
-	line += selectedStyle(lipgloss.NewStyle(), selected).Render(strings.Repeat(" ", gap))
-	line += selectedStyle(mutedStyle, selected).Render(label)
-	lines := []string{boundLine(line, m.width)}
-	if m.expanded != skill.Name {
-		return lines
-	}
-	for _, detail := range wrapDetail(skill.Description, m.width) {
-		lines = append(lines, boundLine(mutedStyle.Render(detail), m.width))
-	}
-	lines = append(lines, styledPathLines(terminalSafeText(skill.Path), m.width)...)
-	return lines
+	header := labeledListLine(name, label, selected, m.width)
+	return collapsibleLines(header, expanded, func() []string {
+		details := descriptionLines(skill.Description, m.width)
+		return append(
+			details,
+			styledPathLines(terminalSafeText(skill.Path), m.width)...,
+		)
+	})
 }
 
 func (m model) localSkillIndices() []int {
@@ -1292,17 +1188,6 @@ func styledMetadataLines(label, value string, width int) []string {
 		lines[index] = boundLine(mutedStyle.Render(padding)+pathStyle.Render(chunk), width)
 	}
 	return lines
-}
-
-func pathLineCount(path string, width int) int {
-	if width <= 0 {
-		return 1
-	}
-	return len(hardWrap(path, width-lipgloss.Width(pathPrefix(width))))
-}
-
-func pathPrefix(width int) string {
-	return metadataPrefix("path", width)
 }
 
 func metadataPrefix(label string, width int) string {

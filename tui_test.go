@@ -45,6 +45,35 @@ func TestSkillListScrollsToKeepCursorVisible(t *testing.T) {
 	}
 }
 
+func TestRenderedListCachesItemLines(t *testing.T) {
+	renders := 0
+	list := newRenderedList(1, func(int) []string {
+		renders++
+		return []string{"header", "detail"}
+	})
+
+	if got := len(list.lines(0)); got != 2 {
+		t.Fatalf("line count = %d, want 2", got)
+	}
+	if got := len(list.lines(0)); got != 2 {
+		t.Fatalf("cached line count = %d, want 2", got)
+	}
+	if renders != 1 {
+		t.Fatalf("render callback called %d times, want 1", renders)
+	}
+
+	nilRenders := 0
+	empty := newRenderedList(1, func(int) []string {
+		nilRenders++
+		return nil
+	})
+	empty.lines(0)
+	empty.lines(0)
+	if nilRenders != 1 {
+		t.Fatalf("nil render callback called %d times, want 1", nilRenders)
+	}
+}
+
 func TestSkillListStopsAtNavigationBoundaries(t *testing.T) {
 	current := model{skills: skillNames(3), selected: map[string]bool{}}
 	updated, _ := current.Update(tea.WindowSizeMsg{Width: 80, Height: 8})
