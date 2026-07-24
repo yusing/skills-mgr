@@ -160,7 +160,7 @@ instructions override skill guidance.
 
 For `codex`, turn off default skills instructions by:
 
-- overriding default base prompt
+- overriding default base prompt: replace `## Using skills` section instead of adding above to `AGENTS.md`
 - disable skills instructions
 
 ```toml
