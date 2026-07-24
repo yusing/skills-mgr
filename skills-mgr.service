@@ -2,7 +2,7 @@
 Description=Skill Manager daemon
 
 [Service]
-ExecStart=%h/.local/bin/skills-mgr daemon
+ExecStart=%h/go/bin/skills-mgr daemon
 Restart=on-failure
 
 [Install]
