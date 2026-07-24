@@ -127,6 +127,54 @@ Discovery checks these sources in order:
 When multiple sources declare the same skill name, the first discovered source
 wins. Missing, unreadable, or invalid skill entries are skipped.
 
+## Agent integration
+
+Add this to your global `AGENTS.md`
+
+```markdown
+## Using skills
+
+Run `skills-mgr list` from the current project directory to discover the enabled
+skills, their descriptions, and their available reference files.
+
+Use every explicitly requested enabled skill, whose descriptions
+match the current work, or those required by the skill you have used.
+Before applying a selected skill, read its complete instructions
+with `skills-mgr get <skill-name>`. Read a listed reference with
+`skills-mgr get <skill-name>/<relative-path>`. The optional final `start:end` argument
+selects a 1-based inclusive line range; omit it when the complete file is required.
+
+Invoke a script provided by an enabled skill with
+`skills-mgr run <skill-name>/<relative/script> [args...]`. Arguments are passed
+directly to the script. Executable files honor their shebang; non-executable Python
+files use `python3`, while non-executable `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, and
+`.cts` files use the cached `node`-then-`bun` runtime fallback.
+
+Load skills just-in-time, instaed of loading everything and forget later.
+
+Keep unchanged skills active across follow-ups, and do not
+load unrelated references. If a named skill is unavailable or cannot be read, say so
+briefly and continue with the best fallback. User instructions and higher-priority
+instructions override skill guidance.
+```
+
+For `codex`, turn off default skills instructions by:
+
+- overriding default base prompt
+- disable skills instructions
+
+```toml
+model_instructions_file = "/path/to/your/base_instructions.md"
+
+[skills]
+include_instructions = false
+```
+
+Default base prompts could be found in:
+
+- <https://github.com/openai/codex/blob/main/codex-rs/protocol/src/prompts/base_instructions/default.md>
+- <https://github.com/asgeirtj/system_prompts_leaks/blob/main/OpenAI/Codex/gpt-5.6.md>
+
 ## Selection State
 
 The selection file is strict JSON with schema revision `1`:
