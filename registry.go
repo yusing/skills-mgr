@@ -57,6 +57,15 @@ type remoteSkill struct {
 	Installs int    `json:"installs"`
 }
 
+func (s remoteSkill) ref() remoteSkillRef {
+	return remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       s.ID,
+		Name:     s.Name,
+		Locator:  s.ID,
+	}
+}
+
 type remoteRegistry struct {
 	baseURL   string
 	cachePath string
@@ -100,12 +109,51 @@ func (r *remoteRegistry) search(
 	results := make([]registrySearchSkill, len(skills))
 	for index, skill := range skills {
 		results[index] = registrySearchSkill{
-			ID:    skill.ID,
-			Name:  skill.Name,
-			Label: fmt.Sprintf("%s • %d installs", skill.Source, skill.Installs),
+			ID:       skill.ID,
+			Name:     skill.Name,
+			Label:    fmt.Sprintf("%s • %d installs", skill.Source, skill.Installs),
+			Provider: skillsShProvider,
+			Locator:  skill.ID,
 		}
 	}
 	return results, nil
+}
+
+func (r *remoteRegistry) fetchSkill(
+	ctx context.Context,
+	ref remoteSkillRef,
+) ([]remoteSkillFile, error) {
+	if ref.Provider != skillsShProvider || ref.Locator != ref.ID {
+		return nil, fmt.Errorf("invalid skills.sh skill reference")
+	}
+	parts := strings.Split(ref.ID, "/")
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
+	}
+	for index, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
+		}
+		parts[index] = url.PathEscape(part)
+	}
+	endpoint := r.baseURL + "/api/v1/skills/" + strings.Join(parts, "/")
+	var result struct {
+		Files []struct {
+			Path     string `json:"path"`
+			Contents string `json:"contents"`
+		} `json:"files"`
+	}
+	if err := fetchRegistryJSON(ctx, r.client, endpoint, "", &result); err != nil {
+		return nil, err
+	}
+	files := make([]remoteSkillFile, len(result.Files))
+	for index, file := range result.Files {
+		files[index] = remoteSkillFile{
+			Path:     file.Path,
+			Contents: []byte(file.Contents),
+		}
+	}
+	return files, nil
 }
 
 func (r *remoteRegistry) fetch(ctx context.Context, query string) ([]remoteSkill, error) {

@@ -31,6 +31,7 @@ type manager struct {
 	paths                paths
 	remote               *remoteRegistry
 	skillsMP             *skillsMPRegistry
+	remoteStore          *remoteSkillStore
 	runtimeOnce          sync.Once
 	javascriptRuntime    string
 	javascriptRuntimeErr error
@@ -43,6 +44,7 @@ type discoveredSkill struct {
 	Root        string
 	Source      string
 	Editable    bool
+	RemoteKey   string
 }
 
 type skillDiscovery struct {
@@ -56,6 +58,7 @@ type skillRoot struct {
 	source        string
 	includeSystem bool
 	editable      bool
+	remoteKey     string
 }
 
 type skillFrontmatter struct {
@@ -90,6 +93,24 @@ func (m *manager) skills(project string) ([]discoveredSkill, error) {
 	}
 	if err := discovery.discoverPluginCache(filepath.Join(m.paths.codexHome, "plugins", "cache")); err != nil {
 		return nil, err
+	}
+	if m.remoteStore != nil {
+		records, err := m.remoteStore.records()
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range records {
+			root := filepath.Join(
+				m.remoteStore.root,
+				filepath.FromSlash(record.Content),
+			)
+			if err := discovery.addSkill(skillRoot{
+				source:    record.Provider,
+				remoteKey: record.ref().key(),
+			}, root); err != nil {
+				return nil, err
+			}
+		}
 	}
 	slices.SortFunc(discovery.skills, func(a, b discoveredSkill) int {
 		return strings.Compare(a.Name, b.Name)
@@ -199,6 +220,7 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	skill.Root = resolvedRoot
 	skill.Source = root.source
 	skill.Editable = root.editable
+	skill.RemoteKey = root.remoteKey
 	d.seenPaths[resolvedSkill] = struct{}{}
 	d.seenNames[skill.Name] = struct{}{}
 	d.skills = append(d.skills, skill)

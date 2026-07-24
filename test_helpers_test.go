@@ -9,11 +9,14 @@ import (
 func newTestManager(t *testing.T) *manager {
 	t.Helper()
 	root := t.TempDir()
-	return &manager{paths: paths{
-		userSkills:  filepath.Join(root, "home", ".agents", "skills"),
-		codexHome:   filepath.Join(root, "home", ".codex"),
-		adminSkills: filepath.Join(root, "etc", "codex", "skills"),
+	manager := &manager{paths: paths{
+		userSkills:   filepath.Join(root, "home", ".agents", "skills"),
+		codexHome:    filepath.Join(root, "home", ".codex"),
+		adminSkills:  filepath.Join(root, "etc", "codex", "skills"),
+		remoteSkills: filepath.Join(root, "cache", "skills-mgr", "remote-skills"),
 	}}
+	manager.remoteStore = newRemoteSkillStore(manager.paths.remoteSkills)
+	return manager
 }
 
 func writeFile(t *testing.T, path, content string) {

@@ -10,13 +10,27 @@ import (
 )
 
 type registrySearchSkill struct {
-	ID    string
-	Name  string
-	Label string
+	ID       string
+	Name     string
+	Label    string
+	Provider string
+	Locator  string
+}
+
+func (s registrySearchSkill) ref() remoteSkillRef {
+	return remoteSkillRef{
+		Provider: s.Provider,
+		ID:       s.ID,
+		Name:     s.Name,
+		Locator:  s.Locator,
+	}
 }
 
 type registrySearchProvider interface {
-	search(context.Context, string) ([]registrySearchSkill, error)
+	search(
+		ctx context.Context,
+		query string,
+	) ([]registrySearchSkill, error)
 }
 
 func normalizedRegistryQuery(query string) string {

@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -99,12 +101,188 @@ func presentSkillsMP(skills []skillsMPSkill) []registrySearchSkill {
 	results := make([]registrySearchSkill, len(skills))
 	for index, skill := range skills {
 		results[index] = registrySearchSkill{
-			ID:    skill.ID,
-			Name:  skill.Name,
-			Label: fmt.Sprintf("%s • %d stars", skill.Author, skill.Stars),
+			ID:       skill.ID,
+			Name:     skill.Name,
+			Label:    fmt.Sprintf("%s • %d stars", skill.Author, skill.Stars),
+			Provider: skillsMPProvider,
+			Locator:  skill.GitHubURL,
 		}
 	}
 	return results
+}
+
+type githubSkillLocation struct {
+	owner     string
+	repo      string
+	treeParts []string
+}
+
+func (r *skillsMPRegistry) fetchSkill(
+	ctx context.Context,
+	ref remoteSkillRef,
+) ([]remoteSkillFile, error) {
+	if ref.Provider != skillsMPProvider || ref.Locator == "" {
+		return nil, fmt.Errorf("invalid SkillsMP skill reference")
+	}
+	location, err := parseGitHubSkillLocation(ref.Locator)
+	if err != nil {
+		return nil, err
+	}
+	temporary, err := os.MkdirTemp("", "skills-mgr-clone-")
+	if err != nil {
+		return nil, fmt.Errorf("create clone directory: %w", err)
+	}
+	defer os.RemoveAll(temporary)
+	checkout := filepath.Join(temporary, "repository")
+	gitRef := ""
+	skillPath := ""
+	if len(location.treeParts) > 0 {
+		gitRef = location.treeParts[0]
+		skillPath = strings.Join(location.treeParts[1:], "/")
+	}
+	if err := cloneGitHubRepository(ctx, location, gitRef, checkout); err != nil {
+		return nil, err
+	}
+	return filesFromGitHubCheckout(checkout, skillPath)
+}
+
+func cloneGitHubRepository(
+	ctx context.Context,
+	location githubSkillLocation,
+	gitRef string,
+	destination string,
+) error {
+	repository := "https://github.com/" + location.owner + "/" + location.repo + ".git"
+	args := []string{"clone", "--depth", "1", "--single-branch"}
+	if gitRef != "" {
+		args = append(args, "--branch", gitRef)
+	}
+	args = append(args, repository, destination)
+	command := exec.CommandContext(ctx, "git", args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf(
+			"git clone %s: %w: %s",
+			repository,
+			err,
+			strings.TrimSpace(string(output)),
+		)
+	}
+	return nil
+}
+
+func parseGitHubSkillLocation(value string) (githubSkillLocation, error) {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" ||
+		!strings.EqualFold(parsed.Hostname(), "github.com") ||
+		parsed.User != nil {
+		return githubSkillLocation{}, fmt.Errorf("unsupported SkillsMP GitHub URL %q", value)
+	}
+	parts := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	for index, part := range parts {
+		decoded, decodeErr := url.PathUnescape(part)
+		if decodeErr != nil || decoded == "" || decoded == "." || decoded == ".." ||
+			strings.Contains(decoded, "/") || strings.Contains(decoded, "\\") {
+			return githubSkillLocation{}, fmt.Errorf("invalid SkillsMP GitHub URL %q", value)
+		}
+		parts[index] = decoded
+	}
+	if len(parts) < 2 {
+		return githubSkillLocation{}, fmt.Errorf("invalid SkillsMP GitHub URL %q", value)
+	}
+	location := githubSkillLocation{
+		owner: parts[0],
+		repo:  strings.TrimSuffix(parts[1], ".git"),
+	}
+	if location.repo == "" {
+		return githubSkillLocation{}, fmt.Errorf("invalid SkillsMP GitHub URL %q", value)
+	}
+	if len(parts) == 2 {
+		return location, nil
+	}
+	if len(parts) < 4 || parts[2] != "tree" {
+		return githubSkillLocation{}, fmt.Errorf("unsupported SkillsMP GitHub URL %q", value)
+	}
+	location.treeParts = parts[3:]
+	return location, nil
+}
+
+func filesFromGitHubCheckout(
+	checkout string,
+	skillPath string,
+) ([]remoteSkillFile, error) {
+	tracked, err := gitTrackedFiles(checkout)
+	if err != nil {
+		return nil, err
+	}
+	if skillPath != "" &&
+		(skillPath != filepath.ToSlash(filepath.Clean(filepath.FromSlash(skillPath))) ||
+			!filepath.IsLocal(filepath.FromSlash(skillPath))) {
+		return nil, fmt.Errorf("GitHub skill path %q is unsafe", skillPath)
+	}
+	root := filepath.Join(checkout, filepath.FromSlash(skillPath))
+	var files []remoteSkillFile
+	total := 0
+	for _, trackedPath := range tracked {
+		relative := trackedPath
+		if skillPath != "" {
+			var ok bool
+			relative, ok = strings.CutPrefix(trackedPath, skillPath+"/")
+			if !ok {
+				continue
+			}
+		}
+		if relative == "" {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(relative))
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("GitHub skill contains non-regular path %q", relative)
+		}
+		if len(files) >= remoteSkillMaxFiles {
+			return nil, fmt.Errorf(
+				"GitHub skill contains more than %d files",
+				remoteSkillMaxFiles,
+			)
+		}
+		remaining := remoteSkillMaxBytes - total
+		if info.Size() > int64(remaining) {
+			return nil, fmt.Errorf(
+				"GitHub skill exceeds %d bytes",
+				remoteSkillMaxBytes,
+			)
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read GitHub skill file %q: %w", relative, err)
+		}
+		total += len(contents)
+		files = append(files, remoteSkillFile{
+			Path:     relative,
+			Contents: contents,
+			Mode:     info.Mode(),
+		})
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("GitHub repository does not contain skill path %q", skillPath)
+	}
+	return files, nil
+}
+
+func gitTrackedFiles(checkout string) ([]string, error) {
+	output, err := exec.Command("git", "-C", checkout, "ls-files", "-z").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list cloned GitHub files: %w", err)
+	}
+	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
+	if len(paths) == 1 && paths[0] == "" {
+		return nil, nil
+	}
+	return paths, nil
 }
 
 func (r *skillsMPRegistry) searchSkills(

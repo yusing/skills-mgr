@@ -525,7 +525,7 @@ func writeExecutable(t *testing.T, path, content string) {
 func TestDaemonStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := runDaemon(ctx, newRemoteRegistry(""), io.Discard); err != nil {
+	if err := runDaemon(ctx, newTestManager(t), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 }

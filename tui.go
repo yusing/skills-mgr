@@ -23,6 +23,7 @@ type model struct {
 	remoteTopics    []remoteTopic
 	remoteCollapsed map[string]bool
 	remoteError     string
+	remoteSelected  map[string]bool
 	registrySkills  []registrySearchSkill
 	registryError   string
 	registryCancel  context.CancelFunc
@@ -35,6 +36,8 @@ type model struct {
 	expanded        string
 	busy            bool
 	status          string
+	progressTitle   string
+	progressDetail  string
 	filtering       bool
 	filterQuery     string
 }
@@ -69,6 +72,11 @@ type toggleDone struct {
 	skill   string
 	enabled bool
 	err     error
+}
+
+type remoteToggleDone struct {
+	result remoteToggleResult
+	err    error
 }
 
 type editDone struct {
@@ -106,6 +114,7 @@ func newModel(manager *manager, project string) (model, error) {
 	current := model{
 		manager: manager, project: project, skills: discovered, selected: selected,
 		remoteCollapsed: make(map[string]bool),
+		remoteSelected:  remoteSelectionFrom(discovered, selected),
 		status:          fmt.Sprintf("%d skills", len(discovered)),
 	}
 	current.reloadRemoteCache()
@@ -122,12 +131,30 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 		} else {
 			m.selected[message.skill] = message.enabled
+			m.remoteSelected = remoteSelectionFrom(m.skills, m.selected)
 			if message.enabled {
 				m.status = "enabled " + message.skill
 			} else {
 				m.status = "disabled " + message.skill
 			}
 		}
+	case remoteToggleDone:
+		m.busy = false
+		m.progressTitle = ""
+		m.progressDetail = ""
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		m.skills = message.result.Skills
+		m.selected = message.result.Selected
+		m.remoteSelected = message.result.RemoteSelected
+		if message.result.Enabled {
+			m.status = "enabled " + message.result.Skill
+		} else {
+			m.status = "disabled " + message.result.Skill
+		}
+		m.syncViewport()
 	case editDone:
 		m.busy = false
 		if message.editorErr != nil {
@@ -267,20 +294,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.toggleExpanded(m.cursor)
 			}
 		case " ":
-			if m.tab != localTab {
-				break
-			}
-			skillIndex, ok := m.localSkillIndex(m.cursor)
-			if !ok {
-				break
-			}
-			skill := m.skills[skillIndex].Name
-			m.busy = true
-			m.status = "updating " + skill
-			return m, func() tea.Msg {
-				enabled, err := m.manager.toggle(m.project, skill)
-				return toggleDone{skill: skill, enabled: enabled, err: err}
-			}
+			return toggleSelectedSkill(m)
 		case "e":
 			if m.tab != localTab {
 				break
@@ -314,6 +328,59 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
+	if m.tab != localTab {
+		ref, ok := remoteRefAtCursor(m)
+		if !ok || m.manager == nil || m.manager.remoteStore == nil {
+			return m, nil
+		}
+		enabled := m.remoteSelected[ref.key()]
+		refresh := false
+		status := "disabling "
+		if !enabled {
+			var err error
+			refresh, err = m.manager.remoteStore.needsRefresh(ref)
+			if err != nil {
+				m.status = "error: " + err.Error()
+				return m, nil
+			}
+			status = "enabling "
+			if refresh {
+				status = "fetching "
+			}
+		}
+		m.busy = true
+		m.status = status + ref.Name
+		if refresh {
+			m.progressTitle = "Installing " + ref.Name
+			if ref.Provider == skillsMPProvider {
+				m.progressDetail = "Cloning with git --depth 1…"
+			} else {
+				m.progressDetail = "Fetching remote skill…"
+			}
+		}
+		return m, func() tea.Msg {
+			result, err := m.manager.toggleRemote(
+				context.Background(),
+				m.project,
+				ref,
+			)
+			return remoteToggleDone{result: result, err: err}
+		}
+	}
+	skillIndex, ok := m.localSkillIndex(m.cursor)
+	if !ok {
+		return m, nil
+	}
+	skill := m.skills[skillIndex].Name
+	m.busy = true
+	m.status = "updating " + skill
+	return m, func() tea.Msg {
+		enabled, err := m.manager.toggle(m.project, skill)
+		return toggleDone{skill: skill, enabled: enabled, err: err}
+	}
 }
 
 func (m *model) selectTab(tab int) tea.Cmd {
@@ -536,6 +603,25 @@ func (m model) itemCount() int {
 	return len(m.localSkillIndices())
 }
 
+func remoteRefAtCursor(m model) (remoteSkillRef, bool) {
+	switch {
+	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
+		rows := m.remoteRows()
+		if m.cursor < 0 || m.cursor >= len(rows) || rows[m.cursor].skill < 0 {
+			return remoteSkillRef{}, false
+		}
+		row := rows[m.cursor]
+		return m.remoteTopics[row.topic].Skills[row.skill].ref(), true
+	case m.tab == remoteTab || m.tab == skillsMPTab:
+		if m.cursor < 0 || m.cursor >= len(m.registrySkills) {
+			return remoteSkillRef{}, false
+		}
+		return m.registrySkills[m.cursor].ref(), true
+	default:
+		return remoteSkillRef{}, false
+	}
+}
+
 func (m *manager) refreshEditedSkill(
 	project string,
 	oldName string,
@@ -671,9 +757,9 @@ func (m model) View() string {
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	if m.tab == remoteTab {
-		help = "←/→ tabs • f search • ↑/k ↓/j move • enter expand/collapse topic • q quit"
+		help = "←/→ tabs • f search • ↑/k ↓/j move • enter topics • space toggle • q quit"
 	} else if m.tab == skillsMPTab {
-		help = "←/→ tabs • f search • ↑/k ↓/j move • q quit"
+		help = "←/→ tabs • f search • ↑/k ↓/j move • space toggle • q quit"
 	}
 	if m.filtering {
 		help = "type to filter • enter/esc done"
@@ -687,7 +773,29 @@ func (m model) View() string {
 		),
 		boundLine(statusStyle(m.status).Render(terminalSafeText(m.status)), m.width),
 	)
-	return view.String()
+	if m.progressTitle == "" {
+		return view.String()
+	}
+	return m.progressPopup()
+}
+
+func (m model) progressPopup() string {
+	width := min(max(m.width-4, 20), 72)
+	content := titleStyle.Render(terminalSafeText(m.progressTitle)) + "\n\n" +
+		terminalSafeText(m.progressDetail)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(accentColor).
+		Padding(1, 2).
+		Width(width).
+		Render(content)
+	return lipgloss.Place(
+		max(m.width, lipgloss.Width(box)),
+		max(m.height, lipgloss.Height(box)),
+		lipgloss.Center,
+		lipgloss.Center,
+		box,
+	)
 }
 
 func (m model) filterLine() string {
@@ -795,8 +903,12 @@ func (m *model) syncFixedRowViewport(count int) {
 }
 
 func (m model) registrySkillLine(skill registrySearchSkill, selected bool) string {
+	displayName := skill.Name
+	if m.remoteSelected[skill.ref().key()] {
+		displayName += " [enabled]"
+	}
 	name := selectedStyle(lipgloss.NewStyle(), selected).
-		Render(terminalSafeText(skill.Name))
+		Render(terminalSafeText(displayName))
 	label := terminalSafeText(skill.Label)
 	gap := max(m.width-lipgloss.Width(name)-lipgloss.Width(label), 1)
 	line := name + selectedStyle(lipgloss.NewStyle(), selected).
@@ -820,8 +932,12 @@ func (m model) remoteLine(row remoteRow, selected bool) string {
 		return boundLine(line, m.width)
 	}
 	skill := topic.Skills[row.skill]
+	displayName := skill.Name
+	if m.remoteSelected[skill.ref().key()] {
+		displayName += " [enabled]"
+	}
 	name := selectedStyle(lipgloss.NewStyle(), selected).
-		Render("  " + terminalSafeText(skill.Name))
+		Render("  " + terminalSafeText(displayName))
 	installs := fmt.Sprintf("%d installs", skill.Installs)
 	source := terminalSafeText(skill.Source)
 	label := source + " • " + installs
@@ -847,7 +963,11 @@ func statusStyle(status string) lipgloss.Style {
 		return lipgloss.NewStyle().Foreground(errorColor)
 	case strings.HasPrefix(status, "updating "), strings.HasPrefix(status, "editing "):
 		return lipgloss.NewStyle().Foreground(warningColor)
-	case strings.HasPrefix(status, "warning:"), strings.HasPrefix(status, "loading "):
+	case strings.HasPrefix(status, "warning:"),
+		strings.HasPrefix(status, "loading "),
+		strings.HasPrefix(status, "fetching "),
+		strings.HasPrefix(status, "enabling "),
+		strings.HasPrefix(status, "disabling "):
 		return lipgloss.NewStyle().Foreground(warningColor)
 	case strings.HasPrefix(status, "enabled "), strings.HasPrefix(status, "saved "):
 		return lipgloss.NewStyle().Foreground(successColor)
