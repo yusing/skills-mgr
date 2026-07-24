@@ -318,6 +318,81 @@ func TestRemoteTopicsExpandAndCollapseAsNestedTree(t *testing.T) {
 	}
 }
 
+func TestRemoteSkillsExpandProviderMetadata(t *testing.T) {
+	t.Run("skills.sh topic skill", func(t *testing.T) {
+		skill := remoteSkill{
+			ID:          "owner/repo/testing",
+			Name:        "testing",
+			Description: "Runs the repository test suite.",
+			Source:      "owner/repo",
+			Installs:    42,
+		}
+		current := model{
+			tab: remoteTab,
+			remoteTopics: []remoteTopic{{
+				Slug: "testing", Name: "Testing", Skills: []remoteSkill{skill},
+			}},
+			cursor: 1,
+			width:  70,
+			height: 12,
+		}
+
+		updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		current = updated.(model)
+		view := current.View()
+		for _, want := range []string{
+			"▾ testing",
+			"Runs the repository test suite.",
+			"id  owner/repo/testing",
+		} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("expanded skills.sh skill omitted %q:\n%s", want, view)
+			}
+		}
+
+		updated, _ = current.Update(tea.MouseMsg{
+			X:      4,
+			Y:      tuiHeaderHeight + 1,
+			Action: tea.MouseActionPress,
+			Button: tea.MouseButtonLeft,
+		})
+		current = updated.(model)
+		if current.expanded != "" ||
+			strings.Contains(current.View(), "Runs the repository test suite.") {
+			t.Fatalf("click did not collapse skills.sh metadata:\n%s", current.View())
+		}
+	})
+
+	t.Run("SkillsMP skill", func(t *testing.T) {
+		current := model{
+			tab: skillsMPTab,
+			registrySkills: []registrySearchSkill{{
+				ID:          "testing-id",
+				Name:        "testing",
+				Description: "Tests Go packages.",
+				Label:       "gopher • 99 stars",
+				Provider:    skillsMPProvider,
+				Locator:     "https://github.com/owner/repo/tree/main/testing",
+			}},
+			width:  70,
+			height: 12,
+		}
+
+		updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		current = updated.(model)
+		view := current.View()
+		for _, want := range []string{
+			"▾ testing",
+			"Tests Go packages.",
+			"url  https://github.com/owner/repo/tree/main/testing",
+		} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("expanded SkillsMP skill omitted %q:\n%s", want, view)
+			}
+		}
+	})
+}
+
 func TestRemoteTabReloadsDaemonCache(t *testing.T) {
 	manager := newTestManager(t)
 	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")

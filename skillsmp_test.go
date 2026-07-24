@@ -117,7 +117,8 @@ func TestSkillsMPSearchUsesAPIAndProvidedKey(t *testing.T) {
 			"success": true,
 			"data": map[string]any{
 				"skills": []map[string]any{{
-					"id": "testing-id", "name": "testing", "author": "gopher", "stars": 99,
+					"id": "testing-id", "name": "testing", "author": "gopher",
+					"description": "Tests Go packages.", "stars": 99,
 				}},
 			},
 		})
@@ -133,6 +134,7 @@ func TestSkillsMPSearchUsesAPIAndProvidedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(skills) != 1 || skills[0].Name != "testing" ||
+		skills[0].Description != "Tests Go packages." ||
 		skills[0].Label != "gopher • 99 stars" {
 		t.Fatalf("skills = %#v", skills)
 	}

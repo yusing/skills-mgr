@@ -52,10 +52,11 @@ type remoteTopic struct {
 }
 
 type remoteSkill struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Source   string `json:"source"`
-	Installs int    `json:"installs"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Source      string `json:"source"`
+	Installs    int    `json:"installs"`
 }
 
 func (s remoteSkill) ref() remoteSkillRef {
@@ -110,11 +111,12 @@ func (r *remoteRegistry) search(
 	results := make([]registrySearchSkill, len(skills))
 	for index, skill := range skills {
 		results[index] = registrySearchSkill{
-			ID:       skill.ID,
-			Name:     skill.Name,
-			Label:    fmt.Sprintf("%s • %d installs", skill.Source, skill.Installs),
-			Provider: skillsShProvider,
-			Locator:  skill.ID,
+			ID:          skill.ID,
+			Name:        skill.Name,
+			Description: skill.Description,
+			Label:       fmt.Sprintf("%s • %d installs", skill.Source, skill.Installs),
+			Provider:    skillsShProvider,
+			Locator:     skill.ID,
 		}
 	}
 	return results, nil

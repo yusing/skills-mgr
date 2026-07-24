@@ -101,11 +101,12 @@ func presentSkillsMP(skills []skillsMPSkill) []registrySearchSkill {
 	results := make([]registrySearchSkill, len(skills))
 	for index, skill := range skills {
 		results[index] = registrySearchSkill{
-			ID:       skill.ID,
-			Name:     skill.Name,
-			Label:    fmt.Sprintf("%s • %d stars", skill.Author, skill.Stars),
-			Provider: skillsMPProvider,
-			Locator:  skill.GitHubURL,
+			ID:          skill.ID,
+			Name:        skill.Name,
+			Description: skill.Description,
+			Label:       fmt.Sprintf("%s • %d stars", skill.Author, skill.Stars),
+			Provider:    skillsMPProvider,
+			Locator:     skill.GitHubURL,
 		}
 	}
 	return results

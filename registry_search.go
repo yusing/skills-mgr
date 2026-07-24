@@ -10,11 +10,12 @@ import (
 )
 
 type registrySearchSkill struct {
-	ID       string
-	Name     string
-	Label    string
-	Provider string
-	Locator  string
+	ID          string
+	Name        string
+	Description string
+	Label       string
+	Provider    string
+	Locator     string
 }
 
 func (s registrySearchSkill) ref() remoteSkillRef {
