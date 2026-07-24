@@ -127,33 +127,50 @@ func (r *remoteRegistry) fetchSkill(
 		return nil, fmt.Errorf("invalid skills.sh skill reference")
 	}
 	parts := strings.Split(ref.ID, "/")
-	if len(parts) < 3 {
+	if len(parts) != 3 {
 		return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
 	}
-	for index, part := range parts {
-		if part == "" || part == "." || part == ".." {
+	for _, part := range parts[:2] {
+		if !validGitHubRepositoryPart(part) {
 			return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
 		}
-		parts[index] = url.PathEscape(part)
 	}
-	endpoint := r.baseURL + "/api/v1/skills/" + strings.Join(parts, "/")
-	var result struct {
-		Files []struct {
-			Path     string `json:"path"`
-			Contents string `json:"contents"`
-		} `json:"files"`
+
+	temporary, err := os.MkdirTemp("", "skills-mgr-clone-")
+	if err != nil {
+		return nil, fmt.Errorf("create clone directory: %w", err)
 	}
-	if err := fetchRegistryJSON(ctx, r.client, endpoint, "", &result); err != nil {
+	defer os.RemoveAll(temporary)
+	checkout := filepath.Join(temporary, "repository")
+	location := githubSkillLocation{owner: parts[0], repo: parts[1]}
+	if err := cloneGitHubRepository(ctx, location, "", checkout); err != nil {
 		return nil, err
 	}
-	files := make([]remoteSkillFile, len(result.Files))
-	for index, file := range result.Files {
-		files[index] = remoteSkillFile{
-			Path:     file.Path,
-			Contents: []byte(file.Contents),
-		}
+	tracked, err := gitTrackedFiles(ctx, checkout)
+	if err != nil {
+		return nil, err
 	}
-	return files, nil
+	skillPath, err := findGitHubSkillPath(ctx, checkout, tracked, ref.Name)
+	if err != nil {
+		return nil, err
+	}
+	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
+}
+
+func validGitHubRepositoryPart(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'A' && character <= 'Z' ||
+			character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' ||
+			character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (r *remoteRegistry) fetch(ctx context.Context, query string) ([]remoteSkill, error) {

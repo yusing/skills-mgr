@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -125,6 +128,197 @@ func TestRemoteRegistrySearchNormalizesAndValidatesResults(t *testing.T) {
 	if len(skills) != 1 || skills[0].ID != "owner/repo/testing" ||
 		skills[0].Label != "owner/repo • 9 installs" {
 		t.Fatalf("skills = %#v", skills)
+	}
+}
+
+func TestSkillsShFetchSkillClonesPublicRepositoryAndIgnoresUnrelatedSkill(t *testing.T) {
+	t.Setenv("VERCEL_OIDC_TOKEN", "")
+	logPath := fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"packages/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Alpha.", "body"),
+				mode:     0o644,
+			},
+			"packages/alpha/scripts/check.sh": {
+				contents: "#!/bin/sh\n",
+				mode:     0o755,
+			},
+			"packages/beta/SKILL.md": {
+				contents: skillFile("beta", "Beta.", "other"),
+				mode:     0o644,
+			},
+		},
+	})
+	files, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/registry-slug",
+		Name:     "alpha",
+		Locator:  "owner/repo/registry-slug",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 || files[0].Path != "SKILL.md" ||
+		files[1].Path != "scripts/check.sh" ||
+		files[1].Mode&0o111 == 0 {
+		t.Fatalf("fetched files = %#v", files)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(
+		string(logged),
+		"clone --depth 1 --single-branch https://github.com/owner/repo.git ",
+	) || strings.Count(string(logged), "\n") != 1 {
+		t.Fatalf("git invocation = %q", logged)
+	}
+}
+
+func TestSkillsShFetchSkillRejectsMalformedAndUnknownReferences(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  remoteSkillRef
+	}{
+		{
+			name: "missing skill segment",
+			ref: remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo",
+				Name:     "alpha",
+				Locator:  "owner/repo",
+			},
+		},
+		{
+			name: "mismatched locator",
+			ref: remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo/alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo/beta",
+			},
+		},
+		{
+			name: "unsafe repository",
+			ref: remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo?ref=main/alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo?ref=main/alpha",
+			},
+		},
+		{
+			name: "future provider",
+			ref: remoteSkillRef{
+				Provider: "skills.sh.v2",
+				ID:       "owner/repo/alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo/alpha",
+			},
+		},
+	}
+	registry := newRemoteRegistry("")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := registry.fetchSkill(t.Context(), test.ref); err == nil {
+				t.Fatal("fetchSkill accepted invalid reference")
+			}
+		})
+	}
+}
+
+func TestGitHubSkillPostCloneOperationsHonorCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	checks := []struct {
+		name string
+		run  func() error
+	}{
+		{
+			name: "tracked files",
+			run: func() error {
+				_, err := gitTrackedFiles(ctx, t.TempDir())
+				return err
+			},
+		},
+		{
+			name: "named skill discovery",
+			run: func() error {
+				_, err := findGitHubSkillPath(
+					ctx,
+					t.TempDir(),
+					[]string{"SKILL.md"},
+					"alpha",
+				)
+				return err
+			},
+		},
+		{
+			name: "subtree extraction",
+			run: func() error {
+				_, err := filesFromGitHubCheckout(
+					ctx,
+					t.TempDir(),
+					"",
+					[]string{"SKILL.md"},
+				)
+				return err
+			},
+		},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.run(); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation error = %v", err)
+			}
+		})
+	}
+}
+
+func TestSkillsShFetchSkillRejectsMissingAndDuplicateDeclaredNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]gitTestFile
+		want  string
+	}{
+		{
+			name: "missing",
+			files: map[string]gitTestFile{
+				"skills/beta/SKILL.md": {
+					contents: skillFile("beta", "Beta.", "body"),
+					mode:     0o644,
+				},
+			},
+			want: `does not contain skill "alpha"`,
+		},
+		{
+			name: "duplicate",
+			files: map[string]gitTestFile{
+				"one/SKILL.md": {
+					contents: skillFile("alpha", "Alpha one.", "body"),
+					mode:     0o644,
+				},
+				"two/SKILL.md": {
+					contents: skillFile("alpha", "Alpha two.", "body"),
+					mode:     0o644,
+				},
+			},
+			want: `multiple skills named "alpha"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeGit(t, map[string]map[string]gitTestFile{"default": test.files})
+			_, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo/alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo/alpha",
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("fetchSkill error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

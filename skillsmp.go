@@ -143,7 +143,11 @@ func (r *skillsMPRegistry) fetchSkill(
 	if err := cloneGitHubRepository(ctx, location, gitRef, checkout); err != nil {
 		return nil, err
 	}
-	return filesFromGitHubCheckout(checkout, skillPath)
+	tracked, err := gitTrackedFiles(ctx, checkout)
+	if err != nil {
+		return nil, err
+	}
+	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
 }
 
 func cloneGitHubRepository(
@@ -161,6 +165,9 @@ func cloneGitHubRepository(
 	command := exec.CommandContext(ctx, "git", args...)
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		return fmt.Errorf(
 			"git clone %s: %w: %s",
 			repository,
@@ -208,13 +215,11 @@ func parseGitHubSkillLocation(value string) (githubSkillLocation, error) {
 }
 
 func filesFromGitHubCheckout(
+	ctx context.Context,
 	checkout string,
 	skillPath string,
+	tracked []string,
 ) ([]remoteSkillFile, error) {
-	tracked, err := gitTrackedFiles(checkout)
-	if err != nil {
-		return nil, err
-	}
 	if skillPath != "" &&
 		(skillPath != filepath.ToSlash(filepath.Clean(filepath.FromSlash(skillPath))) ||
 			!filepath.IsLocal(filepath.FromSlash(skillPath))) {
@@ -224,6 +229,9 @@ func filesFromGitHubCheckout(
 	var files []remoteSkillFile
 	total := 0
 	for _, trackedPath := range tracked {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		relative := trackedPath
 		if skillPath != "" {
 			var ok bool
@@ -273,9 +281,75 @@ func filesFromGitHubCheckout(
 	return files, nil
 }
 
-func gitTrackedFiles(checkout string) ([]string, error) {
-	output, err := exec.Command("git", "-C", checkout, "ls-files", "-z").Output()
+func findGitHubSkillPath(
+	ctx context.Context,
+	checkout string,
+	tracked []string,
+	name string,
+) (string, error) {
+	found := ""
+	matched := false
+	for _, trackedPath := range tracked {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if filepath.Base(filepath.FromSlash(trackedPath)) != "SKILL.md" {
+			continue
+		}
+		relative, err := validRemoteFilePath(trackedPath)
+		if err != nil {
+			return "", fmt.Errorf("GitHub repository: %w", err)
+		}
+		path := filepath.Join(checkout, filepath.FromSlash(relative))
+		info, err := os.Lstat(path)
+		if err != nil {
+			return "", fmt.Errorf("inspect GitHub skill manifest %q: %w", relative, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("GitHub skill manifest %q is not a regular file", relative)
+		}
+		skill, ok, err := parseSkill(path)
+		if err != nil {
+			return "", fmt.Errorf("parse GitHub skill manifest %q: %w", relative, err)
+		}
+		if !ok || skill.Name != name {
+			continue
+		}
+		candidate := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))
+		if candidate == "." {
+			candidate = ""
+		}
+		if matched {
+			return "", fmt.Errorf(
+				"GitHub repository contains multiple skills named %q",
+				name,
+			)
+		}
+		found = candidate
+		matched = true
+	}
+	if !matched {
+		return "", fmt.Errorf("GitHub repository does not contain skill %q", name)
+	}
+	return found, nil
+}
+
+func gitTrackedFiles(ctx context.Context, checkout string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	output, err := exec.CommandContext(
+		ctx,
+		"git",
+		"-C",
+		checkout,
+		"ls-files",
+		"-z",
+	).Output()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, fmt.Errorf("list cloned GitHub files: %w", err)
 	}
 	paths := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")

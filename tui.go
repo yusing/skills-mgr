@@ -348,18 +348,14 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 			}
 			status = "enabling "
 			if refresh {
-				status = "fetching "
+				status = "installing "
 			}
 		}
 		m.busy = true
 		m.status = status + ref.Name
 		if refresh {
 			m.progressTitle = "Installing " + ref.Name
-			if ref.Provider == skillsMPProvider {
-				m.progressDetail = "Cloning with git --depth 1…"
-			} else {
-				m.progressDetail = "Fetching remote skill…"
-			}
+			m.progressDetail = "Cloning with git --depth 1…"
 		}
 		return m, func() tea.Msg {
 			result, err := m.manager.toggleRemote(

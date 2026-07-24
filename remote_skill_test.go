@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -18,23 +15,22 @@ import (
 )
 
 func TestRemoteTogglePersistsOutsideAgentRootsAndReusesFreshContent(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		requests++
-		if request.URL.Path != "/api/v1/skills/owner/repo/alpha" {
-			t.Errorf("request path = %q", request.URL.Path)
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"files": []map[string]string{
-				{"path": "SKILL.md", "contents": skillFile("alpha", "Remote alpha.", "body")},
-				{"path": "references/guide.md", "contents": "# Guide\n"},
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
 			},
-		})
-	}))
-	defer server.Close()
+			"skills/alpha/references/guide.md": {contents: "# Guide\n", mode: 0o644},
+			"skills/unrelated/SKILL.md": {
+				contents: skillFile("unrelated", "Unrelated.", "other"),
+				mode:     0o644,
+			},
+		},
+	})
 
 	manager := newTestManager(t)
-	manager.remote = &remoteRegistry{baseURL: server.URL, client: server.Client()}
+	manager.remote = newRemoteRegistry("")
 	project := t.TempDir()
 	ref := remoteSkillRef{
 		Provider: skillsShProvider,
@@ -47,8 +43,8 @@ func TestRemoteTogglePersistsOutsideAgentRootsAndReusesFreshContent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Enabled || requests != 1 || !result.RemoteSelected[ref.key()] {
-		t.Fatalf("enable result = %#v, requests = %d", result, requests)
+	if !result.Enabled || gitCloneCount(t, gitLog) != 1 || !result.RemoteSelected[ref.key()] {
+		t.Fatalf("enable result = %#v, clones = %d", result, gitCloneCount(t, gitLog))
 	}
 	for _, forbidden := range []string{
 		filepath.Join(project, ".agents", "skills"),
@@ -79,8 +75,8 @@ func TestRemoteTogglePersistsOutsideAgentRootsAndReusesFreshContent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Enabled || requests != 1 {
-		t.Fatalf("disable result = %#v, requests = %d", result, requests)
+	if result.Enabled || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("disable result = %#v, clones = %d", result, gitCloneCount(t, gitLog))
 	}
 	otherProject := t.TempDir()
 	other, err := manager.selection(otherProject)
@@ -95,32 +91,24 @@ func TestRemoteTogglePersistsOutsideAgentRootsAndReusesFreshContent(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Enabled || requests != 1 {
-		t.Fatalf("fresh re-enable result = %#v, requests = %d", result, requests)
+	if !result.Enabled || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("fresh re-enable result = %#v, clones = %d", result, gitCloneCount(t, gitLog))
 	}
 }
 
 func TestRemoteToggleRefreshesStaleContentWithoutReplacingOnFailure(t *testing.T) {
-	requests := 0
-	fail := false
-	version := "one"
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		requests++
-		if fail {
-			http.Error(response, `{"message":"offline"}`, http.StatusServiceUnavailable)
-			return
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"files": []map[string]string{{
-				"path":     "SKILL.md",
-				"contents": skillFile("alpha", "Remote alpha.", version),
-			}},
-		})
-	}))
-	defer server.Close()
+	t.Setenv("FAKE_GIT_ERROR", "")
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
 
 	manager := newTestManager(t)
-	manager.remote = &remoteRegistry{baseURL: server.URL, client: server.Client()}
+	manager.remote = newRemoteRegistry("")
 	project := t.TempDir()
 	ref := remoteSkillRef{
 		Provider: skillsShProvider,
@@ -135,13 +123,13 @@ func TestRemoteToggleRefreshesStaleContentWithoutReplacingOnFailure(t *testing.T
 		t.Fatal(err)
 	}
 	original := ageRemoteRecord(t, manager.remoteStore, ref)
-	fail = true
+	t.Setenv("FAKE_GIT_ERROR", "offline")
 	if _, err := manager.toggleRemote(t.Context(), project, ref); err == nil ||
 		!strings.Contains(err.Error(), "offline") {
 		t.Fatalf("stale enable error = %v", err)
 	}
-	if requests != 2 {
-		t.Fatalf("requests after failed refresh = %d, want 2", requests)
+	if gitCloneCount(t, gitLog) != 2 {
+		t.Fatalf("clones after failed refresh = %d, want 2", gitCloneCount(t, gitLog))
 	}
 	current := loadRemoteRecord(t, manager.remoteStore, ref)
 	if current.Content != original.Content || !current.FetchedAt.Equal(original.FetchedAt) {
@@ -155,14 +143,24 @@ func TestRemoteToggleRefreshesStaleContentWithoutReplacingOnFailure(t *testing.T
 		t.Fatal("failed stale refresh enabled the skill")
 	}
 
-	fail = false
-	version = "two"
+	writeFile(
+		t,
+		filepath.Join(
+			os.Getenv("FAKE_GIT_ROOT"),
+			"default",
+			"skills",
+			"alpha",
+			"SKILL.md",
+		),
+		skillFile("alpha", "Remote alpha.", "two"),
+	)
+	t.Setenv("FAKE_GIT_ERROR", "")
 	result, err := manager.toggleRemote(t.Context(), project, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Enabled || requests != 3 {
-		t.Fatalf("refreshed enable = %#v, requests = %d", result, requests)
+	if !result.Enabled || gitCloneCount(t, gitLog) != 3 {
+		t.Fatalf("refreshed enable = %#v, clones = %d", result, gitCloneCount(t, gitLog))
 	}
 	var output strings.Builder
 	if err := manager.get(project, "alpha", "", &output); err != nil {
@@ -429,24 +427,14 @@ func TestRemoteFetchTTLStartsAtSuccessfulCompletion(t *testing.T) {
 }
 
 func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
-	skillsShRequests := 0
-	skillsShFail := false
-	skillsShServer := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		skillsShRequests++
-		if skillsShFail {
-			http.Error(response, `{"message":"still offline"}`, http.StatusServiceUnavailable)
-			return
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"files": []map[string]string{{
-				"path":     "SKILL.md",
-				"contents": skillFile("alpha", "Alpha.", "body"),
-			}},
-		})
-	}))
-	defer skillsShServer.Close()
-
+	t.Setenv("FAKE_GIT_ERROR", "")
 	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Alpha.", "body"),
+				mode:     0o644,
+			},
+		},
 		"main": {
 			"skills/beta/SKILL.md": {
 				contents: skillFile("beta", "Beta.", "body"),
@@ -456,7 +444,7 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 	})
 
 	manager := newTestManager(t)
-	manager.remote = &remoteRegistry{baseURL: skillsShServer.URL, client: skillsShServer.Client()}
+	manager.remote = newRemoteRegistry("")
 	manager.skillsMP = newSkillsMPRegistry("", "")
 	alpha := remoteSkillRef{
 		Provider: skillsShProvider, ID: "owner/repo/alpha",
@@ -484,15 +472,11 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skillsShRequests != 2 || strings.Count(string(logged), "\n") != 2 {
-		t.Fatalf(
-			"daemon requests = skills.sh %d, SkillsMP clones %d; want 2, 2",
-			skillsShRequests,
-			strings.Count(string(logged), "\n"),
-		)
+	if strings.Count(string(logged), "\n") != 4 {
+		t.Fatalf("daemon clones = %d, want 4", strings.Count(string(logged), "\n"))
 	}
 	alphaRecord := ageRemoteRecord(t, manager.remoteStore, alpha)
-	skillsShFail = true
+	t.Setenv("FAKE_GIT_ERROR", "still offline")
 	var diagnostic strings.Builder
 	refreshPersistedRemoteSkills(t.Context(), manager, &diagnostic)
 	if !strings.Contains(diagnostic.String(), "owner/repo/alpha") ||
@@ -506,19 +490,16 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 }
 
 func TestTUIRemoteSpaceToggleRefreshesInstalledAndCatalogState(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		requests++
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"files": []map[string]string{{
-				"path":     "SKILL.md",
-				"contents": skillFile("alpha", "Alpha.", "body"),
-			}},
-		})
-	}))
-	defer server.Close()
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
 	manager := newTestManager(t)
-	manager.remote = &remoteRegistry{baseURL: server.URL, client: server.Client()}
+	manager.remote = newRemoteRegistry("")
 	project := t.TempDir()
 	current := model{
 		manager: manager,
@@ -540,8 +521,8 @@ func TestTUIRemoteSpaceToggleRefreshesInstalledAndCatalogState(t *testing.T) {
 
 	updated, command := current.Update(tea.KeyMsg{Type: tea.KeySpace})
 	current = updated.(model)
-	if command == nil || !current.busy || current.status != "fetching alpha" ||
-		!strings.Contains(current.View(), "Installing alpha") {
+	if command == nil || !current.busy || current.status != "installing alpha" ||
+		!strings.Contains(current.View(), "Cloning with git --depth 1") {
 		t.Fatalf("remote enable did not start: %#v", current)
 	}
 	updated, _ = current.Update(command())
@@ -561,8 +542,8 @@ func TestTUIRemoteSpaceToggleRefreshesInstalledAndCatalogState(t *testing.T) {
 	current = updated.(model)
 	if current.status != "disabled alpha" ||
 		strings.Contains(current.View(), "alpha [enabled]") ||
-		requests != 1 {
-		t.Fatalf("remote disable = %#v, requests = %d", current, requests)
+		gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("remote disable = %#v, clones = %d", current, gitCloneCount(t, gitLog))
 	}
 }
 
@@ -679,6 +660,10 @@ if [ "$1" = "-C" ]; then
   exit 0
 fi
 printf '%s\n' "$*" >> "$FAKE_GIT_LOG"
+if [ -n "$FAKE_GIT_ERROR" ]; then
+  printf '%s\n' "$FAKE_GIT_ERROR" >&2
+  exit 1
+fi
 branch=default
 previous=
 for argument do
@@ -701,6 +686,18 @@ cp -R "$source/." "$destination/"
 	t.Setenv("FAKE_GIT_LOG", logPath)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+func gitCloneCount(t *testing.T, logPath string) int {
+	t.Helper()
+	logged, err := os.ReadFile(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(logged), "\n")
 }
 
 func writeGitTestFiles(t *testing.T, root string, files map[string]gitTestFile) {
