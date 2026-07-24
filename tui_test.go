@@ -767,6 +767,7 @@ func TestTUIStylesUseColorWithoutReplacingTextState(t *testing.T) {
 		"title":      titleStyle,
 		"disclosure": disclosureStyle,
 		"disabled":   disabledStyle,
+		"inherited":  inheritedStyle,
 		"muted":      mutedStyle,
 		"path":       pathStyle,
 		"success":    statusStyle("enabled alpha"),
@@ -779,6 +780,9 @@ func TestTUIStylesUseColorWithoutReplacingTextState(t *testing.T) {
 	}
 	if selectedStyle(lipgloss.NewStyle(), true).GetBackground() == nil {
 		t.Fatal("selected style has no background color")
+	}
+	if inheritedStyle.GetForeground() == disabledStyle.GetForeground() {
+		t.Fatal("inherited and disabled markers should use different colors")
 	}
 	if !pathStyle.GetUnderline() || mutedStyle.GetUnderline() {
 		t.Fatal("path value should be underlined independently of its label and indentation")
@@ -957,6 +961,89 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	}
 }
 
+func TestRefreshEditedSkillOverridesInheritedGlobalSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", ""))
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("renamed", "New.", ""))
+
+	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["renamed"] || selected["alpha"] {
+		t.Fatalf("selection after inherited rename = %#v", selected)
+	}
+	assertLock(t, project, map[string]bool{
+		"alpha":   false,
+		"renamed": true,
+	})
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+}
+
+func TestRefreshEditedSkillPreservesProjectOverrideOfGlobalSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", ""))
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("renamed", "New.", ""))
+
+	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected["renamed"] || selected["alpha"] {
+		t.Fatalf("selection after overridden rename = %#v", selected)
+	}
+	assertLock(t, project, map[string]bool{
+		"alpha":   false,
+		"renamed": false,
+	})
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+}
+
+func TestRefreshEditedSkillMigratesGlobalSelectionInGlobalMode(t *testing.T) {
+	manager := newTestManager(t)
+	manager.global = true
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", ""))
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("renamed", "New.", ""))
+
+	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["renamed"] {
+		t.Fatalf("global selection after rename = %#v", selected)
+	}
+	if _, exists := selected["alpha"]; exists {
+		t.Fatalf("obsolete global selection was retained: %#v", selected)
+	}
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"renamed": true})
+}
+
 func TestSkillListIgnoresClicksWhileBusy(t *testing.T) {
 	current := model{
 		skills:   skillNames(2),
@@ -1029,12 +1116,26 @@ func TestInstalledSkillsSortEnabledFirst(t *testing.T) {
 		skills: []discoveredSkill{
 			{Name: "disabled-first"},
 			{Name: "enabled-first"},
+			{Name: "project-disabled-global-enabled"},
+			{Name: "inherited-global-enabled"},
 			{Name: "disabled-second"},
 			{Name: "enabled-second"},
+			{Name: "inherited-global-disabled"},
 		},
 		selected: map[string]bool{
-			"enabled-first":  true,
-			"enabled-second": true,
+			"enabled-first":            true,
+			"enabled-second":           true,
+			"inherited-global-enabled": true,
+		},
+		globalSelected: map[string]bool{
+			"project-disabled-global-enabled": true,
+			"inherited-global-enabled":        true,
+			"inherited-global-disabled":       false,
+		},
+		projectSelected: map[string]bool{
+			"enabled-first":                   true,
+			"enabled-second":                  true,
+			"project-disabled-global-enabled": false,
 		},
 	}
 
@@ -1046,11 +1147,63 @@ func TestInstalledSkillsSortEnabledFirst(t *testing.T) {
 	want := []string{
 		"enabled-first",
 		"enabled-second",
+		"project-disabled-global-enabled",
+		"inherited-global-enabled",
 		"disabled-first",
 		"disabled-second",
+		"inherited-global-disabled",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("installed skill order = %q, want %q", got, want)
+	}
+}
+
+func TestSkillListMarksOnlyInheritedState(t *testing.T) {
+	inherited := model{
+		skills:          []discoveredSkill{{Name: "alpha"}},
+		selected:        map[string]bool{"alpha": true},
+		globalSelected:  map[string]bool{"alpha": true},
+		projectSelected: map[string]bool{},
+		width:           40,
+		height:          12,
+	}
+	if view := inherited.View(); !strings.Contains(view, "alpha [inherited]") {
+		t.Fatalf("inherited skill has no marker:\n%s", view)
+	}
+
+	inheritedDisabled := inherited
+	inheritedDisabled.selected = map[string]bool{"alpha": false}
+	inheritedDisabled.globalSelected = map[string]bool{"alpha": false}
+	if view := inheritedDisabled.View(); strings.Contains(view, "[inherited]") ||
+		!strings.Contains(view, "alpha [disabled]") {
+		t.Fatalf("inherited disabled skill has wrong markers:\n%s", view)
+	}
+
+	projectOverride := inherited
+	projectOverride.projectSelected = map[string]bool{"alpha": true}
+	if view := projectOverride.View(); strings.Contains(view, "[inherited]") {
+		t.Fatalf("project override is marked inherited:\n%s", view)
+	}
+
+	projectDisabled := inherited
+	projectDisabled.selected = map[string]bool{"alpha": false}
+	projectDisabled.projectSelected = map[string]bool{"alpha": false}
+	if view := projectDisabled.View(); strings.Contains(view, "[inherited]") ||
+		!strings.Contains(view, "alpha [disabled]") {
+		t.Fatalf("project-disabled global skill has wrong markers:\n%s", view)
+	}
+
+	unrelatedGlobalKey := inherited
+	unrelatedGlobalKey.selected = map[string]bool{}
+	unrelatedGlobalKey.globalSelected = map[string]bool{"alpha-extra": true}
+	if view := unrelatedGlobalKey.View(); strings.Contains(view, "[inherited]") {
+		t.Fatalf("unrelated global key marked skill inherited:\n%s", view)
+	}
+
+	globalMode := inherited
+	globalMode.projectSelected = nil
+	if view := globalMode.View(); strings.Contains(view, "[inherited]") {
+		t.Fatalf("global mode skill is marked inherited:\n%s", view)
 	}
 }
 

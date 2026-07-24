@@ -20,6 +20,8 @@ type model struct {
 	project         string
 	skills          []discoveredSkill
 	selected        map[string]bool
+	globalSelected  map[string]bool
+	projectSelected map[string]bool
 	remoteTopics    []remoteTopic
 	remoteCollapsed map[string]bool
 	remoteError     string
@@ -53,18 +55,20 @@ const (
 )
 
 var (
-	accentColor   = lipgloss.AdaptiveColor{Light: "#005F87", Dark: "#7DD3FC"}
-	disabledColor = lipgloss.AdaptiveColor{Light: "#C01C4A", Dark: "#FF7A90"}
-	mutedColor    = lipgloss.AdaptiveColor{Light: "#626262", Dark: "#808080"}
-	successColor  = lipgloss.AdaptiveColor{Light: "#237A3B", Dark: "#75D18B"}
-	warningColor  = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#E5C07B"}
-	errorColor    = lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#FF6B6B"}
-	selectedColor = lipgloss.AdaptiveColor{Light: "#DCEEFF", Dark: "#30363D"}
+	accentColor    = lipgloss.AdaptiveColor{Light: "#005F87", Dark: "#7DD3FC"}
+	disabledColor  = lipgloss.AdaptiveColor{Light: "#C01C4A", Dark: "#FF7A90"}
+	mutedColor     = lipgloss.AdaptiveColor{Light: "#626262", Dark: "#808080"}
+	successColor   = lipgloss.AdaptiveColor{Light: "#237A3B", Dark: "#75D18B"}
+	warningColor   = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#E5C07B"}
+	errorColor     = lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#FF6B6B"}
+	selectedColor  = lipgloss.AdaptiveColor{Light: "#DCEEFF", Dark: "#30363D"}
+	inheritedColor = lipgloss.AdaptiveColor{Light: "#6F42C1", Dark: "#C4A7E7"}
 
 	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(accentColor)
 	mutedStyle      = lipgloss.NewStyle().Foreground(mutedColor)
 	disclosureStyle = lipgloss.NewStyle().Foreground(accentColor)
 	disabledStyle   = lipgloss.NewStyle().Bold(true).Foreground(disabledColor)
+	inheritedStyle  = lipgloss.NewStyle().Bold(true).Foreground(inheritedColor)
 	pathStyle       = lipgloss.NewStyle().Foreground(accentColor).Underline(true)
 )
 
@@ -84,6 +88,8 @@ type editDone struct {
 	path       string
 	skills     []discoveredSkill
 	selected   map[string]bool
+	global     map[string]bool
+	project    map[string]bool
 	editorErr  error
 	refreshErr error
 }
@@ -107,12 +113,14 @@ func newModel(manager *manager, project string) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	selected, err := manager.selection(project)
+	selected, globalSelected, projectSelected, err := manager.selectionLayers(project)
 	if err != nil {
 		return model{}, err
 	}
 	current := model{
-		manager: manager, project: project, skills: discovered, selected: selected,
+		manager: manager, project: project, skills: discovered,
+		selected:       selected,
+		globalSelected: globalSelected, projectSelected: projectSelected,
 		remoteCollapsed: make(map[string]bool),
 		remoteSelected:  remoteSelectionFrom(discovered, selected),
 		status:          fmt.Sprintf("%d skills", len(discovered)),
@@ -131,6 +139,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 		} else {
 			m.selected[message.skill] = message.enabled
+			if m.projectSelected != nil {
+				m.projectSelected[message.skill] = message.enabled
+			}
 			m.remoteSelected = remoteSelectionFrom(m.skills, m.selected)
 			if message.enabled {
 				m.status = "enabled " + message.skill
@@ -148,6 +159,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.skills = message.result.Skills
 		m.selected = message.result.Selected
+		if m.projectSelected != nil {
+			m.projectSelected[message.result.Skill] = message.result.Enabled
+		}
 		m.remoteSelected = message.result.RemoteSelected
 		if message.result.Enabled {
 			m.status = "enabled " + message.result.Skill
@@ -168,6 +182,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		wasExpanded := m.expanded == message.skill
 		m.skills = message.skills
 		m.selected = message.selected
+		m.globalSelected = message.global
+		m.projectSelected = message.project
 		m.expanded = ""
 		for index, skillIndex := range m.localSkillIndices() {
 			skill := m.skills[skillIndex]
@@ -308,14 +324,21 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return editDone{skill: skill.Name, editorErr: err}
 				}
-				skills, selected, refreshErr := m.manager.refreshEditedSkill(
+				skills, _, refreshErr := m.manager.refreshEditedSkill(
 					m.project,
 					skill.Name,
 					skill.Path,
 				)
+				var selected, globalSelected, projectSelected map[string]bool
+				if refreshErr == nil {
+					selected, globalSelected, projectSelected, refreshErr =
+						m.manager.selectionLayers(m.project)
+				}
 				return editDone{
 					skill: skill.Name, path: skill.Path,
-					skills: skills, selected: selected, refreshErr: refreshErr,
+					skills: skills, selected: selected,
+					global: globalSelected, project: projectSelected,
+					refreshErr: refreshErr,
 				}
 			})
 		}
@@ -612,10 +635,6 @@ func (m *manager) refreshEditedSkill(
 	if err != nil {
 		return nil, nil, err
 	}
-	value, err := loadLock(project)
-	if err != nil {
-		return nil, nil, err
-	}
 	newName := ""
 	for _, skill := range skills {
 		if skill.Path == path {
@@ -624,18 +643,42 @@ func (m *manager) refreshEditedSkill(
 		}
 	}
 	if newName == "" || newName == oldName {
-		return skills, value.Skills, nil
+		selected, err := m.selection(project)
+		return skills, selected, err
 	}
-	oldEnabled, exists := value.Skills[oldName]
-	if !exists {
-		return skills, value.Skills, nil
-	}
-	value.Skills[newName] = value.Skills[newName] || oldEnabled
-	delete(value.Skills, oldName)
-	if err := saveLock(project, value); err != nil {
+
+	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+		oldEnabled, exists := value.Skills[oldName]
+		if m.global {
+			if !exists {
+				return false, nil
+			}
+			value.Skills[newName] = value.Skills[newName] || oldEnabled
+			delete(value.Skills, oldName)
+			return true, nil
+		}
+
+		global, err := loadLock(m.paths.globalLockDir)
+		if err != nil {
+			return false, err
+		}
+		selected := mergeSelections(global.Skills, value.Skills)
+		if !exists && !selected[oldName] {
+			return false, nil
+		}
+		value.Skills[newName] = value.Skills[newName] || selected[oldName]
+		if _, inherited := global.Skills[oldName]; inherited {
+			value.Skills[oldName] = false
+		} else {
+			delete(value.Skills, oldName)
+		}
+		return true, nil
+	})
+	if err != nil {
 		return nil, nil, err
 	}
-	return skills, value.Skills, nil
+	selected, err := m.selection(project)
+	return skills, selected, err
 }
 
 func (m *model) toggleCurrentExpanded(index int) {
@@ -1096,6 +1139,9 @@ func (m model) skillLines(indices []int, index int) []string {
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render(cursor + " ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).Render(skill.Name)
+	if m.inherited(skill.Name) {
+		name += selectedStyle(inheritedStyle, selected).Render(" [inherited]")
+	}
 	if !m.selected[skill.Name] {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")
 	}
@@ -1112,9 +1158,9 @@ func (m model) skillLines(indices []int, index int) []string {
 func (m model) localSkillIndices() []int {
 	indices := make([]int, 0, len(m.skills))
 	query := strings.ToLower(m.filterQuery)
-	for _, enabled := range []bool{true, false} {
+	for group := range 4 {
 		for index, skill := range m.skills {
-			if m.selected[skill.Name] != enabled {
+			if m.localSkillGroup(skill.Name) != group {
 				continue
 			}
 			if matchesNormalizedFilter(
@@ -1129,6 +1175,37 @@ func (m model) localSkillIndices() []int {
 		}
 	}
 	return indices
+}
+
+func (m model) localSkillGroup(skill string) int {
+	if m.projectSelected == nil {
+		if m.selected[skill] {
+			return 0
+		}
+		return 3
+	}
+	projectEnabled, projectExists := m.projectSelected[skill]
+	globalEnabled := m.globalSelected[skill]
+	switch {
+	case projectExists && projectEnabled:
+		return 0
+	case projectExists && !projectEnabled && globalEnabled:
+		return 1
+	case !projectExists && globalEnabled:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (m model) inherited(skill string) bool {
+	if m.projectSelected == nil {
+		return false
+	}
+	if _, exists := m.projectSelected[skill]; exists {
+		return false
+	}
+	return m.globalSelected[skill]
 }
 
 func (m model) localSkillIndex(index int) (int, bool) {

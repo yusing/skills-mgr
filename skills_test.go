@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -35,6 +37,117 @@ func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	}
 	assertLock(t, project, map[string]bool{"alpha": false})
 	assertFile(t, skill, skillFile("alpha", "Alpha description.", "body"))
+}
+
+func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	if err := saveLock(manager.paths.globalLockDir, lock{Skills: map[string]bool{
+		"global-enabled":  true,
+		"global-disabled": false,
+		"overridden":      true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{Skills: map[string]bool{
+		"project-enabled": true,
+		"overridden":      false,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"global-enabled":  true,
+		"global-disabled": false,
+		"project-enabled": true,
+		"overridden":      false,
+	}
+	if len(selected) != len(want) {
+		t.Fatalf("selection = %#v, want %#v", selected, want)
+	}
+	for skill, enabled := range want {
+		if selected[skill] != enabled {
+			t.Fatalf("selection = %#v, want %#v", selected, want)
+		}
+	}
+}
+
+func TestToggleCreatesProjectOverrideForInheritedState(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := manager.toggle(project, "alpha")
+	if err != nil || enabled {
+		t.Fatalf("toggle inherited skill = %v, %v; want disabled", enabled, err)
+	}
+	assertLock(t, project, map[string]bool{"alpha": false})
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+}
+
+func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
+	manager := newTestManager(t)
+	manager.global = true
+	project := t.TempDir()
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": false}}); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := manager.toggle(project, "alpha")
+	if err != nil || !enabled {
+		t.Fatalf("global toggle = %v, %v; want enabled", enabled, err)
+	}
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+	assertLock(t, project, map[string]bool{"alpha": false})
+
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["alpha"] {
+		t.Fatalf("global selection = %#v, want alpha enabled", selected)
+	}
+}
+
+func TestConcurrentGlobalTogglesPreserveUpdates(t *testing.T) {
+	manager := newTestManager(t)
+	manager.global = true
+	project := t.TempDir()
+	const count = 16
+	errs := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := range count {
+		wait.Go(func() {
+			skill := fmt.Sprintf("skill-%d", index)
+			enabled, err := manager.toggle(project, skill)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !enabled {
+				errs <- fmt.Errorf("%s was disabled", skill)
+			}
+		})
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	want := make(map[string]bool, count)
+	for index := range count {
+		want[fmt.Sprintf("skill-%d", index)] = true
+	}
+	assertLock(t, manager.paths.globalLockDir, want)
 }
 
 func TestLoadLockRejectsUnsupportedSchemaRevision(t *testing.T) {

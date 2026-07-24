@@ -29,15 +29,17 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	global := len(args) == 1 && args[0] == "-g"
 	remote := newRemoteRegistry(paths.remoteRegistry)
 	skillsMP := newSkillsMPRegistry(paths.skillsMP, os.Getenv("SKILLSMP_API_KEY"))
 	manager := &manager{
 		paths: paths, remote: remote, skillsMP: skillsMP,
 		remoteStore: newRemoteSkillStore(paths.remoteSkills),
+		global:      global,
 	}
 
 	switch {
-	case len(args) == 0:
+	case len(args) == 0 || global:
 		project, err := currentProject()
 		if err != nil {
 			return err

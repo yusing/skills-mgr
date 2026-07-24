@@ -10,6 +10,7 @@ type paths struct {
 	userSkills     string
 	codexHome      string
 	adminSkills    string
+	globalLockDir  string
 	remoteRegistry string
 	skillsMP       string
 	remoteSkills   string
@@ -32,6 +33,7 @@ func defaultPaths() (paths, error) {
 		userSkills:     filepath.Join(home, ".agents", "skills"),
 		codexHome:      codexHome,
 		adminSkills:    "/etc/codex/skills",
+		globalLockDir:  home,
 		remoteRegistry: filepath.Join(cache, "skills-mgr", "skills-sh.json"),
 		skillsMP:       filepath.Join(cache, "skills-mgr", "skillsmp.json"),
 		remoteSkills:   filepath.Join(cache, "skills-mgr", "remote-skills"),

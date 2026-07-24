@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "skills-mgr lock",
-  "description": "Project-local skill enablement state.",
+  "description": "Global and project-local skill enablement state.",
   "type": "object",
   "required": [
     "schema_revision",

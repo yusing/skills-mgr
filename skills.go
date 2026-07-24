@@ -32,6 +32,7 @@ type manager struct {
 	remote               *remoteRegistry
 	skillsMP             *skillsMPRegistry
 	remoteStore          *remoteSkillStore
+	global               bool
 	runtimeOnce          sync.Once
 	javascriptRuntime    string
 	javascriptRuntimeErr error
@@ -347,24 +348,107 @@ func pathDepth(relative string) int {
 }
 
 func (m *manager) selection(project string) (map[string]bool, error) {
-	value, err := loadLock(project)
+	selected, _, _, err := m.selectionLayers(project)
+	return selected, err
+}
+
+func (m *manager) selectionLayers(
+	project string,
+) (
+	selected map[string]bool,
+	globalSelected map[string]bool,
+	projectSelected map[string]bool,
+	err error,
+) {
+	global, err := loadLock(m.paths.globalLockDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
-	return value.Skills, nil
+	if m.global {
+		return global.Skills, nil, nil, nil
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return mergeSelections(global.Skills, projectLock.Skills),
+		global.Skills,
+		projectLock.Skills,
+		nil
+}
+
+func (m *manager) lockDir(project string) string {
+	if m.global {
+		return m.paths.globalLockDir
+	}
+	return project
 }
 
 func (m *manager) toggle(project, skill string) (bool, error) {
-	value, err := loadLock(project)
+	enabled := false
+	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
+		selected := value.Skills
+		if !m.global {
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return false, err
+			}
+			selected = mergeSelections(global.Skills, value.Skills)
+		}
+		enabled = !selected[skill]
+		value.Skills[skill] = enabled
+		return true, nil
+	})
 	if err != nil {
 		return false, err
 	}
-	enabled := !value.Skills[skill]
-	value.Skills[skill] = enabled
-	if err := saveLock(project, value); err != nil {
-		return false, err
-	}
 	return enabled, nil
+}
+
+func (m *manager) setSelection(
+	project string,
+	skill string,
+	enabled bool,
+) (map[string]bool, error) {
+	var selected map[string]bool
+	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
+		value.Skills[skill] = enabled
+		selected = value.Skills
+		if !m.global {
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return false, err
+			}
+			selected = mergeSelections(global.Skills, value.Skills)
+		}
+		return true, nil
+	})
+	return selected, err
+}
+
+func (m *manager) updateSelectionLock(
+	project string,
+	update func(*lock) (bool, error),
+) error {
+	lockDir := m.lockDir(project)
+	if m.global {
+		return updateLock(lockDir, update)
+	}
+	value, err := loadLock(lockDir)
+	if err != nil {
+		return err
+	}
+	changed, err := update(&value)
+	if err != nil || !changed {
+		return err
+	}
+	return saveLock(lockDir, value)
+}
+
+func mergeSelections(global, project map[string]bool) map[string]bool {
+	selected := maps.Clone(global)
+	maps.Copy(selected, project)
+	return selected
 }
 
 func (m *manager) list(project string, output io.Writer) error {

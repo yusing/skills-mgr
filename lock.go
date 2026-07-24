@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 const (
@@ -78,6 +79,35 @@ func saveLock(project string, value lock) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+func updateLock(project string, update func(*lock) (bool, error)) error {
+	lockPath := filepath.Join(project, lockName+".lock")
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", lockPath, err)
+	}
+	defer file.Close()
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("lock %s: %w", lockPath, err)
+	}
+	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+
+	value, err := loadLock(project)
+	if err != nil {
+		return err
+	}
+	changed, err := update(&value)
+	if err != nil || !changed {
+		return err
+	}
+	return saveLock(project, value)
 }
 
 func newLock() lock {

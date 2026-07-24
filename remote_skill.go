@@ -701,7 +701,7 @@ func (m *manager) toggleRemote(
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
-	value, err := loadLock(project)
+	selected, err := m.selection(project)
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
@@ -718,15 +718,15 @@ func (m *manager) toggleRemote(
 				skill.Source,
 			)
 		}
-		enabled = value.Skills[skill.Name]
+		enabled = selected[skill.Name]
 		break
 	}
 	if enabled {
-		value.Skills[ref.Name] = false
-		if err := saveLock(project, value); err != nil {
+		selected, err = m.setSelection(project, ref.Name, false)
+		if err != nil {
 			return remoteToggleResult{}, err
 		}
-		return newRemoteToggleResult(ref.Name, false, skills, value.Skills), nil
+		return newRemoteToggleResult(ref.Name, false, skills, selected), nil
 	}
 
 	provider := m.remoteContentProvider(ref.Provider)
@@ -750,11 +750,11 @@ func (m *manager) toggleRemote(
 			ref.Name,
 		)
 	}
-	value.Skills[ref.Name] = true
-	if err := saveLock(project, value); err != nil {
+	selected, err = m.setSelection(project, ref.Name, true)
+	if err != nil {
 		return remoteToggleResult{}, err
 	}
-	return newRemoteToggleResult(ref.Name, true, skills, value.Skills), nil
+	return newRemoteToggleResult(ref.Name, true, skills, selected), nil
 }
 
 func newRemoteToggleResult(
