@@ -32,6 +32,10 @@ func TestSkillsMPRefreshesDefaultCatalogWithoutAPIKey(t *testing.T) {
 					"stars": 42,
 				},
 				{"id": "alpha-id", "name": "duplicate"},
+				{
+					"id": "localized-alpha-id", "name": "alpha", "author": "owner",
+					"githubUrl": "https://example.test/localized-alpha",
+				},
 				{"id": "", "name": "missing-id"},
 			},
 		})
@@ -49,6 +53,9 @@ func TestSkillsMPRefreshesDefaultCatalogWithoutAPIKey(t *testing.T) {
 	if len(skills) != 1 {
 		t.Fatalf("catalog = %#v", skills)
 	}
+	if skills[0].GitHubURL != "https://example.test/alpha" {
+		t.Fatalf("catalog kept lower-ranked duplicate = %#v", skills)
+	}
 	cache, err := loadSkillsMPCache(path)
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +63,38 @@ func TestSkillsMPRefreshesDefaultCatalogWithoutAPIKey(t *testing.T) {
 	if cache.SchemaRevision != skillsMPSchemaRevision || cache.UpdatedAt.IsZero() ||
 		len(cache.Skills) != 1 || cache.Skills[0].Stars != 42 {
 		t.Fatalf("cache = %#v", cache)
+	}
+}
+
+func TestUniqueSkillsMPReservesDuplicateIDsAndIdentities(t *testing.T) {
+	tests := []struct {
+		name   string
+		skills []skillsMPSkill
+	}{
+		{
+			name: "identity duplicate followed by ID duplicate",
+			skills: []skillsMPSkill{
+				{ID: "first", Name: "alpha", Author: "owner"},
+				{ID: "second", Name: "alpha", Author: "owner"},
+				{ID: "second", Name: "beta", Author: "other"},
+			},
+		},
+		{
+			name: "ID duplicate followed by identity duplicate",
+			skills: []skillsMPSkill{
+				{ID: "first", Name: "alpha", Author: "owner"},
+				{ID: "first", Name: "beta", Author: "other"},
+				{ID: "second", Name: "beta", Author: "other"},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := uniqueSkillsMP(test.skills)
+			if len(got) != 1 || got[0].ID != "first" {
+				t.Fatalf("uniqueSkillsMP() = %#v", got)
+			}
+		})
 	}
 }
 

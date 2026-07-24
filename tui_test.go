@@ -103,9 +103,13 @@ func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
 	if err := saveSkillsMPCache(manager.paths.skillsMP, skillsMPCache{
 		SchemaRevision: skillsMPSchemaRevision,
 		UpdatedAt:      time.Now(),
-		Skills: []skillsMPSkill{{
-			ID: "alpha-id", Name: "alpha", Author: "owner", Stars: 42,
-		}},
+		Skills: []skillsMPSkill{
+			{ID: "alpha-id", Name: "alpha", Author: "owner", Stars: 42},
+			{
+				ID: "localized-alpha-id", Name: "alpha", Author: "owner",
+				Stars: 42,
+			},
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}

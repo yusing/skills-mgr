@@ -372,7 +372,7 @@ func (r *skillsMPRegistry) searchSkills(
 	cached, exists := cache.Searches[query]
 	r.mu.Unlock()
 	if err == nil && exists {
-		return cached.Skills, nil
+		return uniqueSkillsMP(cached.Skills), nil
 	}
 	skills, err := r.fetch(ctx, "/api/v1/skills/search", url.Values{
 		"q":      {query},
@@ -459,19 +459,32 @@ func (r *skillsMPRegistry) fetch(
 	if nested {
 		skills = result.Data.Skills
 	}
-	seen := make(map[string]struct{}, len(skills))
+	return uniqueSkillsMP(skills), nil
+}
+
+func uniqueSkillsMP(skills []skillsMPSkill) []skillsMPSkill {
+	type identity struct {
+		author string
+		name   string
+	}
+	seenIDs := make(map[string]struct{}, len(skills))
+	seenIdentities := make(map[identity]struct{}, len(skills))
 	valid := skills[:0]
 	for _, skill := range skills {
 		if skill.ID == "" || skill.Name == "" {
 			continue
 		}
-		if _, exists := seen[skill.ID]; exists {
+		key := identity{author: skill.Author, name: skill.Name}
+		_, seenID := seenIDs[skill.ID]
+		_, seenIdentity := seenIdentities[key]
+		seenIDs[skill.ID] = struct{}{}
+		seenIdentities[key] = struct{}{}
+		if seenID || seenIdentity {
 			continue
 		}
-		seen[skill.ID] = struct{}{}
 		valid = append(valid, skill)
 	}
-	return valid, nil
+	return valid
 }
 
 func loadSkillsMPCache(path string) (skillsMPCache, error) {

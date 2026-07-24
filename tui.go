@@ -500,7 +500,7 @@ func (m *model) reloadSkillsMPCache() skillsMPCache {
 		m.registryError = err.Error()
 		return skillsMPCache{}
 	}
-	m.registrySkills = presentSkillsMP(cache.Skills)
+	m.registrySkills = presentSkillsMP(uniqueSkillsMP(cache.Skills))
 	m.registryError = ""
 	return cache
 }
