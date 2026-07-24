@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -193,10 +194,17 @@ func (r *remoteRegistry) fetch(ctx context.Context, query string) ([]remoteSkill
 		seen[skill.ID] = struct{}{}
 		skills = append(skills, skill)
 	}
+	sortRemoteSkills(skills)
+	return skills, nil
+}
+
+func sortRemoteSkills(skills []remoteSkill) {
 	slices.SortFunc(skills, func(a, b remoteSkill) int {
+		if installs := cmp.Compare(b.Installs, a.Installs); installs != 0 {
+			return installs
+		}
 		return strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name))
 	})
-	return skills, nil
 }
 
 func loadRemoteCache(path string) (remoteRegistryCache, error) {
@@ -230,6 +238,9 @@ func loadRemoteCache(path string) (remoteRegistryCache, error) {
 			"decode remote registry cache: unsupported schema revision %d",
 			cache.SchemaRevision,
 		)
+	}
+	for index := range cache.Topics {
+		sortRemoteSkills(cache.Topics[index].Skills)
 	}
 	return cache, nil
 }

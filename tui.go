@@ -1059,15 +1059,20 @@ func (m model) skillLines(indices []int, index int) []string {
 func (m model) localSkillIndices() []int {
 	indices := make([]int, 0, len(m.skills))
 	query := strings.ToLower(m.filterQuery)
-	for index, skill := range m.skills {
-		if matchesNormalizedFilter(
-			query,
-			skill.Name,
-			skill.Description,
-			skill.Path,
-			skill.Source,
-		) {
-			indices = append(indices, index)
+	for _, enabled := range []bool{true, false} {
+		for index, skill := range m.skills {
+			if m.selected[skill.Name] != enabled {
+				continue
+			}
+			if matchesNormalizedFilter(
+				query,
+				skill.Name,
+				skill.Description,
+				skill.Path,
+				skill.Source,
+			) {
+				indices = append(indices, index)
+			}
 		}
 	}
 	return indices

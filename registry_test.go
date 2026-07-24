@@ -29,10 +29,14 @@ func TestRemoteRegistryRefreshesTopicCache(t *testing.T) {
 			"skills": []map[string]any{
 				{
 					"id": "owner/repo/zeta", "slug": "zeta", "name": "zeta",
-					"source": "owner/repo", "installs": 2,
+					"source": "owner/repo", "installs": 8,
 				},
 				{
 					"id": "owner/repo/alpha", "slug": "alpha", "name": "Alpha",
+					"source": "owner/repo", "installs": 4,
+				},
+				{
+					"id": "owner/repo/beta", "slug": "beta", "name": "beta",
 					"source": "owner/repo", "installs": 4,
 				},
 				{
@@ -64,9 +68,10 @@ func TestRemoteRegistryRefreshesTopicCache(t *testing.T) {
 		t.Fatalf("cache metadata = %#v", cache)
 	}
 	for _, topic := range cache.Topics {
-		if len(topic.Skills) != 2 ||
-			topic.Skills[0].Name != "Alpha" ||
-			topic.Skills[1].Name != "zeta" {
+		if len(topic.Skills) != 3 ||
+			topic.Skills[0].Name != "zeta" ||
+			topic.Skills[1].Name != "Alpha" ||
+			topic.Skills[2].Name != "beta" {
 			t.Fatalf("topic %q skills = %#v", topic.Name, topic.Skills)
 		}
 	}
@@ -98,6 +103,32 @@ func TestRemoteRegistryPreservesCacheWhenRefreshFails(t *testing.T) {
 	}
 	if len(cache.Topics) != 1 || cache.Topics[0].Name != "Testing" {
 		t.Fatalf("failed refresh replaced cache: %#v", cache)
+	}
+}
+
+func TestLoadRemoteCacheSortsSkillsByInstalls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "skills-sh.json")
+	cache := remoteRegistryCache{
+		SchemaRevision: remoteRegistrySchemaRevision,
+		Topics: []remoteTopic{{
+			Slug: "testing",
+			Name: "Testing",
+			Skills: []remoteSkill{
+				{ID: "owner/repo/alpha", Name: "alpha", Installs: 2},
+				{ID: "owner/repo/zeta", Name: "zeta", Installs: 8},
+			},
+		}},
+	}
+	if err := saveRemoteCache(path, cache); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadRemoteCache(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Topics[0].Skills[0].Name; got != "zeta" {
+		t.Fatalf("first cached skill = %q, want zeta", got)
 	}
 }
 

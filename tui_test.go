@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,12 +33,12 @@ func TestSkillListScrollsToKeepCursorVisible(t *testing.T) {
 		t.Fatalf("cursor, offset = %d, %d; want 5, 3", current.cursor, current.offset)
 	}
 	view := current.View()
-	for _, want := range []string{"  ▸ skill-04", "> ▸ skill-05 [disabled]"} {
+	for _, want := range []string{"  ▸ skill-02 [disabled]", "> ▸ skill-05 [disabled]"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view does not contain %q:\n%s", want, view)
 		}
 	}
-	for _, hidden := range []string{"skill-00", "skill-01", "skill-06"} {
+	for _, hidden := range []string{"skill-00", "skill-01", "skill-04", "skill-06"} {
 		if strings.Contains(view, hidden) {
 			t.Fatalf("view contains skill outside viewport %q:\n%s", hidden, view)
 		}
@@ -895,8 +896,8 @@ func TestSkillListResizeKeepsSelectionVisible(t *testing.T) {
 func TestSkillListShowsSourceAndDisabledState(t *testing.T) {
 	current := model{
 		skills: []discoveredSkill{
-			{Name: "enabled", Source: "project"},
 			{Name: "disabled", Source: "user"},
+			{Name: "enabled", Source: "project"},
 			{Name: "future"},
 		},
 		selected: map[string]bool{"enabled": true},
@@ -916,6 +917,36 @@ func TestSkillListShowsSourceAndDisabledState(t *testing.T) {
 	}
 	if strings.Contains(strings.Split(view, "\n")[3], "[disabled]") {
 		t.Fatalf("enabled skill is labeled disabled:\n%s", view)
+	}
+}
+
+func TestInstalledSkillsSortEnabledFirst(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{
+			{Name: "disabled-first"},
+			{Name: "enabled-first"},
+			{Name: "disabled-second"},
+			{Name: "enabled-second"},
+		},
+		selected: map[string]bool{
+			"enabled-first":  true,
+			"enabled-second": true,
+		},
+	}
+
+	indices := current.localSkillIndices()
+	got := make([]string, len(indices))
+	for index, skillIndex := range indices {
+		got[index] = current.skills[skillIndex].Name
+	}
+	want := []string{
+		"enabled-first",
+		"enabled-second",
+		"disabled-first",
+		"disabled-second",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("installed skill order = %q, want %q", got, want)
 	}
 }
 
