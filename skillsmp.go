@@ -249,9 +249,6 @@ func filesFromGitHubCheckout(
 		if err != nil {
 			return nil, err
 		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("GitHub skill contains non-regular path %q", relative)
-		}
 		if len(files) >= remoteSkillMaxFiles {
 			return nil, fmt.Errorf(
 				"GitHub skill contains more than %d files",
@@ -259,15 +256,41 @@ func filesFromGitHubCheckout(
 			)
 		}
 		remaining := remoteSkillMaxBytes - total
-		if info.Size() > int64(remaining) {
+		var contents []byte
+		switch {
+		case info.Mode().IsRegular():
+			if info.Size() > int64(remaining) {
+				return nil, fmt.Errorf(
+					"GitHub skill exceeds %d bytes",
+					remoteSkillMaxBytes,
+				)
+			}
+			contents, err = os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("read GitHub skill file %q: %w", relative, err)
+			}
+		case relative == "CLAUDE.md" && info.Mode()&os.ModeSymlink != 0:
+			target, readErr := os.Readlink(path)
+			if readErr != nil {
+				return nil, fmt.Errorf("read GitHub skill link %q: %w", relative, readErr)
+			}
+			if target != "AGENTS.md" {
+				return nil, fmt.Errorf(
+					"GitHub skill link %q targets %q; want %q",
+					relative,
+					target,
+					"AGENTS.md",
+				)
+			}
+			contents = []byte(target)
+		default:
+			return nil, fmt.Errorf("GitHub skill contains non-regular path %q", relative)
+		}
+		if len(contents) > remaining {
 			return nil, fmt.Errorf(
 				"GitHub skill exceeds %d bytes",
 				remoteSkillMaxBytes,
 			)
-		}
-		contents, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read GitHub skill file %q: %w", relative, err)
 		}
 		total += len(contents)
 		files = append(files, remoteSkillFile{

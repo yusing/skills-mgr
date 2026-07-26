@@ -432,6 +432,9 @@ func (s *remoteSkillStore) writeContent(
 	seen := make(map[string]struct{}, len(files))
 	total := 0
 	hasSkill := false
+	hasAgents := false
+	hasClaude := false
+	hasClaudeAlias := false
 	for _, file := range files {
 		relative, err := validRemoteFilePath(file.Path)
 		if err != nil {
@@ -441,6 +444,12 @@ func (s *remoteSkillStore) writeContent(
 			return "", fmt.Errorf("remote skill %q has duplicate path %q", ref.Name, relative)
 		}
 		seen[relative] = struct{}{}
+		isClaudeAlias := relative == "CLAUDE.md" &&
+			file.Mode&fs.ModeSymlink != 0 && string(file.Contents) == "AGENTS.md"
+		if file.Mode.Type() != 0 && !isClaudeAlias {
+			return "", fmt.Errorf("remote skill %q has unsupported non-regular path %q", ref.Name, relative)
+		}
+		hasClaudeAlias = hasClaudeAlias || isClaudeAlias
 		total += len(file.Contents)
 		if total > remoteSkillMaxBytes {
 			return "", fmt.Errorf(
@@ -451,6 +460,15 @@ func (s *remoteSkillStore) writeContent(
 		}
 		if relative == "SKILL.md" {
 			hasSkill = true
+		}
+		if relative == "AGENTS.md" {
+			hasAgents = true
+		}
+		if relative == "CLAUDE.md" {
+			hasClaude = true
+		}
+		if isClaudeAlias {
+			continue
 		}
 		destination := filepath.Join(temporary, filepath.FromSlash(relative))
 		if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
@@ -476,6 +494,9 @@ func (s *remoteSkillStore) writeContent(
 	if !hasSkill {
 		return "", fmt.Errorf("remote skill %q is missing SKILL.md", ref.Name)
 	}
+	if hasClaudeAlias && !hasAgents {
+		return "", fmt.Errorf("remote skill %q CLAUDE.md link is missing AGENTS.md", ref.Name)
+	}
 	parsed, ok, err := parseSkill(filepath.Join(temporary, "SKILL.md"))
 	if err != nil {
 		return "", fmt.Errorf("validate remote skill %q: %w", ref.Name, err)
@@ -489,6 +510,12 @@ func (s *remoteSkillStore) writeContent(
 			ref.Name,
 			parsed.Name,
 		)
+	}
+	if hasAgents && (!hasClaude || hasClaudeAlias) {
+		claudePath := filepath.Join(temporary, "CLAUDE.md")
+		if err := os.Symlink("AGENTS.md", claudePath); err != nil {
+			return "", fmt.Errorf("link remote skill CLAUDE.md to AGENTS.md: %w", err)
+		}
 	}
 
 	final := filepath.Join(contentRoot, strings.TrimPrefix(filepath.Base(temporary), "."))

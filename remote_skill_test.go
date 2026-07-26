@@ -224,6 +224,141 @@ func TestSkillsMPRemoteToggleFetchesCompleteGitHubSkillInProcess(t *testing.T) {
 	}
 }
 
+func TestSkillsMPRemoteToggleLinksClaudeToAgentsAfterCloneAndRefresh(t *testing.T) {
+	logPath := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+			"skills/alpha/AGENTS.md": {contents: "first\n", mode: 0o644},
+			"skills/alpha/CLAUDE.md": {link: "AGENTS.md"},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	record := loadRemoteRecord(t, manager.remoteStore, ref)
+	root, err := manager.remoteStore.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeAlias(t, root, "first\n")
+
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	ageRemoteRecord(t, manager.remoteStore, ref)
+	writeFile(
+		t,
+		filepath.Join(os.Getenv("FAKE_GIT_ROOT"), "main", "skills", "alpha", "AGENTS.md"),
+		"second\n",
+	)
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	record = loadRemoteRecord(t, manager.remoteStore, ref)
+	root, err = manager.remoteStore.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeAlias(t, root, "second\n")
+	if clones := gitCloneCount(t, logPath); clones != 2 {
+		t.Fatalf("clone count = %d, want 2", clones)
+	}
+}
+
+func TestRemoteStoreAddsClaudeAliasWhenAgentsInstructionsExist(t *testing.T) {
+	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	record, err := store.ensure(t.Context(), ref, &staticRemoteProvider{files: []remoteSkillFile{
+		{Path: "SKILL.md", Contents: []byte(skillFile("alpha", "Alpha.", "body"))},
+		{Path: "AGENTS.md", Contents: []byte("instructions\n")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertClaudeAlias(t, root, "instructions\n")
+}
+
+func TestRemoteStorePreservesDistinctClaudeInstructions(t *testing.T) {
+	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	record, err := store.ensure(t.Context(), ref, &staticRemoteProvider{files: []remoteSkillFile{
+		{Path: "SKILL.md", Contents: []byte(skillFile("alpha", "Alpha.", "body"))},
+		{Path: "AGENTS.md", Contents: []byte("codex instructions\n")},
+		{Path: "CLAUDE.md", Contents: []byte("claude instructions\n")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := store.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "CLAUDE.md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("CLAUDE.md mode = %v, want regular file", info.Mode())
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "claude instructions\n" {
+		t.Fatalf("CLAUDE.md contents = %q", contents)
+	}
+}
+
+func TestSkillsMPRejectsClaudeLinkOutsideAgentsInstructions(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+			"skills/alpha/AGENTS.md": {contents: "instructions\n", mode: 0o644},
+			"skills/alpha/CLAUDE.md": {link: "../../outside"},
+		},
+	})
+	_, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	})
+	if err == nil || !strings.Contains(err.Error(), `targets "../../outside"; want "AGENTS.md"`) {
+		t.Fatalf("unsafe CLAUDE.md link error = %v", err)
+	}
+}
+
 func TestSkillsMPRepositoryRootFindsRootSkillByDeclaredName(t *testing.T) {
 	fakeGit(t, map[string]map[string]gitTestFile{
 		"default": {
@@ -638,6 +773,7 @@ func loadRemoteRecord(
 
 type gitTestFile struct {
 	contents string
+	link     string
 	mode     os.FileMode
 }
 
@@ -700,14 +836,49 @@ func gitCloneCount(t *testing.T, logPath string) int {
 	return strings.Count(string(logged), "\n")
 }
 
+func assertClaudeAlias(t *testing.T, root, wantContents string) {
+	t.Helper()
+	path := filepath.Join(root, "CLAUDE.md")
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("CLAUDE.md mode = %v, want symlink", info.Mode())
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target != "AGENTS.md" {
+		t.Fatalf("CLAUDE.md target = %q, want AGENTS.md", target)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != wantContents {
+		t.Fatalf("CLAUDE.md contents = %q, want %q", contents, wantContents)
+	}
+}
+
 func writeGitTestFiles(t *testing.T, root string, files map[string]gitTestFile) {
 	t.Helper()
 	paths := make([]string, 0, len(files))
 	for path, file := range files {
 		destination := filepath.Join(root, filepath.FromSlash(path))
-		writeFile(t, destination, file.contents)
-		if err := os.Chmod(destination, file.mode); err != nil {
-			t.Fatal(err)
+		if file.link != "" {
+			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(file.link, destination); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			writeFile(t, destination, file.contents)
+			if err := os.Chmod(destination, file.mode); err != nil {
+				t.Fatal(err)
+			}
 		}
 		paths = append(paths, path)
 	}
