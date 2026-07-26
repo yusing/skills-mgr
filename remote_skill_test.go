@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,16 +360,21 @@ func TestSkillsMPRejectsClaudeLinkOutsideAgentsInstructions(t *testing.T) {
 	}
 }
 
-func TestSkillsMPRepositoryRootFindsRootSkillByDeclaredName(t *testing.T) {
-	fakeGit(t, map[string]map[string]gitTestFile{
-		"default": {
-			"SKILL.md": {
-				contents: skillFile("alpha", "Remote alpha.", "body"),
-				mode:     0o644,
-			},
-			"reference.md": {contents: "# Reference\n", mode: 0o644},
+func TestSkillsMPRepositoryRootFetchesBareManifestFromOversizedRepository(t *testing.T) {
+	filesByPath := map[string]gitTestFile{
+		"SKILL.md": {
+			contents: skillFile("alpha", "Remote alpha.", "body"),
+			mode:     0o644,
 		},
-	})
+	}
+	for index := range remoteSkillMaxFiles + 1 {
+		filesByPath[fmt.Sprintf("src/file-%04d.txt", index)] = gitTestFile{
+			contents: "unrelated",
+			mode:     0o644,
+		}
+	}
+	fakeGit(t, map[string]map[string]gitTestFile{"default": filesByPath})
+
 	files, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
 		Provider: skillsMPProvider,
 		ID:       "alpha-id",
@@ -378,8 +384,109 @@ func TestSkillsMPRepositoryRootFindsRootSkillByDeclaredName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 2 || files[0].Path != "SKILL.md" {
+	if len(files) != 1 || files[0].Path != "SKILL.md" {
 		t.Fatalf("root skill files = %#v", files)
+	}
+}
+
+func TestSkillsMPRepositoryRootFetchesFutureAgentSkillResources(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			".future-agent/skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+			".future-agent/skills/alpha/assets/icon.svg": {
+				contents: "<svg/>", mode: 0o644,
+			},
+			".future-agent/skills/alpha/references/guide.md": {
+				contents: "# Guide\n", mode: 0o644,
+			},
+			".future-agent/skills/alpha/scripts/check.sh": {
+				contents: "#!/bin/sh\n", mode: 0o755,
+			},
+			".future-agent/skills/alpha/notes.md": {
+				contents: "not a skill resource", mode: 0o644,
+			},
+			".future-agent/skills/alpha/references-copy/ignored.md": {
+				contents: "prefix collision", mode: 0o644,
+			},
+			".future-agent/skills/beta/assets/ignored.svg": {
+				contents: "sibling collision", mode: 0o644,
+			},
+			".future-agent/skills/beta/SKILL.md": {
+				contents: "malformed unrelated manifest", mode: 0o644,
+			},
+			"vendor/SKILL.md": {
+				contents: "malformed unrelated manifest", mode: 0o644,
+			},
+		},
+	})
+
+	files, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, len(files))
+	for index, file := range files {
+		paths[index] = file.Path
+	}
+	want := []string{"SKILL.md", "assets/icon.svg", "references/guide.md", "scripts/check.sh"}
+	if !slices.Equal(paths, want) || files[3].Mode&0o111 == 0 {
+		t.Fatalf("future agent skill files = %#v", files)
+	}
+}
+
+func TestSkillsMPRepositoryRootRejectsExcessiveAgentSkillCandidates(t *testing.T) {
+	filesByPath := make(map[string]gitTestFile, remoteSkillMaxFiles+1)
+	for index := range remoteSkillMaxFiles + 1 {
+		filesByPath[fmt.Sprintf(".agent-%04d/skills/alpha/SKILL.md", index)] = gitTestFile{
+			contents: "candidate",
+			mode:     0o644,
+		}
+	}
+	fakeGit(t, map[string]map[string]gitTestFile{"default": filesByPath})
+
+	_, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo",
+	})
+	if err == nil || !strings.Contains(err.Error(), "more than 1024 skill manifests") {
+		t.Fatalf("excessive agent skill candidates error = %v", err)
+	}
+}
+
+func TestSkillsMPRepositoryRootRejectsMissingManifest(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {"README.md": {contents: "# Repository\n", mode: 0o644}},
+	})
+	_, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo",
+	})
+	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
+		t.Fatalf("missing root manifest error = %v", err)
+	}
+}
+
+func TestSkillsMPFetchSkillRejectsMalformedURL(t *testing.T) {
+	_, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://example.com/owner/repo",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported SkillsMP GitHub URL") {
+		t.Fatalf("malformed URL error = %v", err)
 	}
 }
 

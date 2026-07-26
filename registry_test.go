@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -303,6 +304,17 @@ func TestGitHubSkillPostCloneOperationsHonorCancellation(t *testing.T) {
 				t.Fatalf("cancellation error = %v", err)
 			}
 		})
+	}
+}
+
+func TestGitHubSkillDiscoveryRejectsExcessiveManifests(t *testing.T) {
+	tracked := make([]string, remoteSkillMaxFiles+1)
+	for index := range tracked {
+		tracked[index] = fmt.Sprintf("skills/%d/SKILL.md", index)
+	}
+	_, err := findGitHubSkillPath(t.Context(), t.TempDir(), tracked, "alpha")
+	if err == nil || !strings.Contains(err.Error(), "more than 1024 skill manifests") {
+		t.Fatalf("excessive manifest error = %v", err)
 	}
 }
 

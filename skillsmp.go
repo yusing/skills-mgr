@@ -148,6 +148,27 @@ func (r *skillsMPRegistry) fetchSkill(
 	if err != nil {
 		return nil, err
 	}
+	if skillPath == "" {
+		candidates := make([]string, 0, 1)
+		for _, trackedPath := range tracked {
+			parts := strings.Split(trackedPath, "/")
+			if trackedPath == "SKILL.md" || len(parts) == 4 && len(parts[0]) > 1 &&
+				strings.HasPrefix(parts[0], ".") && parts[1] == "skills" &&
+				parts[2] == ref.Name && parts[3] == "SKILL.md" {
+				if len(candidates) >= remoteSkillMaxFiles {
+					return nil, fmt.Errorf(
+						"GitHub repository contains more than %d skill manifests",
+						remoteSkillMaxFiles,
+					)
+				}
+				candidates = append(candidates, trackedPath)
+			}
+		}
+		skillPath, err = findGitHubSkillPath(ctx, checkout, candidates, ref.Name)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
 }
 
@@ -227,6 +248,8 @@ func filesFromGitHubCheckout(
 		return nil, fmt.Errorf("GitHub skill path %q is unsafe", skillPath)
 	}
 	root := filepath.Join(checkout, filepath.FromSlash(skillPath))
+	manifestOnly := skillPath == ""
+	agentSkill := isGitHubAgentSkillPath(skillPath)
 	var files []remoteSkillFile
 	total := 0
 	for _, trackedPath := range tracked {
@@ -241,7 +264,8 @@ func filesFromGitHubCheckout(
 				continue
 			}
 		}
-		if relative == "" {
+		if relative == "" || manifestOnly && relative != "SKILL.md" ||
+			agentSkill && !isSafeAgentSkillFile(relative) {
 			continue
 		}
 		path := filepath.Join(root, filepath.FromSlash(relative))
@@ -305,21 +329,49 @@ func filesFromGitHubCheckout(
 	return files, nil
 }
 
+func isGitHubAgentSkillPath(skillPath string) bool {
+	parts := strings.Split(skillPath, "/")
+	return len(parts) == 3 && len(parts[0]) > 1 && strings.HasPrefix(parts[0], ".") &&
+		parts[1] == "skills"
+}
+
+func isSafeAgentSkillFile(relative string) bool {
+	if relative == "SKILL.md" {
+		return true
+	}
+	directory, _, nested := strings.Cut(relative, "/")
+	if !nested {
+		return false
+	}
+	return directory == "references" || directory == "scripts" || directory == "assets"
+}
+
 func findGitHubSkillPath(
 	ctx context.Context,
 	checkout string,
 	tracked []string,
 	name string,
 ) (string, error) {
-	found := ""
-	matched := false
+	manifests := make([]string, 0)
 	for _, trackedPath := range tracked {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if filepath.Base(filepath.FromSlash(trackedPath)) != "SKILL.md" {
-			continue
+		if filepath.Base(filepath.FromSlash(trackedPath)) == "SKILL.md" {
+			manifests = append(manifests, trackedPath)
+			if len(manifests) > remoteSkillMaxFiles {
+				return "", fmt.Errorf(
+					"GitHub repository contains more than %d skill manifests",
+					remoteSkillMaxFiles,
+				)
+			}
 		}
+	}
+
+	found := ""
+	matched := false
+	total := 0
+	for _, trackedPath := range manifests {
 		relative, err := validRemoteFilePath(trackedPath)
 		if err != nil {
 			return "", fmt.Errorf("GitHub repository: %w", err)
@@ -332,6 +384,14 @@ func findGitHubSkillPath(
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("GitHub skill manifest %q is not a regular file", relative)
 		}
+		remaining := remoteSkillMaxBytes - total
+		if info.Size() > int64(remaining) {
+			return "", fmt.Errorf(
+				"GitHub skill manifests exceed %d bytes",
+				remoteSkillMaxBytes,
+			)
+		}
+		total += int(info.Size())
 		skill, ok, err := parseSkill(path)
 		if err != nil {
 			return "", fmt.Errorf("parse GitHub skill manifest %q: %w", relative, err)
