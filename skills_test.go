@@ -242,6 +242,46 @@ No references.
 	}
 }
 
+func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "manual", "SKILL.md"),
+		"---\nname: manual\ndescription: Invoke only when explicitly requested.\ndisable-model-invocation: true\n---\nmanual body\n",
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "automatic", "SKILL.md"),
+		skillFile("automatic", "Available for model invocation.", "automatic body\n"),
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{
+		"automatic": true,
+		"manual":    true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "## manual") {
+		t.Fatalf("list exposed model-invocation-disabled skill:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "## automatic") {
+		t.Fatalf("list omitted model-invocable skill:\n%s", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "manual", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "manual body\n"; output.String() != want {
+		t.Fatalf("manual skill output = %q, want %q", output.String(), want)
+	}
+}
+
 func TestListEmptySelectionWritesDocumentHeading(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

@@ -69,6 +69,7 @@ var (
 	disclosureStyle = lipgloss.NewStyle().Foreground(accentColor)
 	disabledStyle   = lipgloss.NewStyle().Bold(true).Foreground(disabledColor)
 	inheritedStyle  = lipgloss.NewStyle().Bold(true).Foreground(inheritedColor)
+	manualOnlyStyle = lipgloss.NewStyle().Bold(true).Foreground(warningColor)
 	pathStyle       = lipgloss.NewStyle().Foreground(accentColor).Underline(true)
 )
 
@@ -1141,6 +1142,9 @@ func (m model) skillLines(indices []int, index int) []string {
 	name += selectedStyle(lipgloss.NewStyle(), selected).Render(skill.Name)
 	if m.inherited(skill.Name) {
 		name += selectedStyle(inheritedStyle, selected).Render(" [inherited]")
+	}
+	if skill.DisableModelInvocation {
+		name += selectedStyle(manualOnlyStyle, selected).Render(" [manual-only]")
 	}
 	if !m.selected[skill.Name] {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")

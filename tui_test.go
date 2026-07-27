@@ -1111,6 +1111,44 @@ func TestSkillListShowsSourceAndDisabledState(t *testing.T) {
 	}
 }
 
+func TestSkillListMarksManualOnlyState(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{
+			{Name: "manual", DisableModelInvocation: true},
+			{Name: "inherited", DisableModelInvocation: true},
+			{Name: "disabled", DisableModelInvocation: true},
+			{Name: "automatic"},
+		},
+		selected: map[string]bool{
+			"manual":    true,
+			"inherited": true,
+			"automatic": true,
+		},
+		globalSelected: map[string]bool{"inherited": true},
+		projectSelected: map[string]bool{
+			"manual":    true,
+			"disabled":  false,
+			"automatic": true,
+		},
+		width:  80,
+		height: 14,
+	}
+
+	view := current.View()
+	for _, want := range []string{
+		"manual [manual-only]",
+		"inherited [inherited] [manual-only]",
+		"disabled [manual-only] [disabled]",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view does not contain %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "automatic [manual-only]") {
+		t.Fatalf("model-invocable skill is marked manual-only:\n%s", view)
+	}
+}
+
 func TestInstalledSkillsSortEnabledFirst(t *testing.T) {
 	current := model{
 		skills: []discoveredSkill{

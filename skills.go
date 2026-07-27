@@ -39,13 +39,14 @@ type manager struct {
 }
 
 type discoveredSkill struct {
-	Name        string
-	Description string
-	Path        string
-	Root        string
-	Source      string
-	Editable    bool
-	RemoteKey   string
+	Name                   string
+	Description            string
+	Path                   string
+	Root                   string
+	Source                 string
+	Editable               bool
+	RemoteKey              string
+	DisableModelInvocation bool
 }
 
 type skillDiscovery struct {
@@ -63,8 +64,9 @@ type skillRoot struct {
 }
 
 type skillFrontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
+	Name                   string `yaml:"name"`
+	Description            string `yaml:"description"`
+	DisableModelInvocation bool   `yaml:"disable-model-invocation"`
 }
 
 type frontmatterStatus uint8
@@ -257,8 +259,9 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 		return discoveredSkill{}, false, nil
 	}
 	return discoveredSkill{
-		Name:        metadata.Name,
-		Description: metadata.Description,
+		Name:                   metadata.Name,
+		Description:            metadata.Description,
+		DisableModelInvocation: metadata.DisableModelInvocation,
 	}, true, nil
 }
 
@@ -473,7 +476,7 @@ func (m *manager) list(project string, output io.Writer) error {
 		return err
 	}
 	for _, skill := range skills {
-		if !selected[skill.Name] {
+		if !selected[skill.Name] || skill.DisableModelInvocation {
 			continue
 		}
 		references, err := referenceFiles(skill.Root)
