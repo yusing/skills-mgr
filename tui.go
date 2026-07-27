@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 )
 
+//nolint:recvcheck // Bubble Tea's value-returning model uses pointer helpers on its local copy.
 type model struct {
 	manager         *manager
 	project         string
@@ -232,117 +233,128 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		m.syncViewport()
 	case tea.MouseMsg:
-		if m.busy {
-			return m, nil
-		}
-		mouse := tea.MouseEvent(message)
-		if mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
-			return m, nil
-		}
-		if mouse.X < 0 || mouse.X >= m.width {
-			return m, nil
-		}
-		if mouse.Y == tuiHeaderHeight-1 {
-			m.startFiltering()
-			return m, nil
-		}
-		if m.filtering {
-			return m, nil
-		}
-		index, ok := m.itemIndexAtHeaderRow(mouse.Y)
-		if !ok {
-			return m, nil
-		}
-		m.toggleCurrentExpanded(index)
+		return updateMouse(m, message)
 	case tea.KeyMsg:
-		if m.busy {
-			if message.String() == "ctrl+c" {
-				return m, tea.Quit
-			}
-			return m, nil
+		return updateKey(m, message)
+	}
+	return m, nil
+}
+
+func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.busy {
+		return m, nil
+	}
+	mouse := tea.MouseEvent(message)
+	if mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	if mouse.X < 0 || mouse.X >= m.width {
+		return m, nil
+	}
+	if mouse.Y == tuiHeaderHeight-1 {
+		m.startFiltering()
+		return m, nil
+	}
+	if m.filtering {
+		return m, nil
+	}
+	index, ok := m.itemIndexAtHeaderRow(mouse.Y)
+	if !ok {
+		return m, nil
+	}
+	m.toggleCurrentExpanded(index)
+	return m, nil
+}
+
+func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.busy {
+		if message.String() == "ctrl+c" {
+			return m, tea.Quit
 		}
-		if m.filtering {
-			switch message.String() {
-			case "ctrl+c":
-				m.cancelRegistryRequest()
-				return m, tea.Quit
-			case "enter", "esc":
-				m.filtering = false
-			case "backspace":
-				if runes := []rune(m.filterQuery); len(runes) > 0 {
-					m.filterQuery = string(runes[:len(runes)-1])
-					return m, m.filterChanged()
-				}
-			default:
-				if message.Type == tea.KeyRunes {
-					m.filterQuery += string(message.Runes)
-					return m, m.filterChanged()
-				}
-			}
-			return m, nil
-		}
+		return m, nil
+	}
+	if m.filtering {
 		switch message.String() {
-		case "q", "ctrl+c":
+		case "ctrl+c":
 			m.cancelRegistryRequest()
 			return m, tea.Quit
-		case "f":
-			m.startFiltering()
-		case "left":
-			return m, m.selectTab(max(localTab, m.tab-1))
-		case "right":
-			return m, m.selectTab(min(skillsMPTab, m.tab+1))
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
+		case "enter", "esc":
+			m.filtering = false
+		case "backspace":
+			if runes := []rune(m.filterQuery); len(runes) > 0 {
+				m.filterQuery = string(runes[:len(runes)-1])
+				return m, m.filterChanged()
 			}
-			m.syncViewport()
-		case "down", "j":
-			if m.cursor+1 < m.itemCount() {
-				m.cursor++
+		default:
+			if message.Type == tea.KeyRunes {
+				m.filterQuery += string(message.Runes)
+				return m, m.filterChanged()
 			}
-			m.syncViewport()
-		case "enter":
-			m.toggleCurrentExpanded(m.cursor)
-		case " ":
-			return toggleSelectedSkill(m)
-		case "e":
-			if m.tab != localTab {
-				break
-			}
-			skillIndex, ok := m.localSkillIndex(m.cursor)
-			if !ok {
-				break
-			}
-			skill := m.skills[skillIndex]
-			command, err := m.editor(skill.Name)
-			if err != nil {
-				m.status = "error: " + err.Error()
-				break
-			}
-			m.busy = true
-			m.status = "editing " + skill.Name
-			return m, tea.ExecProcess(command, func(err error) tea.Msg {
-				if err != nil {
-					return editDone{skill: skill.Name, editorErr: err}
-				}
-				skills, _, refreshErr := m.manager.refreshEditedSkill(
-					m.project,
-					skill.Name,
-					skill.Path,
-				)
-				var selected, globalSelected, projectSelected map[string]bool
-				if refreshErr == nil {
-					selected, globalSelected, projectSelected, refreshErr =
-						m.manager.selectionLayers(m.project)
-				}
-				return editDone{
-					skill: skill.Name, path: skill.Path,
-					skills: skills, selected: selected,
-					global: globalSelected, project: projectSelected,
-					refreshErr: refreshErr,
-				}
-			})
 		}
+		return m, nil
+	}
+	switch message.String() {
+	case "q", "ctrl+c":
+		m.cancelRegistryRequest()
+		return m, tea.Quit
+	case "f":
+		m.startFiltering()
+	case "left":
+		return m, m.selectTab(max(localTab, m.tab-1))
+	case "right":
+		return m, m.selectTab(min(skillsMPTab, m.tab+1))
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		m.syncViewport()
+	case "down", "j":
+		if m.cursor+1 < m.itemCount() {
+			m.cursor++
+		}
+		m.syncViewport()
+	case "enter":
+		m.toggleCurrentExpanded(m.cursor)
+	case " ":
+		return toggleSelectedSkill(m)
+	case "e":
+		if m.tab != localTab {
+			break
+		}
+		skillIndex, ok := m.localSkillIndex(m.cursor)
+		if !ok {
+			break
+		}
+		skill := m.skills[skillIndex]
+		command, err := m.editor(skill.Name)
+		if err != nil {
+			m.status = "error: " + err.Error()
+			break
+		}
+		m.busy = true
+		m.status = "editing " + skill.Name
+		return m, tea.ExecProcess(command, func(err error) tea.Msg {
+			if err != nil {
+				return editDone{skill: skill.Name, editorErr: err}
+			}
+			skills, _, refreshErr := m.manager.refreshEditedSkill(
+				m.project,
+				skill.Name,
+				skill.Path,
+			)
+			var selected, globalSelected, projectSelected map[string]bool
+			if refreshErr == nil {
+				selected, globalSelected, projectSelected, refreshErr = m.manager.selectionLayers(
+					m.project,
+				)
+			}
+			return editDone{
+				skill: skill.Name, path: skill.Path,
+				skills: skills, selected: selected,
+				global: globalSelected, project: projectSelected,
+				refreshErr: refreshErr,
+			}
+		})
 	}
 	return m, nil
 }
@@ -499,11 +511,12 @@ func (m *model) setRemoteStatus() {
 	for _, topic := range m.remoteTopics {
 		count += len(topic.Skills)
 	}
-	if m.remoteError != "" {
+	switch {
+	case m.remoteError != "":
 		m.status = "error: " + m.remoteError
-	} else if len(m.remoteTopics) == 0 {
+	case len(m.remoteTopics) == 0:
 		m.status = "remote cache is empty; run skills-mgr daemon"
-	} else {
+	default:
 		m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
 	}
 }
@@ -838,9 +851,10 @@ func (m model) View() string {
 		remaining -= len(lines)
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
-	if m.tab == remoteTab {
+	switch m.tab {
+	case remoteTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
-	} else if m.tab == skillsMPTab {
+	case skillsMPTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details • space toggle • q quit"
 	}
 	if m.filtering {
@@ -896,15 +910,16 @@ func (m model) tabBar() string {
 	local := " Installed "
 	remote := " skills.sh "
 	skillsMP := " SkillsMP "
-	if m.tab == localTab {
+	switch m.tab {
+	case localTab:
 		local = selectedStyle(titleStyle, true).Render("[Installed]")
 		remote = mutedStyle.Render(remote)
 		skillsMP = mutedStyle.Render(skillsMP)
-	} else if m.tab == remoteTab {
+	case remoteTab:
 		local = mutedStyle.Render(local)
 		remote = selectedStyle(titleStyle, true).Render("[skills.sh]")
 		skillsMP = mutedStyle.Render(skillsMP)
-	} else {
+	default:
 		local = mutedStyle.Render(local)
 		remote = mutedStyle.Render(remote)
 		skillsMP = selectedStyle(titleStyle, true).Render("[SkillsMP]")

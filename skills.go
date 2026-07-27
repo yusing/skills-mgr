@@ -181,7 +181,7 @@ func (d *skillDiscovery) discoverPluginCache(root string) error {
 		}
 		relative, err := filepath.Rel(root, path)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // Skip plugin paths that cannot be relativized.
 		}
 		if relative != "." && pathDepth(relative) > pluginMaxDepth {
 			return filepath.SkipDir
@@ -199,15 +199,15 @@ func (d *skillDiscovery) discoverPluginCache(root string) error {
 func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	resolvedRoot, err := filepath.EvalSymlinks(candidateRoot)
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // Ignore entries that are not usable skill roots.
 	}
 	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, "SKILL.md"))
 	if err != nil {
-		return nil
+		return nil //nolint:nilerr // Ignore roots without a usable SKILL.md.
 	}
 	relative, err := filepath.Rel(resolvedRoot, resolvedSkill)
 	if err != nil || !filepath.IsLocal(relative) {
-		return nil
+		return nil //nolint:nilerr // Ignore skill files outside their candidate root.
 	}
 	skill, ok, err := parseSkill(resolvedSkill)
 	if err != nil || !ok {
