@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -94,6 +96,288 @@ func TestRemoteTogglePersistsOutsideAgentRootsAndReusesFreshContent(t *testing.T
 	}
 	if !result.Enabled || gitCloneCount(t, gitLog) != 1 {
 		t.Fatalf("fresh re-enable result = %#v, clones = %d", result, gitCloneCount(t, gitLog))
+	}
+}
+
+func TestRemoteTogglePersistsIdentityWhenDisabled(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.remote = newRemoteRegistry("")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectLock.Skills["alpha"] || projectLock.Remote["alpha"] != ref {
+		t.Fatalf("disabled remote selection = %#v", projectLock)
+	}
+
+	data, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted lockFile
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	selection := persisted.Skills["alpha"]
+	if selection.Enabled || selection.Remote == nil || *selection.Remote != ref {
+		t.Fatalf("persisted remote selection = %#v", selection)
+	}
+}
+
+func TestSyncFetchesEnabledProjectRemotesAndReusesFreshContent(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	disabled := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "disabled-id",
+		Name:     "disabled",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/disabled",
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{
+			"alpha":    true,
+			"disabled": false,
+			"local":    true,
+			"legacy":   true,
+		},
+		Remote: map[string]remoteSkillRef{
+			"alpha":    ref,
+			"disabled": disabled,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "alpha\n" || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	output.Reset()
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "alpha\n" || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("fresh sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	after, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("sync changed project selection")
+	}
+	if _, err := manager.findSkill(project, "alpha"); err != nil {
+		t.Fatalf("synchronized skill was not discoverable: %v", err)
+	}
+}
+
+func TestSyncRejectsLocalNameCollisionWithoutFetching(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"),
+		skillFile("alpha", "Local alpha.", "body"),
+	)
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": true},
+		Remote: map[string]remoteSkillRef{"alpha": ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err = manager.sync(t.Context(), project, &output)
+	if err == nil || !strings.Contains(err.Error(), "already discovered") {
+		t.Fatalf("sync collision error = %v", err)
+	}
+	if output.Len() != 0 || gitCloneCount(t, gitLog) != 0 {
+		t.Fatalf("collision output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	after, readErr := os.ReadFile(filepath.Join(project, lockName))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("failed sync changed project selection")
+	}
+}
+
+func TestSyncRejectsCachedLocatorMismatch(t *testing.T) {
+	manager := newTestManager(t)
+	oldRef := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		oldRef,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("alpha", "Remote alpha.", "old")),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	newRef := oldRef
+	newRef.Locator = "other/repo/alpha"
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": true},
+		Remote: map[string]remoteSkillRef{"alpha": newRef},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err := manager.sync(t.Context(), project, &output)
+	if err == nil || !strings.Contains(err.Error(), "identity conflicts") {
+		t.Fatalf("locator mismatch error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("locator mismatch output = %q", output.String())
+	}
+	record := loadRemoteRecord(t, manager.remoteStore, oldRef)
+	if record.Locator != oldRef.Locator {
+		t.Fatalf("locator mismatch replaced record = %#v", record)
+	}
+}
+
+func TestLocalToggleClearsStaleRemoteIdentity(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": false},
+		Remote: map[string]remoteSkillRef{"alpha": ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"),
+		skillFile("alpha", "Local alpha.", "body"),
+	)
+
+	enabled, err := manager.toggle(project, "alpha")
+	if err != nil || !enabled {
+		t.Fatalf("enable local skill = %v, %v", enabled, err)
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := projectLock.Remote["alpha"]; exists {
+		t.Fatalf("local selection retained remote identity: %#v", projectLock.Remote)
+	}
+}
+
+func TestRunSyncFetchesCommittedRemoteIdentity(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	home := t.TempDir()
+	cache := filepath.Join(home, "cache")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	project := t.TempDir()
+	t.Chdir(project)
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": true},
+		Remote: map[string]remoteSkillRef{"alpha": ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run([]string{"sync"}); err != nil {
+		t.Fatal(err)
+	}
+	if gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("sync clones = %d, want 1", gitCloneCount(t, gitLog))
+	}
+	records, err := newRemoteSkillStore(
+		filepath.Join(cache, "skills-mgr", "remote-skills"),
+	).records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("synchronized records = %#v", records)
 	}
 }
 

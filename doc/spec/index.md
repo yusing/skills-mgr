@@ -4,98 +4,78 @@ pjdoc:
   kind: spec
   scope: root
   status: draft
-  revision: SPEC-1
+  revision: SPEC-2
   files:
     []
 ---
 # skills-mgr product specification
 
-This draft specifies the first increment described by
+This draft specifies the increment described by
 [`doc/brief.md`](../brief.md).
 
-## REQ-REMOTE-001 — Persist a remote skill on enable
+## REQ-SYNC-001 — Persist remote selection identity
 
-When Space is pressed on a disabled skill in a skills.sh or SkillsMP catalog
-view, skills-mgr shall obtain the complete skill content, validate it as one
-safe relative file tree containing a valid `SKILL.md`, persist one canonical
-user-level copy, and enable that skill in the current project's existing
-selection.
+When a remote catalog skill is enabled or disabled, its project selection shall
+record its enabled state and stable remote reference: provider,
+provider-specific ID, skill name, and provider locator. A local selection shall
+record only its enabled state.
 
-The behavior shall apply to topic/default catalog rows and search-result rows.
-It shall not write to a project or user `.agents/skills` or `.codex/skills`
-directory and shall not invoke or execute any external process or downloaded
-file.
+Existing schema-revision-1 files whose skill values are booleans shall remain
+readable. The next selection change shall write the current structured
+representation without inventing remote identity for legacy entries.
 
 Acceptance examples:
 
-- Enabling an uncached skills.sh topic skill persists its files outside the
-  agent-owned roots, records it as enabled only in the current project, and
-  makes it visible in the Installed tab and existing `list` and `get`
-  operations.
-- Enabling an uncached SkillsMP search result has the same observable result.
-- Unsafe paths, duplicate file paths, a missing or invalid `SKILL.md`, a
-  provider failure, or a name collision with a different discovered or
-  persisted skill returns an error without changing the project selection or
-  replacing an existing valid copy.
+- Enabling a skills.sh or SkillsMP result writes enough identity for another
+  machine to fetch that exact provider entry without searching a catalog.
+- Disabling the remote skill retains its identity while changing its enabled
+  state to false.
+- Toggling a local skill writes structured enabled state without remote
+  metadata.
+- An existing boolean-only project file continues to control local and already
+  persisted skills and is upgraded on its next selection change.
 
-## REQ-REMOTE-002 — Reuse and refresh persisted content
+## REQ-SYNC-002 — Explicitly synchronize enabled remote skills
 
-Persisted remote content shall be fresh for three hours after its last
-successful fetch.
+`skills-mgr sync` shall read the current project's selection and ensure each
+enabled remote reference in that project file exists as a fresh, valid copy in
+the current user's remote-skill store. It shall use the provider named by the
+record directly rather than discover or search for the skill in a catalog.
 
-When enabling a disabled remote skill, skills-mgr shall use a fresh persisted
-copy without a network request. If the copy is missing or stale, it shall
-refresh and atomically persist the complete valid replacement before enabling
-the skill. A refresh failure shall leave both the last-known-good copy and
-current project selection unchanged.
-
-Acceptance examples:
-
-- A persisted copy less than three hours old can be enabled while offline.
-- Enabling a copy at least three hours old performs one provider refresh before
-  changing selection.
-- If that refresh fails, stale content remains intact but the skill remains
-  disabled in the current project.
-
-## REQ-REMOTE-003 — Disable without removing persisted content
-
-When Space is pressed on an enabled remote skill, skills-mgr shall disable it
-only for the current project, perform no provider request, and retain its
-persisted content.
+The command shall not synchronize disabled records, global-lock records, or
+legacy records that contain no remote reference. It shall not change project or
+global selection. Existing commands and TUI startup shall not perform this
+synchronization implicitly.
 
 Acceptance examples:
 
-- Disabling a remote skill removes it from existing `list` and `get` output for
-  the current project without changing another project's selection.
-- Re-enabling the retained copy within its freshness period succeeds without a
-  network request.
+- On a machine with an empty remote store, `skills-mgr sync` fetches each
+  enabled project remote record and makes it available to existing `list`,
+  `get`, and `run` behavior.
+- A fresh persisted copy causes no provider request.
+- A stale persisted copy is refreshed using existing refresh semantics.
+- Disabled, global-only, local, and legacy boolean-only records cause no
+  provider request.
+- Running `list`, `get`, `run`, or the TUI against a missing referenced remote
+  skill does not download it.
 
-## REQ-REMOTE-004 — Refresh persisted skills in the daemon
+## REQ-SYNC-003 — Preserve trust boundaries and report failures
 
-The existing daemon shall inspect persisted remote skills in the background and
-refresh every copy that is at least three hours old. It shall use the same
-validation and atomic replacement rules as interactive enablement.
+Synchronization shall use the existing remote provider, content validation,
+resource limits, safe-path checks, and atomic persistence behavior. It shall
+never execute downloaded content or write it into agent-owned skill roots.
 
-The daemon shall never execute fetched content or launch an external process.
-A refresh failure shall retain the last-known-good copy, report the failure
-through the daemon's existing diagnostic output, and allow later background
-refresh attempts.
+For every successfully synchronized remote skill, the command shall write its
+name to standard output. If any selected identity is invalid, unavailable,
+conflicts with another persisted skill, or produces invalid content, the
+command shall return an error identifying that skill. Previously valid content
+and both selection files shall remain unchanged.
 
 Acceptance examples:
 
-- A daemon cycle does not fetch a fresh persisted skill.
-- A daemon cycle refreshes a stale skills.sh copy and a stale SkillsMP copy.
-- A failed daemon refresh leaves the stale copy readable and reports which
-  persisted skill could not be refreshed.
-
-## REQ-REMOTE-005 — Present remote toggle state
-
-Each remote catalog row shall indicate whether that remote skill is enabled in
-the current project. Space shall start at most one toggle operation for the
-selected remote row, prevent overlapping input while it is active, and report
-fetching, enabled, disabled, or error status through the existing TUI status
-line.
-
-After a successful remote toggle, the remote row state, Installed tab, and
-current-project selection shall agree without restarting the TUI. A failed
-toggle shall preserve their prior state.
+- Unsafe paths, excessive content, invalid `SKILL.md`, or provider failure
+  produces a non-zero result without partial project-selection updates.
+- If an earlier skill succeeded before a later skill failed, its valid
+  user-level persisted copy may remain; the configuration is unchanged.
+- Successful output contains one line per synchronized skill and no downloaded
+  file is executed.

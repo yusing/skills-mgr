@@ -4,7 +4,7 @@ pjdoc:
   kind: architecture
   scope: root
   status: draft
-  revision: ARCH-1
+  revision: ARCH-2
   files:
     []
 ---
@@ -21,8 +21,8 @@ and records the validated declared skill name, provider refresh locator, and
 last successful fetch time. A different provider identity or declared name
 must not silently replace an existing entry.
 
-This contract supports `REQ-REMOTE-001`, `REQ-REMOTE-002`, and
-`REQ-REMOTE-003`.
+This contract supports `REQ-SYNC-001` and `REQ-SYNC-002`.
+
 
 ## CTR-REMOTE-002 — Provider content boundary
 
@@ -39,22 +39,23 @@ oversized responses, and any tree whose root `SKILL.md` does not parse to the
 catalog skill's name. Provider and store operations must not execute downloaded
 content.
 
-This contract supports `REQ-REMOTE-001` and `REQ-REMOTE-004`.
+This contract supports `REQ-SYNC-002` and `REQ-SYNC-003`.
 
 ## CTR-REMOTE-003 — Atomic refresh and selection ordering
 
-One manager refresh path validates a complete provider result in a temporary
+One manager ensure path validates a complete provider result in a temporary
 sibling entry and atomically replaces the prior entry only after every file and
 metadata record is durable enough to close successfully. Interactive enable
-changes the existing project lock only after that path succeeds. Failure
-retains both the last-known-good entry and the prior project lock.
+and explicit synchronization call that path. Neither changes selection before
+or during content persistence; synchronization never changes selection.
+Failure retains both the last-known-good entry and both selection locks.
 
 Disabling changes only the existing project lock. The daemon enumerates store
 metadata and calls the same refresh path for stale entries; it does not inspect
 or mutate project locks.
 
-This contract supports `REQ-REMOTE-002`, `REQ-REMOTE-003`, and
-`REQ-REMOTE-004`.
+This contract supports `REQ-SYNC-002` and `REQ-SYNC-003`.
+
 
 ## CTR-REMOTE-004 — Discovery and TUI integration
 
@@ -69,4 +70,18 @@ existing asynchronous TUI message path. Remote rows derive enabled state from
 the current project selection; a completed toggle reloads discovery and
 selection together before rendering success.
 
-This contract supports `REQ-REMOTE-001` and `REQ-REMOTE-005`.
+This contract supports `REQ-SYNC-002`.
+
+## CTR-SYNC-001 — Selection identity and orchestration
+
+`lock.go` owns the executable `.skills-mgr.json` schema and compatibility
+decoding. Its structured skill selection embeds the existing remote reference
+shape owned and validated by `remote_skill.go`; it must not derive identity
+from a mutable catalog search or duplicate provider-specific parsing.
+
+The `sync` command reads only the current project lock, filters enabled entries
+with remote references, resolves the named existing provider, and passes each
+reference to the existing store ensure path. The command may publish validated
+cache content but has no dependency that can write either selection lock.
+
+This contract supports `REQ-SYNC-001`, `REQ-SYNC-002`, and `REQ-SYNC-003`.

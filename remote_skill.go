@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -31,10 +32,10 @@ const (
 )
 
 type remoteSkillRef struct {
-	Provider string
-	ID       string
-	Name     string
-	Locator  string
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Locator  string `json:"locator"`
 }
 
 func (r remoteSkillRef) key() string {
@@ -305,12 +306,11 @@ func findRemoteRecord(
 	for _, record := range records {
 		switch {
 		case record.Provider == ref.Provider && record.ID == ref.ID:
-			if record.Name != ref.Name {
+			if record.Name != ref.Name || record.Locator != ref.Locator {
 				return remoteSkillRecord{}, fmt.Errorf(
-					"remote skill %s:%s is already persisted as %q",
+					"remote skill %s:%s identity conflicts with persisted reference",
 					ref.Provider,
 					ref.ID,
-					record.Name,
 				)
 			}
 			current = record
@@ -689,6 +689,61 @@ type remoteToggleResult struct {
 	RemoteSelected map[string]bool
 }
 
+func (m *manager) sync(
+	ctx context.Context,
+	project string,
+	output io.Writer,
+) error {
+	if m.remoteStore == nil {
+		return fmt.Errorf("remote skill store is unavailable")
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		return err
+	}
+	discovered, err := m.skills(project)
+	if err != nil {
+		return err
+	}
+	discoveredByName := make(map[string]discoveredSkill, len(discovered))
+	for _, skill := range discovered {
+		discoveredByName[skill.Name] = skill
+	}
+	names := slices.Sorted(maps.Keys(projectLock.Remote))
+
+	for _, name := range names {
+		if !projectLock.Skills[name] {
+			continue
+		}
+		ref := projectLock.Remote[name]
+		if ref.Name != name {
+			return fmt.Errorf(
+				"sync remote skill %q: selection name does not match remote name %q",
+				name,
+				ref.Name,
+			)
+		}
+		if skill, ok := discoveredByName[name]; ok && skill.RemoteKey != ref.key() {
+			return fmt.Errorf(
+				"sync remote skill %q: skill name is already discovered from %s",
+				name,
+				skill.Source,
+			)
+		}
+		if err := ref.validate(); err != nil {
+			return fmt.Errorf("sync remote skill %q: %w", name, err)
+		}
+		provider := m.remoteContentProvider(ref.Provider)
+		if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
+			return fmt.Errorf("sync remote skill %q: %w", name, err)
+		}
+		if _, err := fmt.Fprintln(output, name); err != nil {
+			return fmt.Errorf("report synchronized skill %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (m *manager) remoteContentProvider(provider string) remoteSkillContentProvider {
 	switch provider {
 	case skillsShProvider:
@@ -749,7 +804,7 @@ func (m *manager) toggleRemote(
 		break
 	}
 	if enabled {
-		selected, err = m.setSelection(project, ref.Name, false)
+		selected, err = m.setRemoteSelection(project, ref, false)
 		if err != nil {
 			return remoteToggleResult{}, err
 		}
@@ -777,7 +832,7 @@ func (m *manager) toggleRemote(
 			ref.Name,
 		)
 	}
-	selected, err = m.setSelection(project, ref.Name, true)
+	selected, err = m.setRemoteSelection(project, ref, true)
 	if err != nil {
 		return remoteToggleResult{}, err
 	}

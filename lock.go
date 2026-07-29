@@ -12,13 +12,34 @@ import (
 )
 
 const (
-	lockName           = ".skills-mgr.json"
-	lockSchemaRevision = 1
+	lockName                 = ".skills-mgr.json"
+	legacyLockSchemaRevision = 1
+	lockSchemaRevision       = 2
 )
 
+type skillSelection struct {
+	Enabled bool            `json:"enabled"`
+	Remote  *remoteSkillRef `json:"remote,omitempty"`
+}
+
+type decodedSkillSelection struct {
+	Enabled *bool           `json:"enabled"`
+	Remote  *remoteSkillRef `json:"remote,omitempty"`
+}
+
+type decodedLockFile struct {
+	SchemaRevision int                               `json:"schema_revision"`
+	Skills         map[string]*decodedSkillSelection `json:"skills"`
+}
+
+type lockFile struct {
+	SchemaRevision int                       `json:"schema_revision"`
+	Skills         map[string]skillSelection `json:"skills"`
+}
+
 type lock struct {
-	SchemaRevision int             `json:"schema_revision"`
-	Skills         map[string]bool `json:"skills"`
+	Skills map[string]bool
+	Remote map[string]remoteSkillRef
 }
 
 func loadLock(project string) (lock, error) {
@@ -30,34 +51,101 @@ func loadLock(project string) (lock, error) {
 	if err != nil {
 		return lock{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	var result lock
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&result); err != nil {
+	var revision struct {
+		SchemaRevision int `json:"schema_revision"`
+	}
+	if err := json.Unmarshal(data, &revision); err != nil {
 		return lock{}, fmt.Errorf("decode %s: %w", path, err)
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return lock{}, fmt.Errorf("decode %s: unexpected data after lock", path)
-	}
-	if result.SchemaRevision != lockSchemaRevision {
+
+	result := newLock()
+	switch revision.SchemaRevision {
+	case legacyLockSchemaRevision:
+		var legacy struct {
+			SchemaRevision int             `json:"schema_revision"`
+			Skills         map[string]bool `json:"skills"`
+		}
+		if err := decodeLockJSON(data, &legacy); err != nil {
+			return lock{}, fmt.Errorf("decode %s: %w", path, err)
+		}
+		if legacy.Skills == nil {
+			return lock{}, fmt.Errorf("decode %s: missing skills", path)
+		}
+		result.Skills = legacy.Skills
+	case lockSchemaRevision:
+		var current decodedLockFile
+		if err := decodeLockJSON(data, &current); err != nil {
+			return lock{}, fmt.Errorf("decode %s: %w", path, err)
+		}
+		if current.Skills == nil {
+			return lock{}, fmt.Errorf("decode %s: missing skills", path)
+		}
+		for name, selection := range current.Skills {
+			if selection == nil || selection.Enabled == nil {
+				return lock{}, fmt.Errorf(
+					"decode %s: skill %q is missing enabled state",
+					path,
+					name,
+				)
+			}
+			result.Skills[name] = *selection.Enabled
+			if selection.Remote == nil {
+				continue
+			}
+			if selection.Remote.Name != name {
+				return lock{}, fmt.Errorf(
+					"decode %s: skill %q remote name is %q",
+					path,
+					name,
+					selection.Remote.Name,
+				)
+			}
+			if err := selection.Remote.validate(); err != nil {
+				return lock{}, fmt.Errorf(
+					"decode %s: skill %q: %w",
+					path,
+					name,
+					err,
+				)
+			}
+			result.Remote[name] = *selection.Remote
+		}
+	default:
 		return lock{}, fmt.Errorf(
 			"decode %s: unsupported schema revision %d; binary supports %d",
 			path,
-			result.SchemaRevision,
+			revision.SchemaRevision,
 			lockSchemaRevision,
 		)
-	}
-	if result.Skills == nil {
-		return lock{}, fmt.Errorf("decode %s: missing skills", path)
 	}
 	return result, nil
 }
 
+func decodeLockJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("unexpected data after lock")
+	}
+	return nil
+}
+
 func saveLock(project string, value lock) error {
 	path := filepath.Join(project, lockName)
-	value.SchemaRevision = lockSchemaRevision
-	if value.Skills == nil {
-		value.Skills = make(map[string]bool)
+	serialized := lockFile{
+		SchemaRevision: lockSchemaRevision,
+
+		Skills: make(map[string]skillSelection, len(value.Skills)),
+	}
+	for name, enabled := range value.Skills {
+		selection := skillSelection{Enabled: enabled}
+		if ref, ok := value.Remote[name]; ok {
+			selection.Remote = &ref
+		}
+		serialized.Skills[name] = selection
 	}
 	temp, err := os.CreateTemp(project, "."+lockName+"-")
 	if err != nil {
@@ -67,7 +155,7 @@ func saveLock(project string, value lock) error {
 	defer os.Remove(name)
 	encoder := json.NewEncoder(temp)
 	encoder.SetIndent("", "  ")
-	err = encoder.Encode(value)
+	err = encoder.Encode(serialized)
 	if err == nil {
 		err = temp.Chmod(0o644)
 	}
@@ -112,7 +200,7 @@ func updateLock(project string, update func(*lock) (bool, error)) error {
 
 func newLock() lock {
 	return lock{
-		SchemaRevision: lockSchemaRevision,
-		Skills:         make(map[string]bool),
+		Skills: make(map[string]bool),
+		Remote: make(map[string]remoteSkillRef),
 	}
 }

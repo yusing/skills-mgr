@@ -2,21 +2,101 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "skills-mgr lock",
   "description": "Global and project-local skill enablement state.",
-  "type": "object",
-  "required": [
-    "schema_revision",
-    "skills"
-  ],
-  "properties": {
-    "schema_revision": {
-      "const": 1
+  "oneOf": [
+    {
+      "$ref": "#/$defs/legacyLock"
     },
-    "skills": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "boolean"
-      }
+    {
+      "$ref": "#/$defs/currentLock"
     }
-  },
-  "additionalProperties": false
+  ],
+  "$defs": {
+    "legacyLock": {
+      "type": "object",
+      "required": [
+        "schema_revision",
+        "skills"
+      ],
+      "properties": {
+        "schema_revision": {
+          "const": 1
+        },
+        "skills": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "currentLock": {
+      "type": "object",
+      "required": [
+        "schema_revision",
+        "skills"
+      ],
+      "properties": {
+        "schema_revision": {
+          "const": 2
+        },
+        "skills": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/selection"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "selection": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "remote": {
+          "$ref": "#/$defs/remote"
+        }
+      },
+      "additionalProperties": false
+    },
+    "remote": {
+      "type": "object",
+      "required": [
+        "provider",
+        "id",
+        "name",
+        "locator"
+      ],
+      "properties": {
+        "provider": {
+          "enum": [
+            "skills.sh",
+            "SkillsMP"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._:-]{1,80}$"
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
 }

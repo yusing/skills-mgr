@@ -150,10 +150,91 @@ func TestConcurrentGlobalTogglesPreserveUpdates(t *testing.T) {
 	assertLock(t, manager.paths.globalLockDir, want)
 }
 
+func TestLoadLegacyLockAndUpgradeOnSelectionChange(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(t, filepath.Join(project, lockName), `{
+  "schema_revision": 1,
+  "skills": {
+    "alpha": true,
+    "beta": false
+  }
+}`)
+
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["alpha"] || selected["beta"] {
+		t.Fatalf("legacy selection = %#v", selected)
+	}
+	if enabled, err := manager.toggle(project, "beta"); err != nil || !enabled {
+		t.Fatalf("toggle legacy selection = %v, %v", enabled, err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current lockFile
+	if err := json.Unmarshal(data, &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.SchemaRevision != lockSchemaRevision ||
+		!current.Skills["alpha"].Enabled ||
+		!current.Skills["beta"].Enabled {
+		t.Fatalf("upgraded lock = %#v", current)
+	}
+}
+
+func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
+	tests := map[string]string{
+		"missing enabled": `{
+  "schema_revision": 2,
+  "skills": {
+    "alpha": {
+      "remote": {
+        "provider": "skills.sh",
+        "id": "owner/repo/alpha",
+        "name": "alpha",
+        "locator": "owner/repo/alpha"
+      }
+    }
+  }
+}`,
+		"null selection": `{
+  "schema_revision": 2,
+  "skills": {
+    "alpha": null
+  }
+}`,
+		"incomplete remote": `{
+  "schema_revision": 2,
+  "skills": {
+    "alpha": {
+      "enabled": false,
+      "remote": {
+        "provider": "skills.sh"
+      }
+    }
+  }
+}`,
+	}
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			project := t.TempDir()
+			writeFile(t, filepath.Join(project, lockName), contents)
+			if _, err := loadLock(project); err == nil {
+				t.Fatal("loadLock accepted malformed current selection")
+			}
+		})
+	}
+}
+
 func TestLoadLockRejectsUnsupportedSchemaRevision(t *testing.T) {
 	project := t.TempDir()
 	writeFile(t, filepath.Join(project, lockName), `{
-  "schema_revision": 2,
+  "schema_revision": 3,
   "skills": {}
 }`)
 
@@ -162,27 +243,37 @@ func TestLoadLockRejectsUnsupportedSchemaRevision(t *testing.T) {
 	}
 }
 
-func TestLockSchemaMatchesWriterConstants(t *testing.T) {
+func TestLockSchemaMatchesSupportedRevisions(t *testing.T) {
 	data, err := os.ReadFile("skills-mgr.schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var schema struct {
-		Properties struct {
-			SchemaRevision struct {
-				Const int `json:"const"`
-			} `json:"schema_revision"`
-		} `json:"properties"`
+		Definitions struct {
+			Legacy struct {
+				Properties struct {
+					SchemaRevision struct {
+						Const int `json:"const"`
+					} `json:"schema_revision"`
+				} `json:"properties"`
+			} `json:"legacyLock"`
+			Current struct {
+				Properties struct {
+					SchemaRevision struct {
+						Const int `json:"const"`
+					} `json:"schema_revision"`
+				} `json:"properties"`
+			} `json:"currentLock"`
+		} `json:"$defs"`
 	}
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatal(err)
 	}
-	if schema.Properties.SchemaRevision.Const != lockSchemaRevision {
-		t.Fatalf(
-			"schema revision = %d, want %d",
-			schema.Properties.SchemaRevision.Const,
-			lockSchemaRevision,
-		)
+	if schema.Definitions.Legacy.Properties.SchemaRevision.Const !=
+		legacyLockSchemaRevision ||
+		schema.Definitions.Current.Properties.SchemaRevision.Const !=
+			lockSchemaRevision {
+		t.Fatalf("schema revisions = %#v", schema.Definitions)
 	}
 }
 
@@ -685,16 +776,9 @@ func TestDaemonStopsWithContext(t *testing.T) {
 
 func assertLock(t *testing.T, project string, want map[string]bool) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(project, lockName))
+	got, err := loadLock(project)
 	if err != nil {
 		t.Fatal(err)
-	}
-	var got lock
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got.SchemaRevision != lockSchemaRevision {
-		t.Fatalf("lock schema revision = %d, want %d", got.SchemaRevision, lockSchemaRevision)
 	}
 	if len(got.Skills) != len(want) {
 		t.Fatalf("lock skills = %#v, want %#v", got.Skills, want)

@@ -1,60 +1,61 @@
-# Remote skill persistence and catalog toggling
+# Reproducible remote skill selection
 
 ## Problem
 
-The TUI can browse skills.sh and SkillsMP, but catalog entries cannot be enabled.
-The existing toggle applies only to skills already discovered from agent-managed
-skill directories, so a remote result has no durable content for `list` or `get`
-to consume.
+A project can commit `.skills-mgr.json`, but each selection currently records only
+a skill name and boolean state. A fresh checkout therefore cannot identify or
+obtain an enabled remote skill whose user-level persisted copy exists only on
+another machine.
 
 ## Outcome
 
-A user can press Space on a skill in either remote catalog to fetch and persist
-one canonical user-level copy and enable it for the current project. Persisted
-content is shared across projects, while each project's existing
-`.skills-mgr.json` independently records whether the skill is enabled.
+A committed project selection carries the stable provider identity needed to
+obtain the same remote skill elsewhere, and a user can explicitly synchronize
+enabled remote skills after cloning or pulling the project.
 
 ## First-draft scope
 
-- Toggle skills from the skills.sh topic catalog, skills.sh search results,
-  the SkillsMP catalog, and SkillsMP search results.
-- Keep fetched skill content for three hours. Enabling uses a fresh persisted
-  copy without network access and refreshes a missing or stale copy before
-  changing project selection.
-- Disabling changes only current-project selection. It performs no network
-  request and retains persisted content for later offline re-enablement.
-- Extend the existing daemon to refresh stale persisted copies in the
-  background while continuing to retain last-known-good content after a failed
-  refresh.
-- Make an enabled remote skill available through the existing installed-skill,
-  `list`, and `get` behavior.
+- Persist remote provider identity with project selection instead of reducing a
+  remote skill to a name and boolean.
+- Add `skills-mgr sync` to fetch enabled remote skills that are missing or stale
+  in the current user's persisted remote-skill store.
+- Keep synchronization explicit. Existing `list`, `get`, `run`, TUI startup,
+  and daemon behavior do not download a remote skill merely because its
+  identity appears in project configuration.
+- Continue accepting existing schema-revision-1 project files and write the new
+  representation when selection is next changed.
+- Preserve the existing global and project selection overlay.
 
 ## User-visible surface
 
-The existing Space key toggles the selected skill on all three TUI tabs. Remote
-rows show whether their skill is enabled for the current project, and status
-text reports fetching, enabling, disabling, and failures. SkillsMP installs show
-a progress popup while cloning. No command, option, configuration key, or
-environment variable is added.
+`skills-mgr sync` reads the current project's `.skills-mgr.json`, synchronizes
+its enabled remote selections, and reports each synchronized skill. A successful
+command exits without changing project selection. A failure identifies the
+skill that could not be synchronized and returns a non-zero status.
+
+The `.skills-mgr.json` skill values become records containing enabled state and,
+for remote skills, provider identity, provider-specific ID, and locator. Local
+skill records contain enabled state only.
 
 ## Constraints
 
-- Remote persistence is owned by skills-mgr at user scope. The feature must not
-  create, copy, link, or modify content under project or user
-  `.agents/skills` or `.codex/skills` directories.
-- SkillsMP content is fetched with `git clone --depth 1`; other fetching,
-  persistence, toggling, and daemon refresh operations remain in process.
-  Downloaded content must not be executed.
-- A failed or invalid download must not enable the skill, replace a valid
-  persisted copy, or partially update project selection.
-- Existing local-skill discovery, the separately requested `skills-mgr run`
-  operation, and `$EDITOR` integration remain supported and unchanged.
+- A remote identity is the existing provider, provider-specific ID, skill name,
+  and provider locator used by the remote persistence subsystem.
+- Synchronization must use the existing provider fetch, validation, size-limit,
+  safe-path, and atomic persistence behavior. Downloaded content must not be
+  executed.
+- A failed synchronization must not change project selection, replace a valid
+  persisted copy, or leave partial content.
+- Remote content remains owned by skills-mgr at user scope and must not be
+  written beneath project or user `.agents/skills` or `.codex/skills`
+  directories.
 
 ## Non-goals
 
-- A remove, update, force-refresh, or cache-management command.
-- Copying or linking remote skills into agent-owned discovery roots.
-- Automatically enabling a persisted skill in another project.
-- Executing, auditing, sandboxing, or otherwise endorsing downloaded scripts.
-- Changing catalog ranking, search, authentication, or the existing local
-  toggle contract.
+- Automatic downloading during `list`, `get`, `run`, TUI startup, or daemon
+  discovery of a previously unknown remote identity.
+- Synchronizing disabled remote selections or global selections.
+- Adding confirmation, dry-run, update, remove, force-refresh, or cache
+  management options.
+- Making local skills portable or assigning provider identities to them.
+- Executing, auditing, sandboxing, or endorsing downloaded skill scripts.

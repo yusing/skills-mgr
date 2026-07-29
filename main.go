@@ -54,6 +54,17 @@ func run(args []string) error {
 			return err
 		}
 		return manager.list(project, os.Stdout)
+	case args[0] == "sync":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr sync")
+		}
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.sync(ctx, project, os.Stdout)
 	case args[0] == "get":
 		if len(args) != 2 && len(args) != 3 {
 			return fmt.Errorf("usage: skills-mgr get <skill-name>[/relative/path] [start:end]")

@@ -387,7 +387,7 @@ func (m *manager) lockDir(project string) string {
 	return project
 }
 
-func (m *manager) toggle(project, skill string) (bool, error) {
+func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, error) {
 	enabled := false
 	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		selected := value.Skills
@@ -400,6 +400,10 @@ func (m *manager) toggle(project, skill string) (bool, error) {
 		}
 		enabled = !selected[skill]
 		value.Skills[skill] = enabled
+		if len(remoteKey) == 0 || remoteKey[0] == "" {
+			delete(value.Remote, skill)
+		}
+
 		return true, nil
 	})
 	if err != nil {
@@ -408,14 +412,15 @@ func (m *manager) toggle(project, skill string) (bool, error) {
 	return enabled, nil
 }
 
-func (m *manager) setSelection(
+func (m *manager) setRemoteSelection(
 	project string,
-	skill string,
+	ref remoteSkillRef,
 	enabled bool,
 ) (map[string]bool, error) {
 	var selected map[string]bool
 	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		value.Skills[skill] = enabled
+		value.Skills[ref.Name] = enabled
+		value.Remote[ref.Name] = ref
 		selected = value.Skills
 		if !m.global {
 			global, err := loadLock(m.paths.globalLockDir)
