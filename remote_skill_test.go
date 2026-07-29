@@ -399,6 +399,9 @@ func TestSkillsMPRepositoryRootFetchesFutureAgentSkillResources(t *testing.T) {
 			".future-agent/skills/alpha/assets/icon.svg": {
 				contents: "<svg/>", mode: 0o644,
 			},
+			".future-agent/skills/alpha/data/styles.csv": {
+				contents: "name,value\nminimal,1\n", mode: 0o644,
+			},
 			".future-agent/skills/alpha/references/guide.md": {
 				contents: "# Guide\n", mode: 0o644,
 			},
@@ -436,8 +439,8 @@ func TestSkillsMPRepositoryRootFetchesFutureAgentSkillResources(t *testing.T) {
 	for index, file := range files {
 		paths[index] = file.Path
 	}
-	want := []string{"SKILL.md", "assets/icon.svg", "references/guide.md", "scripts/check.sh"}
-	if !slices.Equal(paths, want) || files[3].Mode&0o111 == 0 {
+	want := []string{"SKILL.md", "assets/icon.svg", "data/styles.csv", "references/guide.md", "scripts/check.sh"}
+	if !slices.Equal(paths, want) || files[4].Mode&0o111 == 0 {
 		t.Fatalf("future agent skill files = %#v", files)
 	}
 }

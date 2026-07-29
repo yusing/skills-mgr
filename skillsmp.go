@@ -343,7 +343,7 @@ func isSafeAgentSkillFile(relative string) bool {
 	if !nested {
 		return false
 	}
-	return directory == "references" || directory == "scripts" || directory == "assets"
+	return directory == "references" || directory == "scripts" || directory == "assets" || directory == "data"
 }
 
 func findGitHubSkillPath(
