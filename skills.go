@@ -388,6 +388,15 @@ func (m *manager) lockDir(project string) string {
 }
 
 func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, error) {
+	var remoteRef *remoteSkillRef
+	if len(remoteKey) > 0 && remoteKey[0] != "" {
+		ref, err := m.persistedRemoteRef(remoteKey[0], skill)
+		if err != nil {
+			return false, err
+		}
+		remoteRef = new(ref)
+	}
+
 	enabled := false
 	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		selected := value.Skills
@@ -400,8 +409,10 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 		}
 		enabled = !selected[skill]
 		value.Skills[skill] = enabled
-		if len(remoteKey) == 0 || remoteKey[0] == "" {
+		if remoteRef == nil {
 			delete(value.Remote, skill)
+		} else {
+			value.Remote[skill] = *remoteRef
 		}
 
 		return true, nil
@@ -440,84 +451,129 @@ func (m *manager) updateSelectionLock(
 ) error {
 	lockDir := m.lockDir(project)
 	updateMigrated := func(value *lock) (bool, error) {
-		migrated, err := m.migrateSelectionLock(project, value)
+		migrated, err := m.migrateSelectionLock(value)
 		if err != nil {
 			return false, err
 		}
 		changed, err := update(value)
 		return migrated || changed, err
 	}
-	if m.global {
-		return updateLock(lockDir, updateMigrated)
-	}
-	value, err := loadLock(lockDir)
-	if err != nil {
-		return err
-	}
-	changed, err := updateMigrated(&value)
-	if err != nil || !changed {
-		return err
-	}
-	return saveLock(lockDir, value)
+	return updateLock(lockDir, updateMigrated)
 }
 
-func (m *manager) migrateSelectionLock(project string, value *lock) (bool, error) {
+func (m *manager) migrateSelectionLock(value *lock) (bool, error) {
 	if value.SchemaRevision != legacyLockSchemaRevision {
 		return false, nil
 	}
-	refs, err := m.discoveredRemoteRefs(project)
+	refs, err := m.persistedRemoteRefs()
 	if err != nil {
 		return false, err
 	}
-	for name := range value.Skills {
-		if ref, ok := refs[name]; ok {
-			value.Remote[name] = ref
-		}
-	}
+	global := newLock()
 	if !m.global {
-		global, err := loadLock(m.paths.globalLockDir)
+		global, err = loadLock(m.paths.globalLockDir)
 		if err != nil {
 			return false, err
 		}
-		for name := range global.Skills {
-			if _, overridden := value.Skills[name]; overridden {
-				continue
-			}
-			if ref, ok := refs[name]; ok {
-				value.Remote[name] = ref
-			}
-		}
+	}
+	if _, err := reconcileRemoteMetadata(global, value, refs); err != nil {
+		return false, err
 	}
 	value.SchemaRevision = lockSchemaRevision
 	return true, nil
 }
 
-func (m *manager) discoveredRemoteRefs(
-	project string,
-) (map[string]remoteSkillRef, error) {
+func (m *manager) persistedRemoteRefs() (map[string]remoteSkillRef, error) {
 	if m.remoteStore == nil {
 		return make(map[string]remoteSkillRef), nil
-	}
-	skills, err := m.skills(project)
-	if err != nil {
-		return nil, err
 	}
 	records, err := m.remoteStore.records()
 	if err != nil {
 		return nil, err
 	}
-	refsByKey := make(map[string]remoteSkillRef, len(records))
+	refs := make(map[string]remoteSkillRef, len(records))
 	for _, record := range records {
 		ref := record.ref()
-		refsByKey[ref.key()] = ref
-	}
-	refs := make(map[string]remoteSkillRef)
-	for _, skill := range skills {
-		if ref, ok := refsByKey[skill.RemoteKey]; ok {
-			refs[skill.Name] = ref
+		if existing, ok := refs[ref.Name]; ok && existing != ref {
+			return nil, fmt.Errorf(
+				"multiple persisted remote identities for skill %q",
+				ref.Name,
+			)
 		}
+		refs[ref.Name] = ref
 	}
 	return refs, nil
+}
+
+func (m *manager) persistedRemoteRef(
+	key string,
+	name string,
+) (remoteSkillRef, error) {
+	if m.remoteStore == nil {
+		return remoteSkillRef{}, fmt.Errorf("remote skill store is unavailable")
+	}
+	records, err := m.remoteStore.records()
+	if err != nil {
+		return remoteSkillRef{}, err
+	}
+	for _, record := range records {
+		ref := record.ref()
+		if ref.key() != key {
+			continue
+		}
+		if ref.Name != name {
+			return remoteSkillRef{}, fmt.Errorf(
+				"remote skill metadata for %q belongs to skill %q",
+				key,
+				ref.Name,
+			)
+		}
+		return ref, nil
+	}
+	return remoteSkillRef{}, fmt.Errorf(
+		"remote skill metadata for %q is unavailable",
+		name,
+	)
+}
+
+func reconcileRemoteMetadata(
+	globalLock lock,
+	projectLock *lock,
+	refs map[string]remoteSkillRef,
+) (bool, error) {
+	changed := false
+	add := func(name string) error {
+		ref, ok := refs[name]
+		if !ok {
+			return nil
+		}
+		if existing, ok := projectLock.Remote[name]; ok {
+			if existing != ref {
+				return fmt.Errorf(
+					"remote skill %q identity conflicts with persisted reference",
+					name,
+				)
+			}
+			return nil
+		}
+		projectLock.Remote[name] = ref
+		changed = true
+		return nil
+	}
+	for name := range projectLock.Skills {
+		if err := add(name); err != nil {
+			return false, err
+		}
+	}
+	for name := range globalLock.Skills {
+		if _, overridden := projectLock.Skills[name]; overridden {
+			continue
+		}
+		if err := add(name); err != nil {
+			return false, err
+		}
+	}
+	return changed, nil
 }
 
 func mergeSelections(global, project map[string]bool) map[string]bool {

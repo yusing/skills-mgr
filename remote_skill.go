@@ -705,6 +705,21 @@ func (m *manager) sync(
 	if err != nil {
 		return err
 	}
+	originalSkills := maps.Clone(projectLock.Skills)
+	originalRemote := maps.Clone(projectLock.Remote)
+	persistedRefs, err := m.persistedRemoteRefs()
+	if err != nil {
+		return err
+	}
+	metadataChanged, err := reconcileRemoteMetadata(
+		globalLock,
+		&projectLock,
+		persistedRefs,
+	)
+	if err != nil {
+		return fmt.Errorf("reconcile remote metadata: %w", err)
+	}
+
 	selected := mergeSelections(globalLock.Skills, projectLock.Skills)
 	discovered, err := m.skills(project)
 	if err != nil {
@@ -729,11 +744,14 @@ func (m *manager) sync(
 			)
 		}
 		if skill, ok := discoveredByName[name]; ok && skill.RemoteKey != ref.key() {
-			return fmt.Errorf(
-				"sync remote skill %q: skill name is already discovered from %s",
-				name,
-				skill.Source,
-			)
+			persisted, isPersisted := persistedRefs[name]
+			if !isPersisted || persisted != ref {
+				return fmt.Errorf(
+					"sync remote skill %q: skill name is already discovered from %s",
+					name,
+					skill.Source,
+				)
+			}
 		}
 		if err := ref.validate(); err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
@@ -745,6 +763,23 @@ func (m *manager) sync(
 		if _, err := fmt.Fprintln(output, name); err != nil {
 			return fmt.Errorf("report synchronized skill %q: %w", name, err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reconcile remote metadata: %w", err)
+	}
+	if !metadataChanged {
+		return nil
+	}
+	err = updateLock(project, func(current *lock) (bool, error) {
+		if !maps.Equal(current.Skills, originalSkills) ||
+			!maps.Equal(current.Remote, originalRemote) {
+			return false, fmt.Errorf("project selection changed during sync")
+		}
+		maps.Copy(current.Remote, projectLock.Remote)
+		return true, nil
+	})
+	if err != nil {
+		return fmt.Errorf("persist synchronized remote metadata: %w", err)
 	}
 	return nil
 }

@@ -150,6 +150,38 @@ func TestConcurrentGlobalTogglesPreserveUpdates(t *testing.T) {
 	assertLock(t, manager.paths.globalLockDir, want)
 }
 
+func TestConcurrentProjectTogglesPreserveUpdates(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	const count = 16
+	errs := make(chan error, count)
+	var wait sync.WaitGroup
+	for index := range count {
+		wait.Go(func() {
+			skill := fmt.Sprintf("skill-%d", index)
+			enabled, err := manager.toggle(project, skill)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !enabled {
+				errs <- fmt.Errorf("%s was disabled", skill)
+			}
+		})
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	want := make(map[string]bool, count)
+	for index := range count {
+		want[fmt.Sprintf("skill-%d", index)] = true
+	}
+	assertLock(t, project, want)
+}
+
 func TestLoadLegacyLockAndUpgradeOnSelectionChange(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

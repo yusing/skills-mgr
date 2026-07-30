@@ -46,9 +46,9 @@ This contract supports `REQ-SYNC-002` and `REQ-SYNC-003`.
 One manager ensure path validates a complete provider result in a temporary
 sibling entry and atomically replaces the prior entry only after every file and
 metadata record is durable enough to close successfully. Interactive enable
-and explicit synchronization call that path. Neither changes selection before
-or during content persistence; synchronization never changes selection.
-Failure retains both the last-known-good entry and both selection locks.
+and explicit synchronization call that path. Synchronization stages project
+metadata reconciliation in memory, persists it only after all content work
+succeeds, and leaves both selection locks unchanged on failure or cancellation.
 
 Disabling changes only the existing project lock. The daemon enumerates store
 metadata and calls the same refresh path for stale entries; it does not inspect
@@ -78,16 +78,17 @@ This contract supports `REQ-SYNC-002`.
 decoding. Its structured skill selection embeds the existing remote reference
 shape owned and validated by `remote_skill.go`; it must not derive identity
 from a mutable catalog search or duplicate provider-specific parsing. During a
-revision-1 rewrite, the manager matches selected discovered remote skills to
-the canonical store records. Project-selected identities retain explicit
+revision-1 rewrite, the manager matches selected skill names directly to the
+canonical store records; normal discovery precedence must not suppress remote
+identity reconstruction. Project-selected identities retain explicit
 enablement, while globally inherited identities are written without an enabled
 override.
 
-The `sync` command reads remote references from the current project lock and
-resolves enablement through the existing global and project lock overlay. It
-filters effectively enabled entries, resolves the named existing provider, and
-passes each reference to the existing store ensure path. The command may
-publish validated cache content but has no dependency that can write either
-selection lock.
+The `sync` command first matches project and inherited global skill names to
+canonical persisted remote records, independently of discovery precedence.
+It stages missing project metadata, filters effectively enabled entries through
+the global/project overlay, and passes each enabled reference to the existing
+store ensure path. After all ensures succeed, it atomically persists the staged
+project metadata without changing enabled overrides.
 
 This contract supports `REQ-SYNC-001`, `REQ-SYNC-002`, and `REQ-SYNC-003`.

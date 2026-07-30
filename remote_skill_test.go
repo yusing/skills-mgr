@@ -172,6 +172,13 @@ func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	for _, name := range []string{"alpha", "beta"} {
+		writeFile(
+			t,
+			filepath.Join(manager.paths.userSkills, name, "SKILL.md"),
+			skillFile(name, "Higher-precedence local skill.", "body"),
+		)
+	}
 	project := t.TempDir()
 	writeFile(t, filepath.Join(manager.paths.globalLockDir, lockName), `{
   "schema_revision": 1,
@@ -236,6 +243,163 @@ func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	}
 	if selected["alpha"] {
 		t.Fatalf("inherited selection did not follow global: %#v", selected)
+	}
+}
+
+func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	record, err := manager.remoteStore.ensure(
+		t.Context(),
+		ref,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate := record
+	duplicate.Provider = skillsMPProvider
+	duplicate.ID = "other-alpha-id"
+	duplicate.Locator = "https://github.com/other/repo/tree/main/alpha"
+	if err := manager.remoteStore.saveRecordLocked(duplicate); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := manager.toggle(project, "alpha", ref.key())
+	if err != nil || enabled {
+		t.Fatalf("disable installed remote = %v, %v", enabled, err)
+	}
+	got, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Skills["alpha"] || got.Remote["alpha"] != ref {
+		t.Fatalf("disabled installed remote selection = %#v", got)
+	}
+}
+
+func TestSyncBackfillsExplicitAndInheritedRemoteMetadata(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	alpha := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	beta := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/beta",
+		Name:     "beta",
+		Locator:  "owner/repo/beta",
+	}
+	for _, ref := range []remoteSkillRef{alpha, beta} {
+		if _, err := manager.remoteStore.ensure(
+			t.Context(),
+			ref,
+			&staticRemoteProvider{files: []remoteSkillFile{{
+				Path:     "SKILL.md",
+				Contents: []byte(skillFile(ref.Name, "Remote skill.", "body")),
+			}}},
+		); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(
+			t,
+			filepath.Join(manager.paths.userSkills, ref.Name, "SKILL.md"),
+			skillFile(ref.Name, "Higher-precedence local skill.", "body"),
+		)
+	}
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{
+		Skills: map[string]bool{"beta": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "alpha\n" {
+		t.Fatalf("sync output = %q", output.String())
+	}
+	got, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, overridden := got.Skills["alpha"]; overridden ||
+		got.Remote["alpha"] != alpha {
+		t.Fatalf("inherited synchronized selection = %#v", got)
+	}
+	if got.Skills["beta"] || got.Remote["beta"] != beta {
+		t.Fatalf("explicit synchronized selection = %#v", got)
+	}
+}
+
+func TestCanceledSyncDoesNotPersistBackfilledMetadata(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		ref,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, newLock()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var output bytes.Buffer
+	err = manager.sync(ctx, project, &output)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled sync error = %v", err)
+	}
+	after, readErr := os.ReadFile(filepath.Join(project, lockName))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("canceled sync persisted remote metadata")
 	}
 }
 

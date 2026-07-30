@@ -21,13 +21,13 @@ provider-specific ID, skill name, and provider locator. A local selection shall
 record only its enabled state.
 
 When a schema-revision-1 project file is rewritten as revision 2, migration
-shall initialize remote references for discovered remote skills represented by
-either the project selection or the inherited global selection. Project
-overrides shall retain their enabled state. Inherited records shall omit enabled
-state so their effective state continues to follow the global selection.
-Existing schema-revision-1 files whose skill values are booleans shall remain
-readable, and migration shall not invent identity for entries that do not match
-a discovered persisted remote.
+shall initialize remote references by matching selected skill names to canonical
+persisted remote-store records, independently of higher-precedence discovery
+roots. Project overrides shall retain their enabled state. Inherited records
+shall omit enabled state so their effective state continues to follow the
+global selection. Existing schema-revision-1 files whose skill values are
+booleans shall remain readable, and migration shall not invent identity for
+entries that have no persisted remote-store record.
 
 Acceptance examples:
 
@@ -44,17 +44,19 @@ Acceptance examples:
 
 ## REQ-SYNC-002 — Explicitly synchronize enabled remote skills
 
-`skills-mgr sync` shall read remote references from the current project's
-selection and resolve their enabled state through the existing global and
-project selection overlay. Each effectively enabled reference shall exist as a
-fresh, valid copy in the current user's remote-skill store. The command shall
-use the provider named by the record directly rather than discover or search
-for the skill in a catalog.
+`skills-mgr sync` shall reconcile missing remote references into the current
+project selection by matching project and inherited global skill names to the
+current user's canonical persisted remote-store records. Explicit project
+entries shall retain enabled state. Inherited records shall omit enabled state
+so they continue following the global selection. Normal discovery precedence
+shall not suppress this metadata reconciliation.
 
-The command shall not synchronize effectively disabled records or legacy
-records that contain no remote reference. It shall not change project or global
-selection. Existing commands and TUI startup shall not perform this
-synchronization implicitly.
+After reconciliation, each effectively enabled remote reference shall exist as
+a fresh, valid copy in the current user's remote-skill store. The command shall
+use the provider named by the record directly rather than discover or search
+for the skill in a catalog. It shall not fetch effectively disabled records.
+Existing commands and TUI startup shall not perform this synchronization
+implicitly.
 
 Acceptance examples:
 
@@ -63,9 +65,11 @@ Acceptance examples:
   `list`, `get`, and `run` behavior.
 - A fresh persisted copy causes no provider request.
 - A stale persisted copy is refreshed using existing refresh semantics.
-- An inherited remote record follows global enablement without adding a project
-  override.
-- Effectively disabled, local, and legacy boolean-only records cause no provider
+- A project whose prior v2 migration omitted identities is repaired from its
+  persisted remote store.
+- An inherited remote record receives metadata without an enabled override and
+  follows global enablement.
+- Effectively disabled remote records receive metadata but cause no provider
   request.
 - Running `list`, `get`, `run`, or the TUI against a missing referenced remote
   skill does not download it.

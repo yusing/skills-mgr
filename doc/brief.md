@@ -28,11 +28,12 @@ enabled remote skills after cloning or pulling the project.
 
 ## User-visible surface
 
-`skills-mgr sync` reads remote identities from the current project's
-`.skills-mgr.json`, resolves their enabled state through the global and project
-selection overlay, and reports each synchronized skill. A successful command
-exits without changing selection. A failure identifies the skill that could not
-be synchronized and returns a non-zero status.
+`skills-mgr sync` reconciles missing remote identities from the current user's
+canonical remote store into the current project's `.skills-mgr.json`, resolves
+enabled state through the global and project selection overlay, and reports each
+synchronized skill. Explicit project entries retain enabled state; inherited
+entries omit it. A failure identifies the skill that could not be synchronized,
+returns a non-zero status, and leaves project configuration unchanged.
 
 The `.skills-mgr.json` skill values become records containing optional enabled
 state and, for remote skills, provider identity, provider-specific ID, and
