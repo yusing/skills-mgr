@@ -10,11 +10,12 @@ func newTestManager(t *testing.T) *manager {
 	t.Helper()
 	root := t.TempDir()
 	manager := &manager{paths: paths{
-		userSkills:    filepath.Join(root, "home", ".agents", "skills"),
-		codexHome:     filepath.Join(root, "home", ".codex"),
-		adminSkills:   filepath.Join(root, "etc", "codex", "skills"),
-		globalLockDir: filepath.Join(root, "home"),
-		remoteSkills:  filepath.Join(root, "cache", "skills-mgr", "remote-skills"),
+		userSkills:     filepath.Join(root, "home", ".agents", "skills"),
+		codexHome:      filepath.Join(root, "home", ".codex"),
+		adminSkills:    filepath.Join(root, "etc", "codex", "skills"),
+		globalLockDir:  filepath.Join(root, "home"),
+		selectionLocks: filepath.Join(root, "cache", "skills-mgr", "selection-locks"),
+		remoteSkills:   filepath.Join(root, "cache", "skills-mgr", "remote-skills"),
 	}}
 	if err := os.MkdirAll(manager.paths.globalLockDir, 0o755); err != nil {
 		t.Fatal(err)

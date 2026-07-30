@@ -770,7 +770,7 @@ func (m *manager) sync(
 	if !metadataChanged {
 		return nil
 	}
-	err = updateLock(project, func(current *lock) (bool, error) {
+	err = updateLock(project, m.paths.selectionLocks, func(current *lock) (bool, error) {
 		if !maps.Equal(current.Skills, originalSkills) ||
 			!maps.Equal(current.Remote, originalRemote) {
 			return false, fmt.Errorf("project selection changed during sync")

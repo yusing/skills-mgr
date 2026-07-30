@@ -169,8 +169,22 @@ func saveLock(project string, value lock) error {
 	return nil
 }
 
-func updateLock(project string, update func(*lock) (bool, error)) error {
-	lockPath := filepath.Join(project, lockName+".lock")
+func updateLock(project, coordinationDir string, update func(*lock) (bool, error)) error {
+	projectInfo, err := os.Stat(project)
+	if err != nil {
+		return fmt.Errorf("inspect selection lock target %s: %w", project, err)
+	}
+	stat, ok := projectInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("inspect selection lock target %s: filesystem identity is unavailable", project)
+	}
+	if err := os.MkdirAll(coordinationDir, 0o700); err != nil {
+		return fmt.Errorf("create selection lock directory: %w", err)
+	}
+	lockPath := filepath.Join(
+		coordinationDir,
+		fmt.Sprintf("%x-%x.lock", stat.Dev, stat.Ino),
+	)
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", lockPath, err)
@@ -185,7 +199,7 @@ func updateLock(project string, update func(*lock) (bool, error)) error {
 	if err != nil {
 		return fmt.Errorf("lock %s: %w", lockPath, err)
 	}
-	defer syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) }()
 
 	value, err := loadLock(project)
 	if err != nil {

@@ -458,7 +458,7 @@ func (m *manager) updateSelectionLock(
 		changed, err := update(value)
 		return migrated || changed, err
 	}
-	return updateLock(lockDir, updateMigrated)
+	return updateLock(lockDir, m.paths.selectionLocks, updateMigrated)
 }
 
 func (m *manager) migrateSelectionLock(value *lock) (bool, error) {

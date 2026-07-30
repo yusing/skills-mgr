@@ -195,8 +195,8 @@ values.
 
 Commit a project's `.skills-mgr.json` when the repository should share a
 selection. Every enabled name must still be discoverable on each machine or
-`skills-mgr list` will fail. Do not commit `.skills-mgr.json.lock`; it is an
-internal coordination file used while updating global state.
+`skills-mgr list` will fail. Update coordination locks are kept in the user
+cache rather than the project directory.
 
 ## Remote Refresh Daemon
 

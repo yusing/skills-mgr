@@ -25,6 +25,16 @@ func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	if err != nil || !enabled {
 		t.Fatalf("enable = %v, %v", enabled, err)
 	}
+	if _, err := os.Lstat(filepath.Join(project, lockName+".lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("toggle left a project coordination file: %v", err)
+	}
+	coordinationLocks, err := os.ReadDir(manager.paths.selectionLocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coordinationLocks) != 1 {
+		t.Fatalf("coordination lock count = %d, want 1", len(coordinationLocks))
+	}
 	assertLock(t, project, map[string]bool{"alpha": true})
 	assertFile(t, skill, skillFile("alpha", "Alpha description.", "body"))
 	if _, err := os.Lstat(filepath.Join(project, ".agents")); !errors.Is(err, os.ErrNotExist) {
@@ -37,6 +47,31 @@ func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	}
 	assertLock(t, project, map[string]bool{"alpha": false})
 	assertFile(t, skill, skillFile("alpha", "Alpha description.", "body"))
+}
+
+func TestProjectAliasesShareCoordinationLock(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.toggle(project, "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggle(alias, "beta"); err != nil {
+		t.Fatal(err)
+	}
+
+	coordinationLocks, err := os.ReadDir(manager.paths.selectionLocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coordinationLocks) != 1 {
+		t.Fatalf("coordination lock count = %d, want 1", len(coordinationLocks))
+	}
+	assertLock(t, project, map[string]bool{"alpha": true, "beta": true})
 }
 
 func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
