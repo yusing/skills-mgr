@@ -28,14 +28,17 @@ enabled remote skills after cloning or pulling the project.
 
 ## User-visible surface
 
-`skills-mgr sync` reads the current project's `.skills-mgr.json`, synchronizes
-its enabled remote selections, and reports each synchronized skill. A successful
-command exits without changing project selection. A failure identifies the
-skill that could not be synchronized and returns a non-zero status.
+`skills-mgr sync` reads remote identities from the current project's
+`.skills-mgr.json`, resolves their enabled state through the global and project
+selection overlay, and reports each synchronized skill. A successful command
+exits without changing selection. A failure identifies the skill that could not
+be synchronized and returns a non-zero status.
 
-The `.skills-mgr.json` skill values become records containing enabled state and,
-for remote skills, provider identity, provider-specific ID, and locator. Local
-skill records contain enabled state only.
+The `.skills-mgr.json` skill values become records containing optional enabled
+state and, for remote skills, provider identity, provider-specific ID, and
+locator. An inherited remote records identity without enabled state so it
+continues to follow the global selection. Local skill records contain enabled
+state only.
 
 ## Constraints
 
@@ -54,7 +57,7 @@ skill records contain enabled state only.
 
 - Automatic downloading during `list`, `get`, `run`, TUI startup, or daemon
   discovery of a previously unknown remote identity.
-- Synchronizing disabled remote selections or global selections.
+- Synchronizing effectively disabled remote selections.
 - Adding confirmation, dry-run, update, remove, force-refresh, or cache
   management options.
 - Making local skills portable or assigning provider identities to them.

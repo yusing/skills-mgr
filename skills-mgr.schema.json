@@ -51,8 +51,17 @@
     },
     "selection": {
       "type": "object",
-      "required": [
-        "enabled"
+      "anyOf": [
+        {
+          "required": [
+            "enabled"
+          ]
+        },
+        {
+          "required": [
+            "remote"
+          ]
+        }
       ],
       "properties": {
         "enabled": {

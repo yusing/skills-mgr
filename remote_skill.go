@@ -697,10 +697,15 @@ func (m *manager) sync(
 	if m.remoteStore == nil {
 		return fmt.Errorf("remote skill store is unavailable")
 	}
+	globalLock, err := loadLock(m.paths.globalLockDir)
+	if err != nil {
+		return err
+	}
 	projectLock, err := loadLock(project)
 	if err != nil {
 		return err
 	}
+	selected := mergeSelections(globalLock.Skills, projectLock.Skills)
 	discovered, err := m.skills(project)
 	if err != nil {
 		return err
@@ -712,7 +717,7 @@ func (m *manager) sync(
 	names := slices.Sorted(maps.Keys(projectLock.Remote))
 
 	for _, name := range names {
-		if !projectLock.Skills[name] {
+		if !selected[name] {
 			continue
 		}
 		ref := projectLock.Remote[name]

@@ -180,26 +180,21 @@ func TestLoadLegacyLockAndUpgradeOnSelectionChange(t *testing.T) {
 	if err := json.Unmarshal(data, &current); err != nil {
 		t.Fatal(err)
 	}
+	alpha := current.Skills["alpha"].Enabled
+	beta := current.Skills["beta"].Enabled
 	if current.SchemaRevision != lockSchemaRevision ||
-		!current.Skills["alpha"].Enabled ||
-		!current.Skills["beta"].Enabled {
+		alpha == nil || !*alpha ||
+		beta == nil || !*beta {
 		t.Fatalf("upgraded lock = %#v", current)
 	}
 }
 
 func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
 	tests := map[string]string{
-		"missing enabled": `{
+		"empty selection": `{
   "schema_revision": 2,
   "skills": {
-    "alpha": {
-      "remote": {
-        "provider": "skills.sh",
-        "id": "owner/repo/alpha",
-        "name": "alpha",
-        "locator": "owner/repo/alpha"
-      }
-    }
+    "alpha": {}
   }
 }`,
 		"null selection": `{

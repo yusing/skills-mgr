@@ -18,18 +18,13 @@ const (
 )
 
 type skillSelection struct {
-	Enabled bool            `json:"enabled"`
-	Remote  *remoteSkillRef `json:"remote,omitempty"`
-}
-
-type decodedSkillSelection struct {
-	Enabled *bool           `json:"enabled"`
+	Enabled *bool           `json:"enabled,omitempty"`
 	Remote  *remoteSkillRef `json:"remote,omitempty"`
 }
 
 type decodedLockFile struct {
-	SchemaRevision int                               `json:"schema_revision"`
-	Skills         map[string]*decodedSkillSelection `json:"skills"`
+	SchemaRevision int                        `json:"schema_revision"`
+	Skills         map[string]*skillSelection `json:"skills"`
 }
 
 type lockFile struct {
@@ -38,8 +33,9 @@ type lockFile struct {
 }
 
 type lock struct {
-	Skills map[string]bool
-	Remote map[string]remoteSkillRef
+	SchemaRevision int
+	Skills         map[string]bool
+	Remote         map[string]remoteSkillRef
 }
 
 func loadLock(project string) (lock, error) {
@@ -71,6 +67,7 @@ func loadLock(project string) (lock, error) {
 		if legacy.Skills == nil {
 			return lock{}, fmt.Errorf("decode %s: missing skills", path)
 		}
+		result.SchemaRevision = legacyLockSchemaRevision
 		result.Skills = legacy.Skills
 	case lockSchemaRevision:
 		var current decodedLockFile
@@ -81,14 +78,17 @@ func loadLock(project string) (lock, error) {
 			return lock{}, fmt.Errorf("decode %s: missing skills", path)
 		}
 		for name, selection := range current.Skills {
-			if selection == nil || selection.Enabled == nil {
+			if selection == nil ||
+				(selection.Enabled == nil && selection.Remote == nil) {
 				return lock{}, fmt.Errorf(
-					"decode %s: skill %q is missing enabled state",
+					"decode %s: skill %q has neither enabled state nor remote metadata",
 					path,
 					name,
 				)
 			}
-			result.Skills[name] = *selection.Enabled
+			if selection.Enabled != nil {
+				result.Skills[name] = *selection.Enabled
+			}
 			if selection.Remote == nil {
 				continue
 			}
@@ -137,14 +137,14 @@ func saveLock(project string, value lock) error {
 	path := filepath.Join(project, lockName)
 	serialized := lockFile{
 		SchemaRevision: lockSchemaRevision,
-
-		Skills: make(map[string]skillSelection, len(value.Skills)),
+		Skills:         make(map[string]skillSelection, len(value.Skills)+len(value.Remote)),
 	}
 	for name, enabled := range value.Skills {
-		selection := skillSelection{Enabled: enabled}
-		if ref, ok := value.Remote[name]; ok {
-			selection.Remote = &ref
-		}
+		serialized.Skills[name] = skillSelection{Enabled: new(enabled)}
+	}
+	for name, ref := range value.Remote {
+		selection := serialized.Skills[name]
+		selection.Remote = new(ref)
 		serialized.Skills[name] = selection
 	}
 	temp, err := os.CreateTemp(project, "."+lockName+"-")
@@ -200,7 +200,8 @@ func updateLock(project string, update func(*lock) (bool, error)) error {
 
 func newLock() lock {
 	return lock{
-		Skills: make(map[string]bool),
-		Remote: make(map[string]remoteSkillRef),
+		SchemaRevision: lockSchemaRevision,
+		Skills:         make(map[string]bool),
+		Remote:         make(map[string]remoteSkillRef),
 	}
 }

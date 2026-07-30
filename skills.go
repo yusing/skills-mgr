@@ -439,18 +439,85 @@ func (m *manager) updateSelectionLock(
 	update func(*lock) (bool, error),
 ) error {
 	lockDir := m.lockDir(project)
+	updateMigrated := func(value *lock) (bool, error) {
+		migrated, err := m.migrateSelectionLock(project, value)
+		if err != nil {
+			return false, err
+		}
+		changed, err := update(value)
+		return migrated || changed, err
+	}
 	if m.global {
-		return updateLock(lockDir, update)
+		return updateLock(lockDir, updateMigrated)
 	}
 	value, err := loadLock(lockDir)
 	if err != nil {
 		return err
 	}
-	changed, err := update(&value)
+	changed, err := updateMigrated(&value)
 	if err != nil || !changed {
 		return err
 	}
 	return saveLock(lockDir, value)
+}
+
+func (m *manager) migrateSelectionLock(project string, value *lock) (bool, error) {
+	if value.SchemaRevision != legacyLockSchemaRevision {
+		return false, nil
+	}
+	refs, err := m.discoveredRemoteRefs(project)
+	if err != nil {
+		return false, err
+	}
+	for name := range value.Skills {
+		if ref, ok := refs[name]; ok {
+			value.Remote[name] = ref
+		}
+	}
+	if !m.global {
+		global, err := loadLock(m.paths.globalLockDir)
+		if err != nil {
+			return false, err
+		}
+		for name := range global.Skills {
+			if _, overridden := value.Skills[name]; overridden {
+				continue
+			}
+			if ref, ok := refs[name]; ok {
+				value.Remote[name] = ref
+			}
+		}
+	}
+	value.SchemaRevision = lockSchemaRevision
+	return true, nil
+}
+
+func (m *manager) discoveredRemoteRefs(
+	project string,
+) (map[string]remoteSkillRef, error) {
+	if m.remoteStore == nil {
+		return make(map[string]remoteSkillRef), nil
+	}
+	skills, err := m.skills(project)
+	if err != nil {
+		return nil, err
+	}
+	records, err := m.remoteStore.records()
+	if err != nil {
+		return nil, err
+	}
+	refsByKey := make(map[string]remoteSkillRef, len(records))
+	for _, record := range records {
+		ref := record.ref()
+		refsByKey[ref.key()] = ref
+	}
+	refs := make(map[string]remoteSkillRef)
+	for _, skill := range skills {
+		if ref, ok := refsByKey[skill.RemoteKey]; ok {
+			refs[skill.Name] = ref
+		}
+	}
+	return refs, nil
 }
 
 func mergeSelections(global, project map[string]bool) map[string]bool {

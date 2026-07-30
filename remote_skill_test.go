@@ -141,8 +141,152 @@ func TestRemoteTogglePersistsIdentityWhenDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := persisted.Skills["alpha"]
-	if selection.Enabled || selection.Remote == nil || *selection.Remote != ref {
+	if selection.Enabled == nil || *selection.Enabled || selection.Remote == nil || *selection.Remote != ref {
 		t.Fatalf("persisted remote selection = %#v", selection)
+	}
+}
+
+func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
+	manager := newTestManager(t)
+	alpha := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	beta := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/beta",
+		Name:     "beta",
+		Locator:  "owner/repo/beta",
+	}
+	for _, ref := range []remoteSkillRef{alpha, beta} {
+		if _, err := manager.remoteStore.ensure(
+			t.Context(),
+			ref,
+			&staticRemoteProvider{files: []remoteSkillFile{{
+				Path:     "SKILL.md",
+				Contents: []byte(skillFile(ref.Name, "Remote skill.", "body")),
+			}}},
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	project := t.TempDir()
+	writeFile(t, filepath.Join(manager.paths.globalLockDir, lockName), `{
+  "schema_revision": 1,
+  "skills": {
+    "alpha": true
+  }
+}`)
+	writeFile(t, filepath.Join(project, lockName), `{
+  "schema_revision": 1,
+  "skills": {
+    "beta": false
+  }
+}`)
+
+	if _, err := manager.toggle(project, "local"); err != nil {
+		t.Fatal(err)
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, overridden := projectLock.Skills["alpha"]; overridden ||
+		projectLock.Remote["alpha"] != alpha {
+		t.Fatalf("inherited project selection = %#v", projectLock)
+	}
+	if projectLock.Skills["beta"] ||
+		projectLock.Remote["beta"] != beta ||
+		!projectLock.Skills["local"] {
+		t.Fatalf("explicit project selections = %#v", projectLock)
+	}
+
+	data, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted lockFile
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	inherited := persisted.Skills["alpha"]
+	if inherited.Enabled != nil ||
+		inherited.Remote == nil ||
+		*inherited.Remote != alpha {
+		t.Fatalf("persisted inherited selection = %#v", inherited)
+	}
+	explicit := persisted.Skills["beta"]
+	if explicit.Enabled == nil ||
+		*explicit.Enabled ||
+		explicit.Remote == nil ||
+		*explicit.Remote != beta {
+		t.Fatalf("persisted explicit selection = %#v", explicit)
+	}
+
+	manager.global = true
+	if _, err := manager.toggle(project, "alpha", alpha.key()); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = false
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected["alpha"] {
+		t.Fatalf("inherited selection did not follow global: %#v", selected)
+	}
+}
+
+func TestSyncFetchesEnabledInheritedRemote(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{
+		Remote: map[string]remoteSkillRef{"alpha": ref},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "alpha\n" || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Skills: map[string]bool{"alpha": false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("disabled sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
 	}
 }
 
