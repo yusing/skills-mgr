@@ -349,6 +349,8 @@ description: >
   It also does another.
 ---
 `)
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "NOTES.md"), "notes")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "ignore.md.txt"), "ignored")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "ignore.txt"), "ignored")
@@ -376,10 +378,11 @@ Alpha does one thing. It also does another.
 
 ### references
 
-references/
-├── nested/
-│   └── details.md
-└── overview.md
+├── NOTES.md
+└── references/
+    ├── nested/
+    │   └── details.md
+    └── overview.md
 
 ## gamma
 
@@ -388,7 +391,7 @@ No references.
 	if output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
-	for _, unexpected := range []string{"beta", "future", "ignore.txt", "future.mdx"} {
+	for _, unexpected := range []string{"beta", "future", "ignore.txt", "ignore.md.txt", "future.mdx", "SKILL.md"} {
 		if strings.Contains(output.String(), unexpected) {
 			t.Fatalf("list included %q", unexpected)
 		}

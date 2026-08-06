@@ -643,7 +643,7 @@ func (m *manager) list(project string, output io.Writer) error {
 			return err
 		}
 		if len(references) > 0 {
-			if _, err := fmt.Fprintln(output, "\n### references\n\nreferences/"); err != nil {
+			if _, err := fmt.Fprint(output, "\n### references\n\n"); err != nil {
 				return err
 			}
 			if err := writeReferenceTree(output, references); err != nil {
@@ -860,16 +860,27 @@ func writeLineRange(output io.Writer, input io.Reader, start, end int) error {
 }
 
 func referenceFiles(skillRoot string) ([]string, error) {
-	referencesRoot := filepath.Join(skillRoot, "references")
+	entries, err := os.ReadDir(skillRoot)
+	if err != nil {
+		return nil, err
+	}
 	var files []string
-	err := filepath.WalkDir(referencesRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == "SKILL.md" || filepath.Ext(entry.Name()) != ".md" {
+			continue
+		}
+		files = append(files, entry.Name())
+	}
+
+	referencesRoot := filepath.Join(skillRoot, "references")
+	err = filepath.WalkDir(referencesRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			return nil
 		}
-		relative, err := filepath.Rel(referencesRoot, path)
+		relative, err := filepath.Rel(skillRoot, path)
 		if err != nil {
 			return err
 		}
@@ -877,7 +888,7 @@ func referenceFiles(skillRoot string) ([]string, error) {
 		return nil
 	})
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return files, nil
 	}
 	return files, err
 }
