@@ -693,10 +693,34 @@ func (m *manager) sync(
 	ctx context.Context,
 	project string,
 	output io.Writer,
-) error {
+) (retErr error) {
 	if m.remoteStore == nil {
 		return fmt.Errorf("remote skill store is unavailable")
 	}
+	var placeholderUndos []func() error
+	rollbackPlaceholders := func() error {
+		rollbackErr := error(nil)
+		for _, undo := range slices.Backward(placeholderUndos) {
+			rollbackErr = errors.Join(rollbackErr, undo())
+		}
+		return rollbackErr
+	}
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, rollbackPlaceholders())
+		}
+	}()
+	changePlaceholders := func(name string, enabled bool) error {
+		undo, err := m.changeRemotePlaceholders(project, name, enabled)
+		if err != nil {
+			return err
+		}
+		if undo != nil {
+			placeholderUndos = append(placeholderUndos, undo)
+		}
+		return nil
+	}
+
 	globalLock, err := loadLock(m.paths.globalLockDir)
 	if err != nil {
 		return err
@@ -732,10 +756,15 @@ func (m *manager) sync(
 	names := slices.Sorted(maps.Keys(projectLock.Remote))
 
 	for _, name := range names {
+		ref := projectLock.Remote[name]
+		if !projectLock.Skills[name] {
+			if err := changePlaceholders(name, false); err != nil {
+				return fmt.Errorf("sync remote skill %q: %w", name, err)
+			}
+		}
 		if !selected[name] {
 			continue
 		}
-		ref := projectLock.Remote[name]
 		if ref.Name != name {
 			return fmt.Errorf(
 				"sync remote skill %q: selection name does not match remote name %q",
@@ -760,6 +789,11 @@ func (m *manager) sync(
 		if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
+		if projectLock.Skills[name] {
+			if err := changePlaceholders(name, true); err != nil {
+				return fmt.Errorf("sync remote skill %q: %w", name, err)
+			}
+		}
 		if _, err := fmt.Fprintln(output, name); err != nil {
 			return fmt.Errorf("report synchronized skill %q: %w", name, err)
 		}
@@ -767,13 +801,13 @@ func (m *manager) sync(
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reconcile remote metadata: %w", err)
 	}
-	if !metadataChanged {
-		return nil
-	}
 	err = updateLock(project, m.paths.selectionLocks, func(current *lock) (bool, error) {
 		if !maps.Equal(current.Skills, originalSkills) ||
 			!maps.Equal(current.Remote, originalRemote) {
 			return false, fmt.Errorf("project selection changed during sync")
+		}
+		if !metadataChanged {
+			return false, nil
 		}
 		maps.Copy(current.Remote, projectLock.Remote)
 		return true, nil
@@ -819,6 +853,30 @@ func (m *manager) toggleRemote(
 	if err := ref.validate(); err != nil {
 		return remoteToggleResult{}, err
 	}
+	selectionLock, err := loadLock(m.lockDir(project))
+	if err != nil {
+		return remoteToggleResult{}, err
+	}
+	previousEnabled, previousExists := selectionLock.Skills[ref.Name]
+	previousRemote, previousRemoteExists := selectionLock.Remote[ref.Name]
+	rollbackSelection := func(expected bool) error {
+		return m.updateSelectionLock(project, func(value *lock) (bool, error) {
+			if value.Skills[ref.Name] != expected || value.Remote[ref.Name] != ref {
+				return false, fmt.Errorf("remote selection changed during placeholder rollback")
+			}
+			if previousExists {
+				value.Skills[ref.Name] = previousEnabled
+			} else {
+				delete(value.Skills, ref.Name)
+			}
+			if previousRemoteExists {
+				value.Remote[ref.Name] = previousRemote
+			} else {
+				delete(value.Remote, ref.Name)
+			}
+			return true, nil
+		})
+	}
 	skills, err := m.skills(project)
 	if err != nil {
 		return remoteToggleResult{}, err
@@ -848,6 +906,10 @@ func (m *manager) toggleRemote(
 		if err != nil {
 			return remoteToggleResult{}, err
 		}
+		if err := m.setRemotePlaceholders(project, ref.Name, false); err != nil {
+			rollbackErr := rollbackSelection(false)
+			return remoteToggleResult{}, errors.Join(err, rollbackErr)
+		}
 		return newRemoteToggleResult(ref.Name, false, skills, selected), nil
 	}
 
@@ -872,9 +934,13 @@ func (m *manager) toggleRemote(
 			ref.Name,
 		)
 	}
+	if err := m.setRemotePlaceholders(project, ref.Name, true); err != nil {
+		return remoteToggleResult{}, err
+	}
 	selected, err = m.setRemoteSelection(project, ref, true)
 	if err != nil {
-		return remoteToggleResult{}, err
+		cleanupErr := m.setRemotePlaceholders(project, ref.Name, false)
+		return remoteToggleResult{}, errors.Join(err, cleanupErr)
 	}
 	return newRemoteToggleResult(ref.Name, true, skills, selected), nil
 }

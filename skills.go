@@ -398,6 +398,10 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	}
 
 	enabled := false
+	previousEnabled := false
+	previousExists := false
+	var previousRemote remoteSkillRef
+	previousRemoteExists := false
 	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		selected := value.Skills
 		if !m.global {
@@ -408,6 +412,8 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 			selected = mergeSelections(global.Skills, value.Skills)
 		}
 		enabled = !selected[skill]
+		previousEnabled, previousExists = value.Skills[skill]
+		previousRemote, previousRemoteExists = value.Remote[skill]
 		value.Skills[skill] = enabled
 		if remoteRef == nil {
 			delete(value.Remote, skill)
@@ -419,6 +425,28 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	})
 	if err != nil {
 		return false, err
+	}
+	if remoteRef == nil {
+		return enabled, nil
+	}
+	if err := m.setRemotePlaceholders(project, skill, enabled); err != nil {
+		rollbackErr := m.updateSelectionLock(project, func(value *lock) (bool, error) {
+			if value.Skills[skill] != enabled || value.Remote[skill] != *remoteRef {
+				return false, fmt.Errorf("remote selection changed during placeholder rollback")
+			}
+			if previousExists {
+				value.Skills[skill] = previousEnabled
+			} else {
+				delete(value.Skills, skill)
+			}
+			if previousRemoteExists {
+				value.Remote[skill] = previousRemote
+			} else {
+				delete(value.Remote, skill)
+			}
+			return true, nil
+		})
+		return false, errors.Join(err, rollbackErr)
 	}
 	return enabled, nil
 }

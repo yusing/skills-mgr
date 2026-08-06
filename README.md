@@ -46,8 +46,10 @@ The interface has three tabs:
 | SkillsMP | Browse or search SkillsMP and install skills | Contacts SkillsMP and clones the selected skill's GitHub repository |
 
 Remote skill content and registry responses are stored below the user cache
-directory in `skills-mgr/`. Disabling a remote skill changes its selection but
-does not immediately remove its cached content.
+directory in `skills-mgr/`. Enabling a project remote creates autocomplete
+placeholders under `.agents/skills/` and `.claude/skills/`. Global mode creates
+the placeholders under `$HOME`. Disabling a remote removes its managed
+placeholders but does not immediately remove its cached content.
 
 The SkillsMP client sends `SKILLSMP_API_KEY` as a bearer token when that
 environment variable is set. Requests are unauthenticated when it is unset.
@@ -70,9 +72,10 @@ Run the interface with `-g` to manage the global selection:
 skills-mgr -g
 ```
 
-This mode writes `$HOME/.skills-mgr.json`. In normal project mode, entries in
-the current directory's `.skills-mgr.json` override global entries with the
-same skill name.
+This mode writes `$HOME/.skills-mgr.json` and remote autocomplete placeholders
+under `$HOME/.agents/skills/` and `$HOME/.claude/skills/`. In normal project
+mode, entries in the current directory's `.skills-mgr.json` override global
+entries with the same skill name.
 
 ## Command Reference
 
