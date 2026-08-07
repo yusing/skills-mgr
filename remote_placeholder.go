@@ -8,7 +8,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/goccy/go-yaml"
 )
+
+const remotePlaceholderMarker = "skills-mgr remote placeholder\n"
 
 func isRemotePlaceholderRootAlias(base, source, path string) bool {
 	if path != source && !strings.HasPrefix(path, source+string(filepath.Separator)) {
@@ -32,22 +36,32 @@ func isRemotePlaceholderRootAlias(base, source, path string) bool {
 	return false
 }
 
-func (m *manager) setRemotePlaceholders(project, name string, enabled bool) error {
-	_, err := m.changeRemotePlaceholders(project, name, enabled)
+func (m *manager) setRemotePlaceholders(
+	project, name, description string,
+	enabled bool,
+) error {
+	_, err := m.changeRemotePlaceholders(project, name, description, enabled)
 	return err
 }
 
-func (m *manager) changeRemotePlaceholders(project, name string, enabled bool) (func() error, error) {
+func (m *manager) changeRemotePlaceholders(
+	project, name, description string,
+	enabled bool,
+) (func() error, error) {
 	base := project
 	if m.global {
 		base = m.paths.globalLockDir
 	}
-	content := fmt.Appendf(
-		nil,
-		"---\nname: %s\ndisable-model-invocation: true\n---\n",
-		name,
-	)
-	marker := []byte("skills-mgr remote placeholder\n")
+	metadata, err := yaml.Marshal(skillFrontmatter{
+		Name:                   name,
+		Description:            description,
+		DisableModelInvocation: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode remote skill placeholder %q: %w", name, err)
+	}
+	content := fmt.Appendf(nil, "---\n%s---\n", metadata)
+	marker := []byte(remotePlaceholderMarker)
 	rootDirs := []string{
 		filepath.Join(".agents", "skills"),
 		filepath.Join(".claude", "skills"),

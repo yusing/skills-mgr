@@ -201,6 +201,10 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	if err != nil {
 		return nil //nolint:nilerr // Ignore entries that are not usable skill roots.
 	}
+	if marker, err := os.ReadFile(filepath.Join(resolvedRoot, ".skills-mgr-placeholder")); err == nil &&
+		string(marker) == remotePlaceholderMarker {
+		return nil
+	}
 	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, "SKILL.md"))
 	if err != nil {
 		return nil //nolint:nilerr // Ignore roots without a usable SKILL.md.
@@ -429,7 +433,11 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	if remoteRef == nil {
 		return enabled, nil
 	}
-	if err := m.setRemotePlaceholders(project, skill, enabled); err != nil {
+	description, placeholderErr := m.remoteSkillDescription(*remoteRef)
+	if placeholderErr == nil {
+		placeholderErr = m.setRemotePlaceholders(project, skill, description, enabled)
+	}
+	if placeholderErr != nil {
 		rollbackErr := m.updateSelectionLock(project, func(value *lock) (bool, error) {
 			if value.Skills[skill] != enabled || value.Remote[skill] != *remoteRef {
 				return false, fmt.Errorf("remote selection changed during placeholder rollback")
@@ -446,7 +454,7 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 			}
 			return true, nil
 		})
-		return false, errors.Join(err, rollbackErr)
+		return false, errors.Join(placeholderErr, rollbackErr)
 	}
 	return enabled, nil
 }

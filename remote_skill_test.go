@@ -47,7 +47,7 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
 	}
-	placeholder := "---\nname: alpha\ndisable-model-invocation: true\n---\n"
+	placeholder := "---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n"
 	paths := []string{
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
@@ -140,7 +140,7 @@ func TestGlobalRemoteToggleCreatesHomePlaceholders(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
 	}
-	placeholder := "---\nname: alpha\ndisable-model-invocation: true\n---\n"
+	placeholder := "---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n"
 
 	result, err := manager.toggleRemote(t.Context(), project, ref)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestRemotePlaceholdersDoNotOverwriteExistingSkill(t *testing.T) {
 	existing := filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md")
 	writeFile(t, existing, "existing skill\n")
 
-	err := manager.setRemotePlaceholders(project, "alpha", true)
+	err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true)
 	if err == nil {
 		t.Fatal("placeholder creation overwrote an existing skill")
 	}
@@ -187,7 +187,7 @@ func TestRemotePlaceholdersStoreOwnershipMarkerInSkillDirectory(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 
-	if err := manager.setRemotePlaceholders(project, "alpha", true); err != nil {
+	if err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true); err != nil {
 		t.Fatal(err)
 	}
 	for _, root := range []string{".agents", ".claude"} {
@@ -211,7 +211,7 @@ func TestRemotePlaceholderCleanupRequiresOwnershipMarker(t *testing.T) {
 	content := "---\nname: alpha\ndisable-model-invocation: true\n---\n"
 	writeFile(t, placeholder, content)
 
-	if err := manager.setRemotePlaceholders(project, "alpha", false); err != nil {
+	if err := manager.setRemotePlaceholders(project, "alpha", "", false); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, placeholder, content)
@@ -225,7 +225,7 @@ func TestRemotePlaceholdersRejectSymlinkedRoots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := manager.setRemotePlaceholders(project, "alpha", true)
+	err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true)
 	if err == nil || !strings.Contains(err.Error(), "symbolic link") {
 		t.Fatalf("symlinked placeholder root error = %v", err)
 	}
@@ -278,7 +278,7 @@ func TestRemotePlaceholdersSkipCandidateAliases(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if err := manager.setRemotePlaceholders(project, "alpha", true); err != nil {
+			if err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true); err != nil {
 				t.Fatal(err)
 			}
 			otherManagedRoot := ".agents"
@@ -288,13 +288,13 @@ func TestRemotePlaceholdersSkipCandidateAliases(t *testing.T) {
 			assertFile(
 				t,
 				filepath.Join(project, otherManagedRoot, "skills", "alpha", "SKILL.md"),
-				"---\nname: alpha\ndisable-model-invocation: true\n---\n",
+				"---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n",
 			)
 			if tt.target == ".agents" || tt.target == ".claude" {
 				assertFile(
 					t,
 					filepath.Join(project, tt.target, "skills", "alpha", "SKILL.md"),
-					"---\nname: alpha\ndisable-model-invocation: true\n---\n",
+					"---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n",
 				)
 				return
 			}
@@ -339,7 +339,7 @@ func TestRemotePlaceholdersRejectInvalidCandidateAliases(t *testing.T) {
 			project := t.TempDir()
 			tt.setup(t, project)
 
-			err := manager.setRemotePlaceholders(project, "alpha", true)
+			err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true)
 			if err == nil || !strings.Contains(err.Error(), "symbolic link") {
 				t.Fatalf("invalid candidate alias error = %v", err)
 			}
@@ -532,7 +532,7 @@ func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := manager.setRemotePlaceholders(project, "alpha", true); err != nil {
+	if err := manager.setRemotePlaceholders(project, "alpha", "Remote alpha.", true); err != nil {
 		t.Fatal(err)
 	}
 	enabled, err := manager.toggle(project, "alpha", ref.key())
@@ -562,7 +562,7 @@ func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndisable-model-invocation: true\n---\n")
+		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n")
 	}
 }
 
@@ -604,7 +604,7 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.setRemotePlaceholders(project, "alpha", true); err != nil {
+	if err := manager.setRemotePlaceholders(project, "alpha", "Remote skill.", true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -635,7 +635,7 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 		assertFile(
 			t,
 			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			"---\nname: alpha\ndisable-model-invocation: true\n---\n",
+			"---\nname: alpha\ndescription: Remote skill.\ndisable-model-invocation: true\n---\n",
 		)
 		if _, err := os.Stat(
 			filepath.Join(project, root, "skills", "beta", "SKILL.md"),
@@ -868,7 +868,7 @@ func TestSyncFetchesEnabledProjectRemotesAndReusesFreshContent(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndisable-model-invocation: true\n---\n")
+		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n")
 	}
 	output.Reset()
 	if err := manager.sync(t.Context(), project, &output); err != nil {

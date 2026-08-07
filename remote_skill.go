@@ -96,6 +96,34 @@ func (r remoteSkillRecord) ref() remoteSkillRef {
 	}
 }
 
+func (m *manager) remoteSkillDescription(ref remoteSkillRef) (string, error) {
+	records, err := m.remoteStore.records()
+	if err != nil {
+		return "", err
+	}
+	for _, record := range records {
+		if record.Provider != ref.Provider || record.ID != ref.ID {
+			continue
+		}
+		if record.Name != ref.Name || record.Locator != ref.Locator {
+			return "", fmt.Errorf("persisted remote skill identity changed")
+		}
+		skill, ok, err := parseSkill(filepath.Join(
+			m.remoteStore.root,
+			filepath.FromSlash(record.Content),
+			"SKILL.md",
+		))
+		if err != nil {
+			return "", err
+		}
+		if !ok || skill.Name != ref.Name {
+			return "", fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
+		}
+		return skill.Description, nil
+	}
+	return "", fmt.Errorf("persisted remote skill %q is missing", ref.Name)
+}
+
 func (r remoteSkillRecord) fresh(now time.Time) bool {
 	return now.Before(r.FetchedAt.Add(remoteSkillCacheTTL))
 }
@@ -710,8 +738,8 @@ func (m *manager) sync(
 			retErr = errors.Join(retErr, rollbackPlaceholders())
 		}
 	}()
-	changePlaceholders := func(name string, enabled bool) error {
-		undo, err := m.changeRemotePlaceholders(project, name, enabled)
+	changePlaceholders := func(name, description string, enabled bool) error {
+		undo, err := m.changeRemotePlaceholders(project, name, description, enabled)
 		if err != nil {
 			return err
 		}
@@ -758,7 +786,8 @@ func (m *manager) sync(
 	for _, name := range names {
 		ref := projectLock.Remote[name]
 		if !projectLock.Skills[name] {
-			if err := changePlaceholders(name, false); err != nil {
+			description, _ := m.remoteSkillDescription(ref)
+			if err := changePlaceholders(name, description, false); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
 		}
@@ -789,8 +818,12 @@ func (m *manager) sync(
 		if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
+		description, err := m.remoteSkillDescription(ref)
+		if err != nil {
+			return fmt.Errorf("sync remote skill %q: %w", name, err)
+		}
 		if projectLock.Skills[name] {
-			if err := changePlaceholders(name, true); err != nil {
+			if err := changePlaceholders(name, description, true); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
 		}
@@ -902,11 +935,15 @@ func (m *manager) toggleRemote(
 		break
 	}
 	if enabled {
+		description, err := m.remoteSkillDescription(ref)
+		if err != nil {
+			return remoteToggleResult{}, err
+		}
 		selected, err = m.setRemoteSelection(project, ref, false)
 		if err != nil {
 			return remoteToggleResult{}, err
 		}
-		if err := m.setRemotePlaceholders(project, ref.Name, false); err != nil {
+		if err := m.setRemotePlaceholders(project, ref.Name, description, false); err != nil {
 			rollbackErr := rollbackSelection(false)
 			return remoteToggleResult{}, errors.Join(err, rollbackErr)
 		}
@@ -934,12 +971,16 @@ func (m *manager) toggleRemote(
 			ref.Name,
 		)
 	}
-	if err := m.setRemotePlaceholders(project, ref.Name, true); err != nil {
+	description, err := m.remoteSkillDescription(ref)
+	if err != nil {
+		return remoteToggleResult{}, err
+	}
+	if err := m.setRemotePlaceholders(project, ref.Name, description, true); err != nil {
 		return remoteToggleResult{}, err
 	}
 	selected, err = m.setRemoteSelection(project, ref, true)
 	if err != nil {
-		cleanupErr := m.setRemotePlaceholders(project, ref.Name, false)
+		cleanupErr := m.setRemotePlaceholders(project, ref.Name, description, false)
 		return remoteToggleResult{}, errors.Join(err, cleanupErr)
 	}
 	return newRemoteToggleResult(ref.Name, true, skills, selected), nil
