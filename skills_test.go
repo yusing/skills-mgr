@@ -451,41 +451,54 @@ func TestListEmptySelectionWritesDocumentHeading(t *testing.T) {
 	}
 }
 
-func TestListRejectsMissingEnabledSkillBeforeWriting(t *testing.T) {
+func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
-	if err := saveLock(project, lock{Skills: map[string]bool{
+	deletedRoot := filepath.Join(manager.paths.userSkills, "deleted")
+	writeFile(t, filepath.Join(deletedRoot, "SKILL.md"), skillFile("deleted", "Deleted.", ""))
+	selected := map[string]bool{
 		"alpha":   true,
-		"missing": true,
-	}}); err != nil {
+		"deleted": true,
+	}
+	if err := saveLock(manager.paths.globalLockDir, lock{Skills: selected}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(deletedRoot); err != nil {
 		t.Fatal(err)
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err == nil {
-		t.Fatal("list accepted a missing enabled skill")
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
 	}
-	if output.Len() != 0 {
-		t.Fatalf("list wrote partial output: %q", output.String())
+	if want := "# Skill list\n\n## alpha\n\nAlpha.\n"; output.String() != want {
+		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
+	assertLock(t, manager.paths.globalLockDir, selected)
 }
 
-func TestListRejectsMalformedEnabledSkillBeforeWriting(t *testing.T) {
+func TestListSkipsMalformedEnabledSkillWithoutChangingSelection(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeFile(t, filepath.Join(manager.paths.userSkills, "malformed", "SKILL.md"), "not frontmatter")
-	if err := saveLock(project, lock{Skills: map[string]bool{"malformed": true}}); err != nil {
+	selected := map[string]bool{
+		"alpha":     true,
+		"malformed": true,
+	}
+	if err := saveLock(project, lock{Skills: selected}); err != nil {
 		t.Fatal(err)
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err == nil {
-		t.Fatal("list accepted a malformed enabled skill")
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
 	}
-	if output.Len() != 0 {
-		t.Fatalf("list wrote partial output: %q", output.String())
+	if want := "# Skill list\n\n## alpha\n\nAlpha.\n"; output.String() != want {
+		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
+	assertLock(t, project, selected)
 }
 
 func TestGetSkillAndReferenceRange(t *testing.T) {

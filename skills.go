@@ -627,15 +627,6 @@ func (m *manager) list(project string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	available := make(map[string]bool, len(skills))
-	for _, skill := range skills {
-		available[skill.Name] = true
-	}
-	for name, enabled := range selected {
-		if enabled && !available[name] {
-			return fmt.Errorf("enabled skill %q was not discovered", name)
-		}
-	}
 	if _, err := fmt.Fprintln(output, "# Skill list"); err != nil {
 		return err
 	}
