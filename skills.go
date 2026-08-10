@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -618,6 +619,21 @@ func mergeSelections(global, project map[string]bool) map[string]bool {
 	return selected
 }
 
+type listedSkillXML struct {
+	Name        string               `xml:"name"`
+	Description string               `xml:"description"`
+	References  *listedReferencesXML `xml:"references,omitempty"`
+}
+
+type listedReferencesXML struct {
+	References []string `xml:"reference"`
+}
+
+type skillListXML struct {
+	XMLName xml.Name         `xml:"skills"`
+	Skills  []listedSkillXML `xml:"skill"`
+}
+
 func (m *manager) list(project string, output io.Writer) error {
 	selected, err := m.selection(project)
 	if err != nil {
@@ -627,9 +643,8 @@ func (m *manager) list(project string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(output, "# Skill list"); err != nil {
-		return err
-	}
+
+	document := skillListXML{}
 	for _, skill := range skills {
 		if !selected[skill.Name] || skill.DisableModelInvocation {
 			continue
@@ -638,19 +653,23 @@ func (m *manager) list(project string, output io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", skill.Name, err)
 		}
-		if _, err := fmt.Fprintf(output, "\n## %s\n\n%s\n", skill.Name, skill.Description); err != nil {
-			return err
+		listed := listedSkillXML{
+			Name:        skill.Name,
+			Description: skill.Description,
 		}
 		if len(references) > 0 {
-			if _, err := fmt.Fprint(output, "\n### references\n\n"); err != nil {
-				return err
-			}
-			if err := writeReferenceTree(output, references); err != nil {
-				return err
-			}
+			listed.References = &listedReferencesXML{References: references}
 		}
+		document.Skills = append(document.Skills, listed)
 	}
-	return nil
+
+	encoder := xml.NewEncoder(output)
+	encoder.Indent("", "  ")
+	if err := encoder.Encode(document); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(output)
+	return err
 }
 
 func (m *manager) get(project, target, lineRange string, output io.Writer) error {
@@ -890,47 +909,4 @@ func referenceFiles(skillRoot string) ([]string, error) {
 		return files, nil
 	}
 	return files, err
-}
-
-type referenceNode struct {
-	children map[string]*referenceNode
-}
-
-func writeReferenceTree(output io.Writer, files []string) error {
-	root := &referenceNode{children: make(map[string]*referenceNode)}
-	for _, file := range files {
-		node := root
-		for part := range strings.SplitSeq(file, "/") {
-			if node.children[part] == nil {
-				node.children[part] = &referenceNode{children: make(map[string]*referenceNode)}
-			}
-			node = node.children[part]
-		}
-	}
-	return writeReferenceNodes(output, root, "")
-}
-
-func writeReferenceNodes(output io.Writer, node *referenceNode, prefix string) error {
-	names := slices.Sorted(maps.Keys(node.children))
-	for index, name := range names {
-		child := node.children[name]
-		last := index == len(names)-1
-		branch := "├── "
-		nextPrefix := prefix + "│   "
-		if last {
-			branch = "└── "
-			nextPrefix = prefix + "    "
-		}
-		suffix := ""
-		if len(child.children) > 0 {
-			suffix = "/"
-		}
-		if _, err := fmt.Fprintf(output, "%s%s%s%s\n", prefix, branch, name, suffix); err != nil {
-			return err
-		}
-		if err := writeReferenceNodes(output, child, nextPrefix); err != nil {
-			return err
-		}
-	}
-	return nil
 }

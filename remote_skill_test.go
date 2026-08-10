@@ -77,7 +77,7 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "## alpha") {
+	if !strings.Contains(output.String(), "<name>alpha</name>") {
 		t.Fatalf("list omitted remote skill:\n%s", output.String())
 	}
 	output.Reset()

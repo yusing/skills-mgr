@@ -956,7 +956,7 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatalf("list after rename: %v", err)
 	}
-	if !strings.Contains(output.String(), "## renamed") {
+	if !strings.Contains(output.String(), "<name>renamed</name>") {
 		t.Fatalf("list omitted renamed skill:\n%s", output.String())
 	}
 }

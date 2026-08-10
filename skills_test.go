@@ -339,14 +339,14 @@ func TestLockSchemaMatchesSupportedRevisions(t *testing.T) {
 	}
 }
 
-func TestListEnabledSkillsAsMarkdownWithOwnedReferenceTrees(t *testing.T) {
+func TestListEnabledSkillsAsXMLWithOwnedReferences(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), `---
 name: alpha
 description: >
-  Alpha does one thing.
-  It also does another.
+  Alpha does <one> & one thing.
+  It also does "another".
 ---
 `)
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "NOTES.md"), "notes")
@@ -370,23 +370,21 @@ description: >
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	want := `# Skill list
-
-## alpha
-
-Alpha does one thing. It also does another.
-
-### references
-
-├── NOTES.md
-└── references/
-    ├── nested/
-    │   └── details.md
-    └── overview.md
-
-## gamma
-
-No references.
+	want := `<skills>
+  <skill>
+    <name>alpha</name>
+    <description>Alpha does &lt;one&gt; &amp; one thing. It also does &#34;another&#34;.</description>
+    <references>
+      <reference>NOTES.md</reference>
+      <reference>references/nested/details.md</reference>
+      <reference>references/overview.md</reference>
+    </references>
+  </skill>
+  <skill>
+    <name>gamma</name>
+    <description>No references.</description>
+  </skill>
+</skills>
 `
 	if output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
@@ -422,10 +420,10 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "## manual") {
+	if strings.Contains(output.String(), "<name>manual</name>") {
 		t.Fatalf("list exposed model-invocation-disabled skill:\n%s", output.String())
 	}
-	if !strings.Contains(output.String(), "## automatic") {
+	if !strings.Contains(output.String(), "<name>automatic</name>") {
 		t.Fatalf("list omitted model-invocable skill:\n%s", output.String())
 	}
 
@@ -438,7 +436,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	}
 }
 
-func TestListEmptySelectionWritesDocumentHeading(t *testing.T) {
+func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 
@@ -446,7 +444,7 @@ func TestListEmptySelectionWritesDocumentHeading(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "# Skill list\n"; output.String() != want {
+	if want := "<skills></skills>\n"; output.String() != want {
 		t.Fatalf("list output = %q, want %q", output.String(), want)
 	}
 }
@@ -472,7 +470,7 @@ func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "# Skill list\n\n## alpha\n\nAlpha.\n"; output.String() != want {
+	if want := "<skills>\n  <skill>\n    <name>alpha</name>\n    <description>Alpha.</description>\n  </skill>\n</skills>\n"; output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
 	assertLock(t, manager.paths.globalLockDir, selected)
@@ -495,7 +493,7 @@ func TestListSkipsMalformedEnabledSkillWithoutChangingSelection(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "# Skill list\n\n## alpha\n\nAlpha.\n"; output.String() != want {
+	if want := "<skills>\n  <skill>\n    <name>alpha</name>\n    <description>Alpha.</description>\n  </skill>\n</skills>\n"; output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
 	assertLock(t, project, selected)
