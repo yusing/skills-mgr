@@ -26,6 +26,7 @@ const (
 	maxSkillNameLen     = 80
 	maxSkillDescLen     = 300
 	maxFrontmatterBytes = 64 * 1024
+	projectSkillSource  = "project"
 )
 
 type manager struct {
@@ -85,7 +86,7 @@ func (m *manager) skills(project string) ([]discoveredSkill, error) {
 		seenNames: make(map[string]struct{}),
 	}
 	roots := []skillRoot{
-		{path: filepath.Join(project, ".agents", "skills"), source: "project", editable: true},
+		{path: filepath.Join(project, ".agents", "skills"), source: projectSkillSource, editable: true},
 		{path: m.paths.userSkills, source: "user", editable: true},
 		{path: filepath.Join(m.paths.codexHome, "skills"), source: "codex", includeSystem: true, editable: true},
 		{path: m.paths.adminSkills, source: "admin"},
@@ -379,10 +380,17 @@ func (m *manager) selectionLayers(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	return mergeSelections(global.Skills, projectLock.Skills),
-		global.Skills,
-		projectLock.Skills,
-		nil
+	selected = mergeSelections(global.Skills, projectLock.Skills)
+	skills, err := m.skills(project)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	for _, skill := range skills {
+		if skillEnabled(selected, skill) {
+			selected[skill.Name] = true
+		}
+	}
+	return selected, global.Skills, projectLock.Skills, nil
 }
 
 func (m *manager) lockDir(project string) string {
@@ -402,6 +410,20 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 		remoteRef = new(ref)
 	}
 
+	target := discoveredSkill{Name: skill}
+	if !m.global {
+		skills, err := m.skills(project)
+		if err != nil {
+			return false, err
+		}
+		for _, discovered := range skills {
+			if discovered.Name == skill {
+				target = discovered
+				break
+			}
+		}
+	}
+
 	enabled := false
 	previousEnabled := false
 	previousExists := false
@@ -416,7 +438,7 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 			}
 			selected = mergeSelections(global.Skills, value.Skills)
 		}
-		enabled = !selected[skill]
+		enabled = !skillEnabled(selected, target)
 		previousEnabled, previousExists = value.Skills[skill]
 		previousRemote, previousRemoteExists = value.Remote[skill]
 		value.Skills[skill] = enabled
@@ -617,6 +639,14 @@ func mergeSelections(global, project map[string]bool) map[string]bool {
 	selected := maps.Clone(global)
 	maps.Copy(selected, project)
 	return selected
+}
+
+func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
+	enabled, explicit := selected[skill.Name]
+	if explicit {
+		return enabled
+	}
+	return skill.Source == projectSkillSource
 }
 
 type listedSkillXML struct {

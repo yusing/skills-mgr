@@ -449,6 +449,57 @@ func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 	}
 }
 
+func TestProjectSkillDefaultsToEnabled(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "local", "SKILL.md"),
+		skillFile("local", "Repository-local skill.", "local body\n"),
+	)
+
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["local"] {
+		t.Fatalf("selection = %#v, want local enabled", selected)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "<name>local</name>") {
+		t.Fatalf("list omitted default-enabled project skill:\n%s", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "local", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "local body\n"; output.String() != want {
+		t.Fatalf("skill output = %q, want %q", output.String(), want)
+	}
+
+	enabled, err := manager.toggle(project, "local")
+	if err != nil || enabled {
+		t.Fatalf("toggle default-enabled project skill = %v, %v; want disabled", enabled, err)
+	}
+	assertLock(t, project, map[string]bool{"local": false})
+
+	output.Reset()
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "<skills></skills>\n"; output.String() != want {
+		t.Fatalf("disabled list output = %q, want %q", output.String(), want)
+	}
+	if err := manager.get(project, "local", "", &output); err == nil {
+		t.Fatal("get read an explicitly disabled project skill")
+	}
+}
+
 func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
