@@ -352,6 +352,7 @@ description: >
 `)
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "NOTES.md"), "notes")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "ignore.md.txt"), "ignored")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "escape&me.md"), "escaped")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "ignore.txt"), "ignored")
@@ -375,11 +376,11 @@ description: >
   <skill>
     <name>alpha</name>
     <description>Alpha does &lt;one&gt; &amp; one thing. It also does &#34;another&#34;.</description>
-    <references>
-      <reference>NOTES.md</reference>
-      <reference>references/nested/details.md</reference>
-      <reference>references/overview.md</reference>
-    </references>
+    <references>NOTES.md
+references/
+  escape&amp;me.md
+  nested/details.md
+  overview.md</references>
   </skill>
   <skill>
     <name>gamma</name>

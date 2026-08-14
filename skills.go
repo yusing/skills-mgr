@@ -656,7 +656,7 @@ type listedSkillXML struct {
 }
 
 type listedReferencesXML struct {
-	References []string `xml:"reference"`
+	Content string `xml:",innerxml"`
 }
 
 type skillListXML struct {
@@ -699,7 +699,11 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 			Description: skill.Description,
 		}
 		if len(references) > 0 {
-			listed.References = &listedReferencesXML{References: references}
+			content, err := formatReferenceList(references)
+			if err != nil {
+				return fmt.Errorf("format references for %s: %w", skill.Name, err)
+			}
+			listed.References = &listedReferencesXML{Content: content}
 		}
 		document.Skills = append(document.Skills, listed)
 	}
@@ -738,6 +742,32 @@ func (m *manager) harnessVisibleSkillNames(harnesses []listHarness) (map[string]
 		visible[skill.Name] = true
 	}
 	return visible, nil
+}
+
+func formatReferenceList(files []string) (string, error) {
+	lines := make([]string, 0, len(files)+1)
+	var nested []string
+	for _, file := range files {
+		if relative, ok := strings.CutPrefix(file, "references/"); ok {
+			nested = append(nested, "  "+relative)
+			continue
+		}
+		lines = append(lines, file)
+	}
+	if len(nested) > 0 {
+		lines = append(lines, "references/")
+		lines = append(lines, nested...)
+	}
+	var output strings.Builder
+	for index, line := range lines {
+		if index > 0 {
+			output.WriteByte('\n')
+		}
+		if err := xml.EscapeText(&output, []byte(line)); err != nil {
+			return "", err
+		}
+	}
+	return output.String(), nil
 }
 
 func (m *manager) get(project, target, lineRange string, output io.Writer) error {
