@@ -8,6 +8,8 @@ import (
 
 type paths struct {
 	userSkills     string
+	claudeSkills   string
+	grokSkills     string
 	codexHome      string
 	adminSkills    string
 	globalLockDir  string
@@ -32,6 +34,8 @@ func defaultPaths() (paths, error) {
 	}
 	return paths{
 		userSkills:     filepath.Join(home, ".agents", "skills"),
+		claudeSkills:   filepath.Join(home, ".claude", "skills"),
+		grokSkills:     filepath.Join(home, ".grok", "skills"),
 		codexHome:      codexHome,
 		adminSkills:    "/etc/codex/skills",
 		globalLockDir:  home,

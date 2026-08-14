@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -446,6 +447,105 @@ func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 	}
 	if want := "<skills></skills>\n"; output.String() != want {
 		t.Fatalf("list output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	for _, name := range []string{"claude", "agents", "grok", "invalid", "listed"} {
+		writeFile(
+			t,
+			filepath.Join(manager.paths.codexHome, "skills", name, "SKILL.md"),
+			skillFile(name, name+" description.", ""),
+		)
+	}
+	writeFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "claude", "SKILL.md"),
+		skillFile("claude", "Claude-visible skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "agents", "SKILL.md"),
+		skillFile("agents", "Agents-visible skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.grokSkills, "grok", "SKILL.md"),
+		skillFile("grok", "Grok-visible skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.grokSkills, "invalid", "SKILL.md"),
+		"not valid frontmatter",
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{
+		"agents":  true,
+		"claude":  true,
+		"grok":    true,
+		"invalid": true,
+		"listed":  true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		harnesses []listHarness
+		wantNames []string
+		omitNames []string
+	}{
+		{
+			name:      "claude",
+			harnesses: []listHarness{listHarnessClaude},
+			wantNames: []string{"agents", "grok", "invalid", "listed"},
+			omitNames: []string{"claude"},
+		},
+		{
+			name:      "grok",
+			harnesses: []listHarness{listHarnessGrok},
+			wantNames: []string{"claude", "invalid", "listed"},
+			omitNames: []string{"agents", "grok"},
+		},
+		{
+			name:      "claude and grok",
+			harnesses: []listHarness{listHarnessClaude, listHarnessGrok},
+			wantNames: []string{"invalid", "listed"},
+			omitNames: []string{"agents", "claude", "grok"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := manager.list(project, &output, tt.harnesses...); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range tt.wantNames {
+				if !strings.Contains(output.String(), "<name>"+name+"</name>") {
+					t.Errorf("list omitted %q:\n%s", name, output.String())
+				}
+			}
+			for _, name := range tt.omitNames {
+				if strings.Contains(output.String(), "<name>"+name+"</name>") {
+					t.Errorf("list included harness-visible skill %q:\n%s", name, output.String())
+				}
+			}
+		})
+	}
+}
+
+func TestParseListHarnesses(t *testing.T) {
+	harnesses, err := parseListHarnesses([]string{"--claude", "--grok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(harnesses, []listHarness{listHarnessClaude, listHarnessGrok}) {
+		t.Fatalf("harnesses = %v", harnesses)
+	}
+
+	if _, err := parseListHarnesses([]string{"--unknown"}); err == nil {
+		t.Fatal("parseListHarnesses accepted an unknown flag")
 	}
 }
 

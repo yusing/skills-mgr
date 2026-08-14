@@ -11,6 +11,8 @@ func newTestManager(t *testing.T) *manager {
 	root := t.TempDir()
 	manager := &manager{paths: paths{
 		userSkills:     filepath.Join(root, "home", ".agents", "skills"),
+		claudeSkills:   filepath.Join(root, "home", ".claude", "skills"),
+		grokSkills:     filepath.Join(root, "home", ".grok", "skills"),
 		codexHome:      filepath.Join(root, "home", ".codex"),
 		adminSkills:    filepath.Join(root, "etc", "codex", "skills"),
 		globalLockDir:  filepath.Join(root, "home"),

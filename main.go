@@ -46,14 +46,15 @@ func run(args []string) error {
 		}
 		return runTUI(manager, project)
 	case args[0] == "list":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: skills-mgr list")
+		harnesses, err := parseListHarnesses(args[1:])
+		if err != nil {
+			return err
 		}
 		project, err := currentProject()
 		if err != nil {
 			return err
 		}
-		return manager.list(project, os.Stdout)
+		return manager.list(project, os.Stdout, harnesses...)
 	case args[0] == "sync":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr sync")
@@ -101,6 +102,21 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func parseListHarnesses(args []string) ([]listHarness, error) {
+	harnesses := make([]listHarness, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--claude":
+			harnesses = append(harnesses, listHarnessClaude)
+		case "--grok":
+			harnesses = append(harnesses, listHarnessGrok)
+		default:
+			return nil, fmt.Errorf("usage: skills-mgr list [--claude] [--grok]")
+		}
+	}
+	return harnesses, nil
 }
 
 func currentProject() (string, error) {

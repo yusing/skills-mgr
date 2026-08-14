@@ -664,7 +664,14 @@ type skillListXML struct {
 	Skills  []listedSkillXML `xml:"skill"`
 }
 
-func (m *manager) list(project string, output io.Writer) error {
+type listHarness uint8
+
+const (
+	listHarnessClaude listHarness = iota
+	listHarnessGrok
+)
+
+func (m *manager) list(project string, output io.Writer, harnesses ...listHarness) error {
 	selected, err := m.selection(project)
 	if err != nil {
 		return err
@@ -673,10 +680,14 @@ func (m *manager) list(project string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	harnessVisible, err := m.harnessVisibleSkillNames(harnesses)
+	if err != nil {
+		return err
+	}
 
 	document := skillListXML{}
 	for _, skill := range skills {
-		if !selected[skill.Name] || skill.DisableModelInvocation {
+		if !selected[skill.Name] || skill.DisableModelInvocation || harnessVisible[skill.Name] {
 			continue
 		}
 		references, err := referenceFiles(skill.Root)
@@ -700,6 +711,33 @@ func (m *manager) list(project string, output io.Writer) error {
 	}
 	_, err = fmt.Fprintln(output)
 	return err
+}
+
+func (m *manager) harnessVisibleSkillNames(harnesses []listHarness) (map[string]bool, error) {
+	discovery := skillDiscovery{
+		seenPaths: make(map[string]struct{}),
+		seenNames: make(map[string]struct{}),
+	}
+	for _, harness := range harnesses {
+		var roots []string
+		switch harness {
+		case listHarnessClaude:
+			roots = []string{m.paths.claudeSkills}
+		case listHarnessGrok:
+			roots = []string{m.paths.userSkills, m.paths.grokSkills}
+		}
+		for _, root := range roots {
+			if err := discovery.discoverRoot(skillRoot{path: root}); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	visible := make(map[string]bool, len(discovery.skills))
+	for _, skill := range discovery.skills {
+		visible[skill.Name] = true
+	}
+	return visible, nil
 }
 
 func (m *manager) get(project, target, lineRange string, output io.Writer) error {
