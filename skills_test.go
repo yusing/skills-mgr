@@ -346,7 +346,7 @@ func TestListEnabledSkillsAsXMLWithOwnedReferences(t *testing.T) {
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), `---
 name: alpha
 description: >
-  Alpha does <one> & one thing.
+  Alpha's description does <one> & one thing.
   It also does "another".
 ---
 `)
@@ -375,7 +375,7 @@ description: >
 	want := `<skills>
   <skill>
     <name>alpha</name>
-    <description>Alpha does &lt;one&gt; &amp; one thing. It also does &#34;another&#34;.</description>
+    <description>Alpha's description does &lt;one&gt; &amp; one thing. It also does "another".</description>
     <references>NOTES.md
 references/
   escape&amp;me.md

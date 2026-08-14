@@ -650,12 +650,12 @@ func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
 }
 
 type listedSkillXML struct {
-	Name        string               `xml:"name"`
-	Description string               `xml:"description"`
-	References  *listedReferencesXML `xml:"references,omitempty"`
+	Name        string         `xml:"name"`
+	Description listedTextXML  `xml:"description"`
+	References  *listedTextXML `xml:"references,omitempty"`
 }
 
-type listedReferencesXML struct {
+type listedTextXML struct {
 	Content string `xml:",innerxml"`
 }
 
@@ -694,16 +694,20 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 		if err != nil {
 			return fmt.Errorf("%s: %w", skill.Name, err)
 		}
+		description, err := escapeXMLText(skill.Description)
+		if err != nil {
+			return fmt.Errorf("format description for %s: %w", skill.Name, err)
+		}
 		listed := listedSkillXML{
 			Name:        skill.Name,
-			Description: skill.Description,
+			Description: listedTextXML{Content: description},
 		}
 		if len(references) > 0 {
 			content, err := formatReferenceList(references)
 			if err != nil {
 				return fmt.Errorf("format references for %s: %w", skill.Name, err)
 			}
-			listed.References = &listedReferencesXML{Content: content}
+			listed.References = &listedTextXML{Content: content}
 		}
 		document.Skills = append(document.Skills, listed)
 	}
@@ -763,11 +767,22 @@ func formatReferenceList(files []string) (string, error) {
 		if index > 0 {
 			output.WriteByte('\n')
 		}
-		if err := xml.EscapeText(&output, []byte(line)); err != nil {
+		escaped, err := escapeXMLText(line)
+		if err != nil {
 			return "", err
 		}
+		output.WriteString(escaped)
 	}
 	return output.String(), nil
+}
+
+func escapeXMLText(value string) (string, error) {
+	var output strings.Builder
+	if err := xml.EscapeText(&output, []byte(value)); err != nil {
+		return "", err
+	}
+	escaped := strings.ReplaceAll(output.String(), "&#34;", `"`)
+	return strings.ReplaceAll(escaped, "&#39;", "'"), nil
 }
 
 func (m *manager) get(project, target, lineRange string, output io.Writer) error {
