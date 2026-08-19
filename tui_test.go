@@ -95,9 +95,11 @@ func TestSkillListStopsAtNavigationBoundaries(t *testing.T) {
 }
 
 func TestTabsNavigateWithArrowKeys(t *testing.T) {
+	skills := skillNames(2)
 	current := model{
-		skills:   skillNames(2),
-		selected: map[string]bool{},
+		skills:    skills,
+		allSkills: skills,
+		selected:  map[string]bool{},
 		remoteTopics: []remoteTopic{{
 			Slug: "testing", Name: "Testing",
 			Skills: []remoteSkill{{ID: "owner/repo/alpha", Name: "alpha"}},
@@ -107,12 +109,11 @@ func TestTabsNavigateWithArrowKeys(t *testing.T) {
 	}
 	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
 	current = updated.(model)
-	if current.tab != remoteTab || current.cursor != 0 {
-		t.Fatalf("right selected tab, cursor = %d, %d; want %d, 0", current.tab, current.cursor, remoteTab)
+	if current.tab != codexTab || current.cursor != 0 {
+		t.Fatalf("right selected tab, cursor = %d, %d; want %d, 0", current.tab, current.cursor, codexTab)
 	}
-	if view := current.View(); !strings.Contains(view, "[skills.sh]") ||
-		!strings.Contains(view, "Testing") || !strings.Contains(view, "alpha") {
-		t.Fatalf("remote tab omitted topic tree:\n%s", view)
+	if view := current.View(); !strings.Contains(view, "[Codex]") {
+		t.Fatalf("codex tab omitted label:\n%s", view)
 	}
 
 	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyLeft})
@@ -123,6 +124,17 @@ func TestTabsNavigateWithArrowKeys(t *testing.T) {
 	if view := current.View(); !strings.Contains(view, "[Installed]") ||
 		!strings.Contains(view, "skill-00") {
 		t.Fatalf("installed tab omitted local skills:\n%s", view)
+	}
+
+	current.tab = claudeTab
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if current.tab != remoteTab {
+		t.Fatalf("right from Claude selected tab = %d, want %d", current.tab, remoteTab)
+	}
+	if view := current.View(); !strings.Contains(view, "[skills.sh]") ||
+		!strings.Contains(view, "Testing") || !strings.Contains(view, "alpha") {
+		t.Fatalf("remote tab omitted topic tree:\n%s", view)
 	}
 }
 
@@ -147,9 +159,8 @@ func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
 		manager: manager, skills: skillNames(1), selected: map[string]bool{},
 		width: 60, height: 10,
 	}
+	current.tab = remoteTab
 	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
-	current = updated.(model)
-	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRight})
 	current = updated.(model)
 
 	view := current.View()
@@ -185,8 +196,7 @@ func TestSkillsMPTabFetchesAndCachesDefaultCatalogOnDemand(t *testing.T) {
 		width: 60, height: 10,
 	}
 
-	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
-	current = updated.(model)
+	current.tab = remoteTab
 	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRight})
 	current = updated.(model)
 	if command == nil || current.status != "loading SkillsMP" {
@@ -441,6 +451,7 @@ func TestRemoteTabReloadsDaemonCache(t *testing.T) {
 		width:    60,
 		height:   10,
 	}
+	current.tab = claudeTab
 	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
 	current = updated.(model)
 	if len(current.remoteTopics) != 1 ||
@@ -465,6 +476,7 @@ func TestRemoteTabClearsStaleTopicsWhenCacheReloadFails(t *testing.T) {
 		width:  60,
 		height: 10,
 	}
+	current.tab = claudeTab
 	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
 	current = updated.(model)
 	if len(current.remoteTopics) != 0 || !strings.HasPrefix(current.status, "error: ") {
@@ -1365,5 +1377,170 @@ func TestEditorRejectsNonEditableSkillSource(t *testing.T) {
 	_, err := (model{manager: manager, project: project}).editor("admin")
 	if err == nil || !strings.Contains(err.Error(), "not editable") {
 		t.Fatalf("error = %v, want non-editable source error", err)
+	}
+}
+
+func TestApplyCatalogClearsWhenDiscoveryEmpty(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{{Name: "stale", Source: "user"}},
+	}
+	current.applyCatalog()
+	if len(current.skills) != 0 {
+		t.Fatalf("empty rediscovery left catalog %#v", current.skills)
+	}
+}
+
+func TestTUICatalogFiltersAgentPrivateSkills(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeSkill(t, filepath.Join(manager.paths.userSkills, "common"), "common")
+	writeSkill(t, filepath.Join(project, ".agents", "skills", "local"), "local")
+	writeSkill(t, filepath.Join(project, ".claude", "skills", "project-claude"), "project-claude")
+	writeSkill(t, filepath.Join(project, ".grok", "skills", "project-grok"), "project-grok")
+	writeSkill(t, filepath.Join(project, ".codex", "skills", "project-codex"), "project-codex")
+	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", "codex-only"), "codex-only")
+	writeSkill(
+		t,
+		filepath.Join(manager.paths.codexHome, "plugins", "cache", "publisher", "plugin", "hash", "skills", "plugin-only"),
+		"plugin-only",
+	)
+	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", ".system", "builtin"), "builtin")
+	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin-only"), "admin-only")
+
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name        string
+		tab         int
+		codexSubtab int
+		want        []string
+		omit        []string
+	}{
+		{
+			name: "installed hides all private skills",
+			tab:  localTab,
+			want: []string{"common", "local"},
+			omit: []string{"admin-only", "builtin", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
+		},
+		{
+			name:        "codex user subtab",
+			tab:         codexTab,
+			codexSubtab: codexUserSubtab,
+			want:        []string{"codex-only", "project-codex"},
+			omit:        []string{"admin-only", "builtin", "common", "local", "plugin-only", "project-claude", "project-grok"},
+		},
+		{
+			name:        "codex plugin subtab",
+			tab:         codexTab,
+			codexSubtab: codexPluginSubtab,
+			want:        []string{"plugin-only"},
+			omit:        []string{"admin-only", "builtin", "codex-only", "common", "local", "project-claude", "project-codex", "project-grok"},
+		},
+		{
+			name:        "codex builtin subtab",
+			tab:         codexTab,
+			codexSubtab: codexBuiltinSubtab,
+			want:        []string{"builtin"},
+			omit:        []string{"admin-only", "codex-only", "common", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
+		},
+		{
+			name:        "codex system subtab",
+			tab:         codexTab,
+			codexSubtab: codexSystemSubtab,
+			want:        []string{"admin-only"},
+			omit:        []string{"builtin", "codex-only", "common", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
+		},
+		{
+			name: "claude keeps Claude-private skills",
+			tab:  claudeTab,
+			want: []string{"project-claude"},
+			omit: []string{"admin-only", "builtin", "codex-only", "common", "local", "plugin-only", "project-codex", "project-grok"},
+		},
+		{
+			name: "grok keeps Grok-private skills",
+			tab:  grokTab,
+			want: []string{"project-grok"},
+			omit: []string{"admin-only", "builtin", "codex-only", "common", "local", "plugin-only", "project-claude", "project-codex"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := current
+			got.tab = tt.tab
+			got.codexSubtab = tt.codexSubtab
+			got.applyCatalog()
+			names := make([]string, 0, len(got.skills))
+			for _, skill := range got.skills {
+				names = append(names, skill.Name)
+			}
+			for _, name := range tt.want {
+				if !slices.Contains(names, name) {
+					t.Errorf("catalog omitted %q: %q", name, names)
+				}
+			}
+			for _, name := range tt.omit {
+				if slices.Contains(names, name) {
+					t.Errorf("catalog included private skill %q: %q", name, names)
+				}
+			}
+		})
+	}
+}
+
+func TestCodexSubtabsCycleWithBrackets(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", "user-skill"), "user-skill")
+	writeSkill(
+		t,
+		filepath.Join(manager.paths.codexHome, "plugins", "cache", "publisher", "plugin", "hash", "skills", "plugin-skill"),
+		"plugin-skill",
+	)
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.width = 80
+	current.height = 16
+	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
+	current = updated.(model)
+	if current.tab != codexTab {
+		t.Fatalf("tab = %d, want Codex", current.tab)
+	}
+	view := current.View()
+	if !strings.Contains(view, "[User]") || !strings.Contains(view, "user-skill") ||
+		strings.Contains(view, "plugin-skill") {
+		t.Fatalf("user subtab view:\n%s", view)
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	current = updated.(model)
+	if current.codexSubtab != codexPluginSubtab {
+		t.Fatalf("subtab = %d, want Plugin", current.codexSubtab)
+	}
+	view = current.View()
+	if !strings.Contains(view, "[Plugin]") || !strings.Contains(view, "plugin-skill") ||
+		strings.Contains(view, "user-skill") {
+		t.Fatalf("plugin subtab view:\n%s", view)
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	current = updated.(model)
+	if current.codexSubtab != codexUserSubtab {
+		t.Fatalf("subtab = %d, want User", current.codexSubtab)
+	}
+
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
+	current = updated.(model)
+	if current.codexSubtab != codexSystemSubtab {
+		t.Fatalf("wrap back = %d, want System", current.codexSubtab)
+	}
+	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
+	current = updated.(model)
+	if current.codexSubtab != codexUserSubtab {
+		t.Fatalf("wrap forward = %d, want User", current.codexSubtab)
 	}
 }

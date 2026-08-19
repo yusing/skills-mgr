@@ -37,11 +37,14 @@ skills-mgr list
 
 ## Interactive Interface
 
-The interface has three tabs:
+The interface has six tabs:
 
 | Tab | Purpose | Network behavior |
 | --- | --- | --- |
-| Local | Browse discovered skills and enable them for the current project | None |
+| Installed | Browse user and project skills and enable them for the current project | None |
+| Codex | Browse Codex-native skills. `[` / `]` switch the User, Plugin, Builtin, and System source lists | None |
+| Grok | Browse Grok-native skills | None |
+| Claude | Browse Claude-native skills | None |
 | skills.sh | Browse topics, search the skills.sh registry, and install skills | Contacts skills.sh and clones the selected skill's GitHub repository |
 | SkillsMP | Browse or search SkillsMP and install skills | Contacts SkillsMP and clones the selected skill's GitHub repository |
 
@@ -56,7 +59,8 @@ environment variable is set. Requests are unauthenticated when it is unset.
 
 | Key | Action |
 | --- | --- |
-| `←` / `→` | Change tab |
+| `←` / `→` | Change tab. From Installed, right opens Codex |
+| `[` / `]` | On the Codex tab, cycle source subtabs (User, Plugin, Builtin, System) |
 | `j` / `k`, `↓` / `↑` | Move through results |
 | `f` | Filter local skills or search the active registry |
 | Enter or click | Expand or collapse details |

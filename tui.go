@@ -43,16 +43,24 @@ type model struct {
 	progressDetail  string
 	filtering       bool
 	filterQuery     string
+	allSkills       []discoveredSkill
+	codexSubtab     int
 }
 
 const (
-	tuiHeaderHeight  = 5
-	tuiFooterHeight  = 2
-	tuiChromeHeight  = tuiHeaderHeight + tuiFooterHeight
-	localTab         = 0
-	remoteTab        = 1
-	skillsMPTab      = 2
-	registryDebounce = 300 * time.Millisecond
+	tuiHeaderHeight    = 5
+	tuiFooterHeight    = 2
+	localTab           = 0
+	codexTab           = 1
+	grokTab            = 2
+	claudeTab          = 3
+	remoteTab          = 4
+	skillsMPTab        = 5
+	codexUserSubtab    = 0
+	codexPluginSubtab  = 1
+	codexBuiltinSubtab = 2
+	codexSystemSubtab  = 3
+	registryDebounce   = 300 * time.Millisecond
 )
 
 var (
@@ -120,15 +128,76 @@ func newModel(manager *manager, project string) (model, error) {
 		return model{}, err
 	}
 	current := model{
-		manager: manager, project: project, skills: discovered,
+		manager: manager, project: project, allSkills: discovered,
 		selected:       selected,
 		globalSelected: globalSelected, projectSelected: projectSelected,
 		remoteCollapsed: make(map[string]bool),
 		remoteSelected:  remoteSelectionFrom(discovered, selected),
-		status:          fmt.Sprintf("%d skills", len(discovered)),
 	}
+	current.applyCatalog()
+	current.status = fmt.Sprintf("%d skills", len(current.skills))
 	current.reloadRemoteCache()
 	return current, nil
+}
+
+func isLocalTab(tab int) bool {
+	switch tab {
+	case localTab, codexTab, grokTab, claudeTab:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m model) catalogHarnesses() []listHarness {
+	switch m.tab {
+	case codexTab:
+		return []listHarness{listHarnessCodex}
+	case grokTab:
+		return []listHarness{listHarnessGrok}
+	case claudeTab:
+		return []listHarness{listHarnessClaude}
+	default:
+		return nil
+	}
+}
+
+func (m *model) applyCatalog() {
+	skills := catalogSkills(m.allSkills, m.catalogHarnesses())
+	if m.tab == codexTab {
+		skills = filterCodexSource(skills, m.codexSubtab)
+	}
+	m.skills = skills
+}
+
+func (m model) headerHeight() int {
+	if m.tab == codexTab {
+		return tuiHeaderHeight + 1
+	}
+	return tuiHeaderHeight
+}
+
+func (m model) chromeHeight() int {
+	return m.headerHeight() + tuiFooterHeight
+}
+
+func filterCodexSource(skills []discoveredSkill, subtab int) []discoveredSkill {
+	want := "codex"
+	switch subtab {
+	case codexPluginSubtab:
+		want = "plugin"
+	case codexBuiltinSubtab:
+		want = "bundled"
+	case codexSystemSubtab:
+		want = "admin"
+	}
+	filtered := make([]discoveredSkill, 0, len(skills))
+	for _, skill := range skills {
+		if skill.Source == want {
+			filtered = append(filtered, skill)
+		}
+	}
+	return filtered
 }
 
 func (model) Init() tea.Cmd { return nil }
@@ -144,7 +213,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.projectSelected != nil {
 				m.projectSelected[message.skill] = message.enabled
 			}
-			m.remoteSelected = remoteSelectionFrom(m.skills, m.selected)
+			catalog := m.allSkills
+			if catalog == nil {
+				catalog = m.skills
+			}
+			m.remoteSelected = remoteSelectionFrom(catalog, m.selected)
 			if message.enabled {
 				m.status = "enabled " + message.skill
 			} else {
@@ -159,7 +232,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.skills = message.result.Skills
+		m.allSkills = message.result.Skills
+		m.applyCatalog()
 		m.selected = message.result.Selected
 		if m.projectSelected != nil {
 			m.projectSelected[message.result.Skill] = message.result.Enabled
@@ -182,7 +256,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		wasExpanded := m.expanded == message.skill
-		m.skills = message.skills
+		m.allSkills = message.skills
+		m.applyCatalog()
 		m.selected = message.selected
 		m.globalSelected = message.global
 		m.projectSelected = message.project
@@ -251,7 +326,14 @@ func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if mouse.X < 0 || mouse.X >= m.width {
 		return m, nil
 	}
-	if mouse.Y == tuiHeaderHeight-1 {
+	header := m.headerHeight()
+	if m.tab == codexTab && mouse.Y == header-2 {
+		if subtab, ok := m.codexSubtabAt(mouse.X); ok {
+			return m, m.selectCodexSubtab(subtab)
+		}
+		return m, nil
+	}
+	if mouse.Y == header-1 {
 		m.startFiltering()
 		return m, nil
 	}
@@ -303,6 +385,14 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.selectTab(max(localTab, m.tab-1))
 	case "right":
 		return m, m.selectTab(min(skillsMPTab, m.tab+1))
+	case "[":
+		if m.tab == codexTab {
+			return m, m.selectCodexSubtab(wrapCodexSubtab(m.codexSubtab - 1))
+		}
+	case "]":
+		if m.tab == codexTab {
+			return m, m.selectCodexSubtab(wrapCodexSubtab(m.codexSubtab + 1))
+		}
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
@@ -318,7 +408,7 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ":
 		return toggleSelectedSkill(m)
 	case "e":
-		if m.tab != localTab {
+		if !isLocalTab(m.tab) {
 			break
 		}
 		skillIndex, ok := m.localSkillIndex(m.cursor)
@@ -360,7 +450,7 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
-	if m.tab != localTab {
+	if !isLocalTab(m.tab) {
 		ref, ok := remoteRefAtCursor(m)
 		if !ok || m.manager == nil || m.manager.remoteStore == nil {
 			return m, nil
@@ -409,6 +499,26 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 	}
 }
 
+func wrapCodexSubtab(subtab int) int {
+	const count = codexSystemSubtab - codexUserSubtab + 1
+	return (subtab%count + count) % count
+}
+
+func (m *model) selectCodexSubtab(subtab int) tea.Cmd {
+	if m.tab != codexTab || subtab < codexUserSubtab || subtab > codexSystemSubtab ||
+		subtab == m.codexSubtab {
+		return nil
+	}
+	m.codexSubtab = subtab
+	m.cursor = 0
+	m.offset = 0
+	m.expanded = ""
+	m.applyCatalog()
+	m.status = fmt.Sprintf("%d skills", len(m.skills))
+	m.syncViewport()
+	return nil
+}
+
 func (m *model) selectTab(tab int) tea.Cmd {
 	if tab < localTab || tab > skillsMPTab || m.tab == tab {
 		return nil
@@ -451,6 +561,7 @@ func (m *model) selectTab(tab int) tea.Cmd {
 		m.syncViewport()
 		return m.startSkillsMPCatalog()
 	default:
+		m.applyCatalog()
 		m.status = fmt.Sprintf("%d skills", len(m.skills))
 	}
 	m.syncViewport()
@@ -697,7 +808,7 @@ func (m *manager) refreshEditedSkill(
 }
 
 func (m *model) toggleCurrentExpanded(index int) {
-	if m.tab == localTab {
+	if isLocalTab(m.tab) {
 		skillIndex, ok := m.localSkillIndex(index)
 		if !ok {
 			return
@@ -802,7 +913,7 @@ func (m *model) syncViewport() renderedList {
 	m.cursor = min(max(m.cursor, 0), list.count-1)
 	m.offset = min(max(m.offset, 0), list.count-1)
 	list = m.currentList()
-	visible := m.height - tuiChromeHeight
+	visible := m.height - m.chromeHeight()
 	if visible <= 0 {
 		m.offset = m.cursor
 		return list
@@ -839,8 +950,11 @@ func (m model) View() string {
 		boundLine(mutedStyle.Render(terminalSafeText(m.project)), m.width),
 		m.tabBar(),
 	)
+	if m.tab == codexTab {
+		fmt.Fprintln(&view, m.codexSubtabBar())
+	}
 	fmt.Fprintln(&view, m.filterLine())
-	remaining := m.height - tuiChromeHeight
+	remaining := m.height - m.chromeHeight()
 	for index := m.offset; index < list.count && remaining > 0; index++ {
 		lines := list.lines(index)
 		if len(lines) > remaining {
@@ -853,6 +967,8 @@ func (m model) View() string {
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	switch m.tab {
+	case codexTab:
+		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	case remoteTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
 	case skillsMPTab:
@@ -907,25 +1023,57 @@ func (m model) filterLine() string {
 	return boundLine(mutedStyle.Render(line), m.width)
 }
 
-func (m model) tabBar() string {
-	local := " Installed "
-	remote := " skills.sh "
-	skillsMP := " SkillsMP "
-	switch m.tab {
-	case localTab:
-		local = selectedStyle(titleStyle, true).Render("[Installed]")
-		remote = mutedStyle.Render(remote)
-		skillsMP = mutedStyle.Render(skillsMP)
-	case remoteTab:
-		local = mutedStyle.Render(local)
-		remote = selectedStyle(titleStyle, true).Render("[skills.sh]")
-		skillsMP = mutedStyle.Render(skillsMP)
-	default:
-		local = mutedStyle.Render(local)
-		remote = mutedStyle.Render(remote)
-		skillsMP = selectedStyle(titleStyle, true).Render("[SkillsMP]")
+func styledTab(label string, selected bool) string {
+	if selected {
+		return selectedStyle(titleStyle, true).Render("[" + label + "]")
 	}
-	return boundLine(local+" "+remote+" "+skillsMP, m.width)
+	return mutedStyle.Render(" " + label + " ")
+}
+
+func (m model) tabBar() string {
+	parts := make([]string, 0, 6)
+	for _, tab := range []struct {
+		id    int
+		label string
+	}{
+		{localTab, "Installed"},
+		{codexTab, "Codex"},
+		{grokTab, "Grok"},
+		{claudeTab, "Claude"},
+		{remoteTab, "skills.sh"},
+		{skillsMPTab, "SkillsMP"},
+	} {
+		parts = append(parts, styledTab(tab.label, m.tab == tab.id))
+	}
+	return boundLine(strings.Join(parts, " "), m.width)
+}
+
+func (m model) codexSubtabBar() string {
+	parts := make([]string, 0, 4)
+	for id, label := range m.codexSubtabLabels() {
+		parts = append(parts, styledTab(label, m.codexSubtab == id))
+	}
+	return boundLine(strings.Join(parts, " "), m.width)
+}
+
+func (m model) codexSubtabLabels() []string {
+	return []string{"User", "Plugin", "Builtin", "System"}
+}
+
+func (m model) codexSubtabAt(x int) (int, bool) {
+	col := 0
+	for id, label := range m.codexSubtabLabels() {
+		part := styledTab(label, m.codexSubtab == id)
+		width := lipgloss.Width(part)
+		if id > 0 {
+			col++
+		}
+		if x >= col && x < col+width {
+			return id, true
+		}
+		col += width
+	}
+	return 0, false
 }
 
 type remoteRow struct {
@@ -1119,12 +1267,13 @@ func statusStyle(status string) lipgloss.Style {
 }
 
 func (m model) itemIndexAtHeaderRow(y int) (int, bool) {
-	if y < tuiHeaderHeight || y >= m.height-tuiFooterHeight {
+	header := m.headerHeight()
+	if y < header || y >= m.height-tuiFooterHeight {
 		return 0, false
 	}
 	list := m.currentList()
-	row := tuiHeaderHeight
-	remaining := m.height - tuiChromeHeight
+	row := header
+	remaining := m.height - m.chromeHeight()
 	for index := m.offset; index < list.count && remaining > 0; index++ {
 		if y == row {
 			return index, true

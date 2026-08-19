@@ -1794,6 +1794,31 @@ func TestLocalToggleDoneReconcilesRemoteCatalogState(t *testing.T) {
 	}
 }
 
+func TestLocalToggleDoneKeepsRemoteKeysOutsideCatalog(t *testing.T) {
+	const key = "remote-key"
+	current := model{
+		allSkills: []discoveredSkill{
+			{Name: "alpha", RemoteKey: key, Source: "user"},
+			{Name: "codex-only", Source: "codex"},
+		},
+		skills: []discoveredSkill{
+			{Name: "codex-only", Source: "codex"},
+		},
+		selected:       map[string]bool{"alpha": true, "codex-only": true},
+		remoteSelected: map[string]bool{key: true},
+		tab:            codexTab,
+		busy:           true,
+	}
+	updated, _ := current.Update(toggleDone{skill: "codex-only", enabled: false})
+	got := updated.(model)
+	if !got.remoteSelected[key] {
+		t.Fatalf("filtered-catalog toggle dropped remote state: %#v", got.remoteSelected)
+	}
+	if got.selected["codex-only"] {
+		t.Fatal("filtered-catalog toggle did not disable the local skill")
+	}
+}
+
 type staticRemoteProvider struct {
 	files []remoteSkillFile
 }

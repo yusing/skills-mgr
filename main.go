@@ -52,7 +52,7 @@ func run(args []string) error {
 			return err
 		}
 		if len(rest) != 0 {
-			return fmt.Errorf("usage: skills-mgr list [--claude] [--grok]")
+			return fmt.Errorf("usage: skills-mgr list [--claude] [--grok] [--codex]")
 		}
 		project, err := currentProject()
 		if err != nil {
@@ -76,7 +76,7 @@ func run(args []string) error {
 			return err
 		}
 		if len(rest) != 1 && len(rest) != 2 {
-			return fmt.Errorf("usage: skills-mgr get [--claude] [--grok] <skill-name>[/relative/path] [start:end]")
+			return fmt.Errorf("usage: skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]")
 		}
 		project, err := currentProject()
 		if err != nil {
@@ -93,7 +93,7 @@ func run(args []string) error {
 			return err
 		}
 		if len(rest) < 1 {
-			return fmt.Errorf("usage: skills-mgr run [--claude] [--grok] <skill-name>/<relative/script> [args...]")
+			return fmt.Errorf("usage: skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]")
 		}
 		project, err := currentProject()
 		if err != nil {
@@ -107,7 +107,10 @@ func run(args []string) error {
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
 		return command.Run()
-	case len(args) == 1 && args[0] == "daemon":
+	case args[0] == "daemon":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr daemon")
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return runDaemon(ctx, manager, os.Stderr)
@@ -124,6 +127,8 @@ func parseHarnessArgs(args []string) ([]listHarness, []string, error) {
 			harnesses = append(harnesses, listHarnessClaude)
 		case "--grok":
 			harnesses = append(harnesses, listHarnessGrok)
+		case "--codex":
+			harnesses = append(harnesses, listHarnessCodex)
 		default:
 			if strings.HasPrefix(arg, "--") {
 				return nil, nil, fmt.Errorf("unknown flag %q", arg)

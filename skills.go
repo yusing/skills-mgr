@@ -671,18 +671,35 @@ func harnessAgent(harness listHarness) string {
 		return "claude"
 	case listHarnessGrok:
 		return "grok"
+	case listHarnessCodex:
+		return "codex"
 	default:
 		return ""
 	}
 }
 
 func skillVisibleToHarnesses(skill discoveredSkill, harnesses []listHarness) bool {
+	return skillAllowedForAgent(skill, harnesses, true)
+}
+
+func skillVisibleInTUI(skill discoveredSkill, harnesses []listHarness) bool {
+	agent := sourceAgent(skill.Source)
 	if len(harnesses) == 0 {
-		return true
+		return agent == ""
 	}
+	if agent == "" {
+		return false
+	}
+	return skillAllowedForAgent(skill, harnesses, false)
+}
+
+func skillAllowedForAgent(skill discoveredSkill, harnesses []listHarness, unscopedIncludesPrivate bool) bool {
 	agent := sourceAgent(skill.Source)
 	if agent == "" {
 		return true
+	}
+	if len(harnesses) == 0 {
+		return unscopedIncludesPrivate
 	}
 	for _, harness := range harnesses {
 		if harnessAgent(harness) != agent {
@@ -690,6 +707,16 @@ func skillVisibleToHarnesses(skill discoveredSkill, harnesses []listHarness) boo
 		}
 	}
 	return true
+}
+
+func catalogSkills(skills []discoveredSkill, harnesses []listHarness) []discoveredSkill {
+	filtered := make([]discoveredSkill, 0, len(skills))
+	for _, skill := range skills {
+		if skillVisibleInTUI(skill, harnesses) {
+			filtered = append(filtered, skill)
+		}
+	}
+	return filtered
 }
 
 type listedSkillXML struct {
@@ -712,6 +739,7 @@ type listHarness uint8
 const (
 	listHarnessClaude listHarness = iota
 	listHarnessGrok
+	listHarnessCodex
 )
 
 func (m *manager) list(project string, output io.Writer, harnesses ...listHarness) error {
@@ -773,21 +801,32 @@ func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarne
 		seenNames: make(map[string]struct{}),
 	}
 	for _, harness := range harnesses {
-		var roots []string
+		var roots []skillRoot
 		switch harness {
 		case listHarnessClaude:
-			roots = []string{
-				filepath.Join(project, ".claude", "skills"),
-				m.paths.claudeSkills,
+			roots = []skillRoot{
+				{path: filepath.Join(project, ".claude", "skills")},
+				{path: m.paths.claudeSkills},
 			}
 		case listHarnessGrok:
-			roots = []string{
-				filepath.Join(project, ".grok", "skills"),
-				m.paths.grokSkills,
+			roots = []skillRoot{
+				{path: filepath.Join(project, ".grok", "skills")},
+				{path: m.paths.grokSkills},
+			}
+		case listHarnessCodex:
+			roots = []skillRoot{
+				{path: filepath.Join(project, ".codex", "skills"), includeSystem: true},
+				{path: filepath.Join(m.paths.codexHome, "skills"), includeSystem: true},
+				{path: m.paths.adminSkills},
 			}
 		}
 		for _, root := range roots {
-			if err := discovery.discoverRoot(skillRoot{path: root}); err != nil {
+			if err := discovery.discoverRoot(root); err != nil {
+				return nil, err
+			}
+		}
+		if harness == listHarnessCodex {
+			if err := discovery.discoverPluginCache(filepath.Join(m.paths.codexHome, "plugins", "cache")); err != nil {
 				return nil, err
 			}
 		}

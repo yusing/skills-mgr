@@ -518,6 +518,11 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	)
 	writeFile(
 		t,
+		filepath.Join(manager.paths.codexHome, "skills", ".system", "builtin", "SKILL.md"),
+		skillFile("builtin", "Codex bundled skill.", ""),
+	)
+	writeFile(
+		t,
 		filepath.Join(project, ".claude", "skills", "project-claude", "SKILL.md"),
 		skillFile("project-claude", "Project Claude skill.", ""),
 	)
@@ -533,6 +538,7 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	)
 	if err := saveLock(project, lock{Skills: map[string]bool{
 		"admin-only":     true,
+		"builtin":        true,
 		"claude-shared":  true,
 		"codex-only":     true,
 		"common":         true,
@@ -553,25 +559,31 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	}{
 		{
 			name:      "unscoped",
-			wantNames: []string{"admin-only", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			wantNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "claude",
 			harnesses: []listHarness{listHarnessClaude},
 			wantNames: []string{"common", "grok-shared", "local"},
-			omitNames: []string{"admin-only", "claude-shared", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "grok",
 			harnesses: []listHarness{listHarnessGrok},
 			wantNames: []string{"claude-shared", "common", "local"},
-			omitNames: []string{"admin-only", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			omitNames: []string{"admin-only", "builtin", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "claude and grok",
 			harnesses: []listHarness{listHarnessClaude, listHarnessGrok},
 			wantNames: []string{"common", "local"},
-			omitNames: []string{"admin-only", "claude-shared", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
+		},
+		{
+			name:      "codex",
+			harnesses: []listHarness{listHarnessCodex},
+			wantNames: []string{"claude-shared", "common", "grok-shared", "local"},
+			omitNames: []string{"admin-only", "builtin", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 	}
 	for _, tt := range tests {
@@ -672,11 +684,11 @@ func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
 }
 
 func TestParseHarnessArgs(t *testing.T) {
-	harnesses, rest, err := parseHarnessArgs([]string{"--claude", "--grok"})
+	harnesses, rest, err := parseHarnessArgs([]string{"--claude", "--grok", "--codex"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(harnesses, []listHarness{listHarnessClaude, listHarnessGrok}) {
+	if !slices.Equal(harnesses, []listHarness{listHarnessClaude, listHarnessGrok, listHarnessCodex}) {
 		t.Fatalf("harnesses = %v", harnesses)
 	}
 	if len(rest) != 0 {
