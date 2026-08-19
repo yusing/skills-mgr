@@ -471,6 +471,21 @@ func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		remoteSkillRef{
+			Provider: skillsShProvider,
+			ID:       "owner/repo/remote-shared",
+			Name:     "remote-shared",
+			Locator:  "owner/repo/remote-shared",
+		},
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("remote-shared", "Remote skill not installed for a harness.", "body")),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
 	writeFile(
 		t,
 		filepath.Join(manager.paths.userSkills, "common", "SKILL.md"),
@@ -547,6 +562,7 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 		"project-claude": true,
 		"project-codex":  true,
 		"project-grok":   true,
+		"remote-shared":  true,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -559,30 +575,30 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	}{
 		{
 			name:      "unscoped",
-			wantNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			wantNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok", "remote-shared"},
 		},
 		{
 			name:      "claude",
 			harnesses: []listHarness{listHarnessClaude},
-			wantNames: []string{"common", "grok-shared", "local"},
+			wantNames: []string{"common", "grok-shared", "local", "remote-shared"},
 			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "grok",
 			harnesses: []listHarness{listHarnessGrok},
-			wantNames: []string{"claude-shared", "common", "local"},
-			omitNames: []string{"admin-only", "builtin", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			wantNames: []string{"remote-shared"},
+			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "claude and grok",
 			harnesses: []listHarness{listHarnessClaude, listHarnessGrok},
-			wantNames: []string{"common", "local"},
-			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
+			wantNames: []string{"remote-shared"},
+			omitNames: []string{"admin-only", "builtin", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "codex",
 			harnesses: []listHarness{listHarnessCodex},
-			wantNames: []string{"claude-shared", "common", "grok-shared", "local"},
+			wantNames: []string{"claude-shared", "common", "grok-shared", "local", "remote-shared"},
 			omitNames: []string{"admin-only", "builtin", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 	}
@@ -603,6 +619,67 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
+	manager := newTestManager(t)
+	home := manager.paths.globalLockDir
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "user-skill", "SKILL.md"),
+		skillFile("user-skill", "User agents skill.", ""),
+	)
+	if err := saveLock(home, lock{Skills: map[string]bool{"user-skill": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(home, &output, listHarnessGrok); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "<name>user-skill</name>") {
+		t.Fatalf("list --grok from home included a user agents skill:\n%s", output.String())
+	}
+
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "local-skill", "SKILL.md"),
+		skillFile("local-skill", "Project agents skill.", ""),
+	)
+	output.Reset()
+	if err := manager.list(project, &output, listHarnessGrok); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "<name>local-skill</name>") {
+		t.Fatalf("list --grok included a project agents skill:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "<name>user-skill</name>") {
+		t.Fatalf("list --grok included a user agents skill from a project:\n%s", output.String())
+	}
+
+	linked := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(linked, ".agents", "skills", "linked-skill", "SKILL.md"),
+		skillFile("linked-skill", "Agents skill also exposed through a grok symlink.", ""),
+	)
+	if err := os.MkdirAll(filepath.Join(linked, ".grok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(linked, ".agents", "skills"),
+		filepath.Join(linked, ".grok", "skills"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := manager.list(linked, &output, listHarnessGrok); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "<name>linked-skill</name>") {
+		t.Fatalf("list --grok included a skill visible through a grok skills symlink:\n%s", output.String())
 	}
 }
 

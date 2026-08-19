@@ -820,6 +820,13 @@ func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarne
 				{path: m.paths.adminSkills},
 			}
 		}
+		// Grok loads shared .agents/skills roots natively. Claude does not.
+		if harness == listHarnessGrok {
+			roots = append(roots,
+				skillRoot{path: filepath.Join(project, ".agents", "skills")},
+				skillRoot{path: m.paths.userSkills},
+			)
+		}
 		for _, root := range roots {
 			if err := discovery.discoverRoot(root); err != nil {
 				return nil, err
