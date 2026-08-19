@@ -88,6 +88,9 @@ func (m *manager) skills(project string) ([]discoveredSkill, error) {
 	roots := []skillRoot{
 		{path: filepath.Join(project, ".agents", "skills"), source: projectSkillSource, editable: true},
 		{path: m.paths.userSkills, source: "user", editable: true},
+		{path: filepath.Join(project, ".claude", "skills"), source: "claude", editable: true},
+		{path: filepath.Join(project, ".grok", "skills"), source: "grok", editable: true},
+		{path: filepath.Join(project, ".codex", "skills"), source: "codex", includeSystem: true, editable: true},
 		{path: filepath.Join(m.paths.codexHome, "skills"), source: "codex", includeSystem: true, editable: true},
 		{path: m.paths.adminSkills, source: "admin"},
 	}
@@ -646,7 +649,47 @@ func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
 	if explicit {
 		return enabled
 	}
-	return skill.Source == projectSkillSource
+	return skill.Source == projectSkillSource || skill.DisableModelInvocation
+}
+
+func sourceAgent(source string) string {
+	switch source {
+	case "codex", "admin", "bundled", "plugin":
+		return "codex"
+	case "claude":
+		return "claude"
+	case "grok":
+		return "grok"
+	default:
+		return ""
+	}
+}
+
+func harnessAgent(harness listHarness) string {
+	switch harness {
+	case listHarnessClaude:
+		return "claude"
+	case listHarnessGrok:
+		return "grok"
+	default:
+		return ""
+	}
+}
+
+func skillVisibleToHarnesses(skill discoveredSkill, harnesses []listHarness) bool {
+	if len(harnesses) == 0 {
+		return true
+	}
+	agent := sourceAgent(skill.Source)
+	if agent == "" {
+		return true
+	}
+	for _, harness := range harnesses {
+		if harnessAgent(harness) != agent {
+			return false
+		}
+	}
+	return true
 }
 
 type listedSkillXML struct {
@@ -680,14 +723,17 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 	if err != nil {
 		return err
 	}
-	harnessVisible, err := m.harnessVisibleSkillNames(harnesses)
+	harnessVisible, err := m.harnessVisibleSkillNames(project, harnesses)
 	if err != nil {
 		return err
 	}
 
 	document := skillListXML{}
 	for _, skill := range skills {
-		if !selected[skill.Name] || skill.DisableModelInvocation || harnessVisible[skill.Name] {
+		if !selected[skill.Name] ||
+			skill.DisableModelInvocation ||
+			!skillVisibleToHarnesses(skill, harnesses) ||
+			harnessVisible[skill.Name] {
 			continue
 		}
 		references, err := referenceFiles(skill.Root)
@@ -721,7 +767,7 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 	return err
 }
 
-func (m *manager) harnessVisibleSkillNames(harnesses []listHarness) (map[string]bool, error) {
+func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarness) (map[string]bool, error) {
 	discovery := skillDiscovery{
 		seenPaths: make(map[string]struct{}),
 		seenNames: make(map[string]struct{}),
@@ -730,9 +776,15 @@ func (m *manager) harnessVisibleSkillNames(harnesses []listHarness) (map[string]
 		var roots []string
 		switch harness {
 		case listHarnessClaude:
-			roots = []string{m.paths.claudeSkills}
+			roots = []string{
+				filepath.Join(project, ".claude", "skills"),
+				m.paths.claudeSkills,
+			}
 		case listHarnessGrok:
-			roots = []string{m.paths.userSkills, m.paths.grokSkills}
+			roots = []string{
+				filepath.Join(project, ".grok", "skills"),
+				m.paths.grokSkills,
+			}
 		}
 		for _, root := range roots {
 			if err := discovery.discoverRoot(skillRoot{path: root}); err != nil {
@@ -785,12 +837,12 @@ func escapeXMLText(value string) (string, error) {
 	return strings.ReplaceAll(escaped, "&#39;", "'"), nil
 }
 
-func (m *manager) get(project, target, lineRange string, output io.Writer) error {
+func (m *manager) get(project, target, lineRange string, output io.Writer, harnesses ...listHarness) error {
 	skill, relative, err := splitTarget(target)
 	if err != nil {
 		return err
 	}
-	root, err := m.openSkill(project, skill)
+	root, err := m.openSkill(project, skill, harnesses...)
 	if err != nil {
 		return err
 	}
@@ -839,7 +891,7 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 	return writeLineRange(output, input, start, end)
 }
 
-func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {
+func (m *manager) scriptCommand(project, target string, args []string, harnesses ...listHarness) (*exec.Cmd, error) {
 	if !strings.Contains(target, "/") {
 		return nil, fmt.Errorf("invalid script target %q; want <skill-name>/<relative/script>", target)
 	}
@@ -847,7 +899,7 @@ func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cm
 	if err != nil {
 		return nil, err
 	}
-	root, err := m.openSkill(project, skill)
+	root, err := m.openSkill(project, skill, harnesses...)
 	if err != nil {
 		return nil, err
 	}
@@ -907,17 +959,17 @@ func (m *manager) cachedJavaScriptRuntime() (string, error) {
 	return m.javascriptRuntime, m.javascriptRuntimeErr
 }
 
-func (m *manager) openSkill(project, skill string) (*os.Root, error) {
+func (m *manager) openSkill(project, skill string, harnesses ...listHarness) (*os.Root, error) {
 	selected, err := m.selection(project)
+	if err != nil {
+		return nil, err
+	}
+	discovered, err := m.findSkill(project, skill, harnesses...)
 	if err != nil {
 		return nil, err
 	}
 	if !selected[skill] {
 		return nil, fmt.Errorf("skill %q is not enabled", skill)
-	}
-	discovered, err := m.findSkill(project, skill)
-	if err != nil {
-		return nil, err
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
@@ -926,13 +978,13 @@ func (m *manager) openSkill(project, skill string) (*os.Root, error) {
 	return root, nil
 }
 
-func (m *manager) findSkill(project, name string) (discoveredSkill, error) {
+func (m *manager) findSkill(project, name string, harnesses ...listHarness) (discoveredSkill, error) {
 	skills, err := m.skills(project)
 	if err != nil {
 		return discoveredSkill{}, err
 	}
 	for _, skill := range skills {
-		if skill.Name == name {
+		if skill.Name == name && skillVisibleToHarnesses(skill, harnesses) {
 			return skill, nil
 		}
 	}

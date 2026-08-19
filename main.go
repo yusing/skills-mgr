@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -46,9 +47,12 @@ func run(args []string) error {
 		}
 		return runTUI(manager, project)
 	case args[0] == "list":
-		harnesses, err := parseListHarnesses(args[1:])
+		harnesses, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {
 			return err
+		}
+		if len(rest) != 0 {
+			return fmt.Errorf("usage: skills-mgr list [--claude] [--grok]")
 		}
 		project, err := currentProject()
 		if err != nil {
@@ -67,27 +71,35 @@ func run(args []string) error {
 		defer stop()
 		return manager.sync(ctx, project, os.Stdout)
 	case args[0] == "get":
-		if len(args) != 2 && len(args) != 3 {
-			return fmt.Errorf("usage: skills-mgr get <skill-name>[/relative/path] [start:end]")
+		harnesses, rest, err := parseHarnessArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) != 1 && len(rest) != 2 {
+			return fmt.Errorf("usage: skills-mgr get [--claude] [--grok] <skill-name>[/relative/path] [start:end]")
 		}
 		project, err := currentProject()
 		if err != nil {
 			return err
 		}
 		lineRange := ""
-		if len(args) == 3 {
-			lineRange = args[2]
+		if len(rest) == 2 {
+			lineRange = rest[1]
 		}
-		return manager.get(project, args[1], lineRange, os.Stdout)
+		return manager.get(project, rest[0], lineRange, os.Stdout, harnesses...)
 	case args[0] == "run":
-		if len(args) < 2 {
-			return fmt.Errorf("usage: skills-mgr run <skill-name>/<relative/script> [args...]")
+		harnesses, rest, err := parseHarnessArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		if len(rest) < 1 {
+			return fmt.Errorf("usage: skills-mgr run [--claude] [--grok] <skill-name>/<relative/script> [args...]")
 		}
 		project, err := currentProject()
 		if err != nil {
 			return err
 		}
-		command, err := manager.scriptCommand(project, args[1], args[2:])
+		command, err := manager.scriptCommand(project, rest[0], rest[1:], harnesses...)
 		if err != nil {
 			return err
 		}
@@ -104,19 +116,22 @@ func run(args []string) error {
 	}
 }
 
-func parseListHarnesses(args []string) ([]listHarness, error) {
+func parseHarnessArgs(args []string) ([]listHarness, []string, error) {
 	harnesses := make([]listHarness, 0, len(args))
-	for _, arg := range args {
+	for index, arg := range args {
 		switch arg {
 		case "--claude":
 			harnesses = append(harnesses, listHarnessClaude)
 		case "--grok":
 			harnesses = append(harnesses, listHarnessGrok)
 		default:
-			return nil, fmt.Errorf("usage: skills-mgr list [--claude] [--grok]")
+			if strings.HasPrefix(arg, "--") {
+				return nil, nil, fmt.Errorf("unknown flag %q", arg)
+			}
+			return harnesses, args[index:], nil
 		}
 	}
-	return harnesses, nil
+	return harnesses, nil, nil
 }
 
 func currentProject() (string, error) {

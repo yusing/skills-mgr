@@ -413,9 +413,16 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	)
 	if err := saveLock(project, lock{Skills: map[string]bool{
 		"automatic": true,
-		"manual":    true,
 	}}); err != nil {
 		t.Fatal(err)
+	}
+
+	selected, err := manager.selection(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected["manual"] {
+		t.Fatalf("selection = %#v, want manual enabled by default", selected)
 	}
 
 	var output bytes.Buffer
@@ -436,6 +443,16 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	if want := "manual body\n"; output.String() != want {
 		t.Fatalf("manual skill output = %q, want %q", output.String(), want)
 	}
+
+	enabled, err := manager.toggle(project, "manual")
+	if err != nil || enabled {
+		t.Fatalf("toggle default-enabled manual skill = %v, %v; want disabled", enabled, err)
+	}
+	assertLock(t, project, map[string]bool{"automatic": true, "manual": false})
+	output.Reset()
+	if err := manager.get(project, "manual", "", &output); err == nil {
+		t.Fatal("get read an explicitly disabled manual-only skill")
+	}
 }
 
 func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
@@ -454,39 +471,76 @@ func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	for _, name := range []string{"claude", "agents", "grok", "invalid", "listed"} {
-		writeFile(
-			t,
-			filepath.Join(manager.paths.codexHome, "skills", name, "SKILL.md"),
-			skillFile(name, name+" description.", ""),
-		)
-	}
 	writeFile(
 		t,
-		filepath.Join(manager.paths.claudeSkills, "claude", "SKILL.md"),
-		skillFile("claude", "Claude-visible skill.", ""),
+		filepath.Join(manager.paths.userSkills, "common", "SKILL.md"),
+		skillFile("common", "Shared agents skill.", ""),
 	)
 	writeFile(
 		t,
-		filepath.Join(manager.paths.userSkills, "agents", "SKILL.md"),
-		skillFile("agents", "Agents-visible skill.", ""),
+		filepath.Join(project, ".agents", "skills", "local", "SKILL.md"),
+		skillFile("local", "Project agents skill.", ""),
 	)
 	writeFile(
 		t,
-		filepath.Join(manager.paths.grokSkills, "grok", "SKILL.md"),
-		skillFile("grok", "Grok-visible skill.", ""),
+		filepath.Join(manager.paths.userSkills, "claude-shared", "SKILL.md"),
+		skillFile("claude-shared", "Common skill also installed for Claude.", ""),
 	)
 	writeFile(
 		t,
-		filepath.Join(manager.paths.grokSkills, "invalid", "SKILL.md"),
-		"not valid frontmatter",
+		filepath.Join(manager.paths.claudeSkills, "claude-shared", "SKILL.md"),
+		skillFile("claude-shared", "Claude-native copy.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "grok-shared", "SKILL.md"),
+		skillFile("grok-shared", "Common skill also installed for Grok.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.grokSkills, "grok-shared", "SKILL.md"),
+		skillFile("grok-shared", "Grok-native copy.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.codexHome, "skills", "codex-only", "SKILL.md"),
+		skillFile("codex-only", "Codex-only skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.codexHome, "plugins", "cache", "publisher", "plugin", "hash", "skills", "plugin-only", "SKILL.md"),
+		skillFile("plugin-only", "Codex plugin skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.adminSkills, "admin-only", "SKILL.md"),
+		skillFile("admin-only", "Codex admin skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".claude", "skills", "project-claude", "SKILL.md"),
+		skillFile("project-claude", "Project Claude skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".grok", "skills", "project-grok", "SKILL.md"),
+		skillFile("project-grok", "Project Grok skill.", ""),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".codex", "skills", "project-codex", "SKILL.md"),
+		skillFile("project-codex", "Project Codex skill.", ""),
 	)
 	if err := saveLock(project, lock{Skills: map[string]bool{
-		"agents":  true,
-		"claude":  true,
-		"grok":    true,
-		"invalid": true,
-		"listed":  true,
+		"admin-only":     true,
+		"claude-shared":  true,
+		"codex-only":     true,
+		"common":         true,
+		"grok-shared":    true,
+		"plugin-only":    true,
+		"project-claude": true,
+		"project-codex":  true,
+		"project-grok":   true,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -498,22 +552,26 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 		omitNames []string
 	}{
 		{
+			name:      "unscoped",
+			wantNames: []string{"admin-only", "claude-shared", "codex-only", "common", "grok-shared", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
+		},
+		{
 			name:      "claude",
 			harnesses: []listHarness{listHarnessClaude},
-			wantNames: []string{"agents", "grok", "invalid", "listed"},
-			omitNames: []string{"claude"},
+			wantNames: []string{"common", "grok-shared", "local"},
+			omitNames: []string{"admin-only", "claude-shared", "codex-only", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "grok",
 			harnesses: []listHarness{listHarnessGrok},
-			wantNames: []string{"claude", "invalid", "listed"},
-			omitNames: []string{"agents", "grok"},
+			wantNames: []string{"claude-shared", "common", "local"},
+			omitNames: []string{"admin-only", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:      "claude and grok",
 			harnesses: []listHarness{listHarnessClaude, listHarnessGrok},
-			wantNames: []string{"invalid", "listed"},
-			omitNames: []string{"agents", "claude", "grok"},
+			wantNames: []string{"common", "local"},
+			omitNames: []string{"admin-only", "claude-shared", "codex-only", "grok-shared", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 	}
 	for _, tt := range tests {
@@ -529,24 +587,115 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 			}
 			for _, name := range tt.omitNames {
 				if strings.Contains(output.String(), "<name>"+name+"</name>") {
-					t.Errorf("list included harness-visible skill %q:\n%s", name, output.String())
+					t.Errorf("list included out-of-scope skill %q:\n%s", name, output.String())
 				}
 			}
 		})
 	}
 }
 
-func TestParseListHarnesses(t *testing.T) {
-	harnesses, err := parseListHarnesses([]string{"--claude", "--grok"})
+func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "common", "SKILL.md"),
+		skillFile("common", "Shared agents skill.", "common body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.codexHome, "skills", "codex-only", "SKILL.md"),
+		skillFile("codex-only", "Codex-only skill.", "codex body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.codexHome, "skills", "codex-only", "scripts", "echo.sh"),
+		"#!/bin/sh\nprintf codex\n",
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".claude", "skills", "project-claude", "SKILL.md"),
+		skillFile("project-claude", "Project Claude skill.", "claude body\n"),
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{
+		"common":         true,
+		"codex-only":     true,
+		"project-claude": true,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.get(project, "codex-only", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "codex body\n" {
+		t.Fatalf("unscoped get output = %q", output.String())
+	}
+
+	for _, harnesses := range [][]listHarness{
+		{listHarnessClaude},
+		{listHarnessGrok},
+		{listHarnessClaude, listHarnessGrok},
+	} {
+		output.Reset()
+		if err := manager.get(project, "codex-only", "", &output, harnesses...); err == nil {
+			t.Fatalf("get retrieved Codex skill with harnesses %v", harnesses)
+		}
+		if output.Len() != 0 {
+			t.Fatalf("get wrote Codex skill with harnesses %v: %q", harnesses, output.String())
+		}
+		if _, err := manager.scriptCommand(project, "codex-only/scripts/echo.sh", nil, harnesses...); err == nil {
+			t.Fatalf("run retrieved Codex skill with harnesses %v", harnesses)
+		}
+	}
+
+	output.Reset()
+	if err := manager.get(project, "common", "", &output, listHarnessGrok); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "common body\n" {
+		t.Fatalf("grok get of common skill = %q", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, "project-claude", "", &output, listHarnessClaude); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "claude body\n" {
+		t.Fatalf("claude get of project Claude skill = %q", output.String())
+	}
+	output.Reset()
+	if err := manager.get(project, "project-claude", "", &output, listHarnessGrok); err == nil {
+		t.Fatal("get retrieved a Claude skill with --grok")
+	}
+}
+
+func TestParseHarnessArgs(t *testing.T) {
+	harnesses, rest, err := parseHarnessArgs([]string{"--claude", "--grok"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(harnesses, []listHarness{listHarnessClaude, listHarnessGrok}) {
 		t.Fatalf("harnesses = %v", harnesses)
 	}
+	if len(rest) != 0 {
+		t.Fatalf("rest = %v, want empty", rest)
+	}
 
-	if _, err := parseListHarnesses([]string{"--unknown"}); err == nil {
-		t.Fatal("parseListHarnesses accepted an unknown flag")
+	harnesses, rest, err = parseHarnessArgs([]string{"--grok", "alpha", "1:2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(harnesses, []listHarness{listHarnessGrok}) {
+		t.Fatalf("harnesses = %v", harnesses)
+	}
+	if !slices.Equal(rest, []string{"alpha", "1:2"}) {
+		t.Fatalf("rest = %v", rest)
+	}
+
+	if _, _, err := parseHarnessArgs([]string{"--unknown"}); err == nil {
+		t.Fatal("parseHarnessArgs accepted an unknown flag")
 	}
 }
 
