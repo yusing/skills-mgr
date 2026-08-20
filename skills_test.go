@@ -351,10 +351,16 @@ description: >
 ---
 `)
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "NOTES.md"), "notes")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", ".hidden.md"), "hidden")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "_private.md"), "private")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "ignore.md.txt"), "ignored")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "escape&me.md"), "escaped")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", ".secret.md"), "secret")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_draft.md"), "draft")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_internal", "notes.md"), "internal")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", ".cache", "data.md"), "cache")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "ignore.txt"), "ignored")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "future.mdx"), "unknown")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "beta", "SKILL.md"), skillFile("beta", "Disabled.", ""))
@@ -386,10 +392,47 @@ references/
 	if output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
-	for _, unexpected := range []string{"beta", "future", "ignore.txt", "ignore.md.txt", "future.mdx", "SKILL.md"} {
+	for _, unexpected := range []string{
+		"beta",
+		"future",
+		"ignore.txt",
+		"ignore.md.txt",
+		"future.mdx",
+		"SKILL.md",
+		".hidden.md",
+		"_private.md",
+		".secret.md",
+		"_draft.md",
+		"_internal",
+		".cache",
+	} {
 		if strings.Contains(output.String(), unexpected) {
 			t.Fatalf("list included %q", unexpected)
 		}
+	}
+}
+
+func TestListOmitsHiddenAndUnderscorePrefixedReferences(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "No public references.", ""))
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", ".hidden.md"), "hidden")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "_private.md"), "private")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_draft.md"), "draft")
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	want := `<skills>
+  <skill name="alpha" description="No public references."></skill>
+</skills>
+`
+	if output.String() != want {
+		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
 }
 

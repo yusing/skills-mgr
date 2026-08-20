@@ -1068,6 +1068,10 @@ func writeLineRange(output io.Writer, input io.Reader, start, end int) error {
 	}
 }
 
+func listedReferenceName(name string) bool {
+	return !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_")
+}
+
 func referenceFiles(skillRoot string) ([]string, error) {
 	entries, err := os.ReadDir(skillRoot)
 	if err != nil {
@@ -1075,7 +1079,10 @@ func referenceFiles(skillRoot string) ([]string, error) {
 	}
 	var files []string
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == "SKILL.md" || filepath.Ext(entry.Name()) != ".md" {
+		if entry.IsDir() ||
+			entry.Name() == "SKILL.md" ||
+			filepath.Ext(entry.Name()) != ".md" ||
+			!listedReferenceName(entry.Name()) {
 			continue
 		}
 		files = append(files, entry.Name())
@@ -1085,6 +1092,12 @@ func referenceFiles(skillRoot string) ([]string, error) {
 	err = filepath.WalkDir(referencesRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if path != referencesRoot && !listedReferenceName(entry.Name()) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			return nil
