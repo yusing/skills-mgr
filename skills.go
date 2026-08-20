@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
 )
@@ -24,7 +23,6 @@ import (
 const (
 	pluginMaxDepth      = 10
 	maxSkillNameLen     = 80
-	maxSkillDescLen     = 300
 	maxFrontmatterBytes = 64 * 1024
 	projectSkillSource  = "project"
 )
@@ -260,10 +258,7 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 		return discoveredSkill{}, false, nil
 	}
 	metadata.Name = strings.TrimSpace(metadata.Name)
-	metadata.Description = truncateMetadata(
-		strings.Join(strings.Fields(metadata.Description), " "),
-		maxSkillDescLen,
-	)
+	metadata.Description = strings.Join(strings.Fields(metadata.Description), " ")
 	if !validSkillName(metadata.Name) || !validSkillDescription(metadata.Description) {
 		return discoveredSkill{}, false, nil
 	}
@@ -339,17 +334,6 @@ func validSkillDescription(description string) bool {
 		}
 	}
 	return true
-}
-
-func truncateMetadata(text string, maxBytes int) string {
-	if maxBytes <= 0 || len(text) <= maxBytes {
-		return text
-	}
-	text = text[:maxBytes]
-	for !utf8.ValidString(text) && len(text) > 0 {
-		text = text[:len(text)-1]
-	}
-	return strings.TrimSpace(text)
 }
 
 func pathDepth(relative string) int {

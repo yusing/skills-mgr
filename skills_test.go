@@ -393,6 +393,28 @@ references/
 	}
 }
 
+func TestListKeepsFullSkillDescription(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	description := "Use this skill when matching long instructions. " + strings.Repeat("more ", 80) + "END-MARKER."
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", description, ""))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	listed := output.String()
+	if !strings.Contains(listed, `description="`+description+`"`) {
+		t.Fatalf("list omitted the full description:\n%s", listed)
+	}
+	if !strings.Contains(listed, "END-MARKER.") {
+		t.Fatalf("list truncated the description:\n%s", listed)
+	}
+}
+
 func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
