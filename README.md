@@ -100,6 +100,12 @@ All project commands use the current working directory as the project.
 Markdown returned by `get` omits YAML frontmatter. For a line-range request,
 line numbers apply to that frontmatter-free content.
 
+`list`, `get`, and `run` accept `--claude`, `--grok`, and `--codex` to hide
+skills the named agent already loads on its own. When those flags are omitted,
+the command infers a single calling agent from `CLAUDECODE`, `GROK_AGENT` or
+`GROK_SESSION_ID`, or `CODEX_THREAD_ID`. If none of those session markers is
+set, or more than one is set, the command stays unscoped.
+
 `run` sets the skill directory as the script's working directory. Executable
 files run directly, non-executable `.py` files use `python3`, and
 non-executable JavaScript or TypeScript files use the first available runtime

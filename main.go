@@ -58,7 +58,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return manager.list(project, os.Stdout, harnesses...)
+		return manager.list(project, os.Stdout, resolveHarnesses(harnesses)...)
 	case args[0] == "sync":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr sync")
@@ -86,7 +86,7 @@ func run(args []string) error {
 		if len(rest) == 2 {
 			lineRange = rest[1]
 		}
-		return manager.get(project, rest[0], lineRange, os.Stdout, harnesses...)
+		return manager.get(project, rest[0], lineRange, os.Stdout, resolveHarnesses(harnesses)...)
 	case args[0] == "run":
 		harnesses, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {
@@ -99,7 +99,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		command, err := manager.scriptCommand(project, rest[0], rest[1:], harnesses...)
+		command, err := manager.scriptCommand(project, rest[0], rest[1:], resolveHarnesses(harnesses)...)
 		if err != nil {
 			return err
 		}
@@ -137,6 +137,30 @@ func parseHarnessArgs(args []string) ([]listHarness, []string, error) {
 		}
 	}
 	return harnesses, nil, nil
+}
+
+func resolveHarnesses(explicit []listHarness) []listHarness {
+	if len(explicit) > 0 {
+		return explicit
+	}
+	return inferHarnessFromEnv()
+}
+
+func inferHarnessFromEnv() []listHarness {
+	var detected []listHarness
+	if os.Getenv("CLAUDECODE") != "" {
+		detected = append(detected, listHarnessClaude)
+	}
+	if os.Getenv("GROK_AGENT") != "" || os.Getenv("GROK_SESSION_ID") != "" {
+		detected = append(detected, listHarnessGrok)
+	}
+	if os.Getenv("CODEX_THREAD_ID") != "" {
+		detected = append(detected, listHarnessCodex)
+	}
+	if len(detected) != 1 {
+		return nil
+	}
+	return detected
 }
 
 func currentProject() (string, error) {

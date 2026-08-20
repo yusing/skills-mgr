@@ -805,6 +805,94 @@ func TestParseHarnessArgs(t *testing.T) {
 	}
 }
 
+func clearHarnessEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("CLAUDECODE", "")
+	t.Setenv("GROK_AGENT", "")
+	t.Setenv("GROK_SESSION_ID", "")
+	t.Setenv("CODEX_THREAD_ID", "")
+}
+
+func TestInferHarnessFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want []listHarness
+	}{
+		{name: "none"},
+		{
+			name: "claude config is not a session",
+			env: map[string]string{
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+				"CLAUDE_PACKAGE_MANAGER":                   "bun",
+			},
+		},
+		{
+			name: "claude",
+			env:  map[string]string{"CLAUDECODE": "1"},
+			want: []listHarness{listHarnessClaude},
+		},
+		{
+			name: "grok agent",
+			env:  map[string]string{"GROK_AGENT": "1"},
+			want: []listHarness{listHarnessGrok},
+		},
+		{
+			name: "grok session",
+			env:  map[string]string{"GROK_SESSION_ID": "sess"},
+			want: []listHarness{listHarnessGrok},
+		},
+		{
+			name: "grok agent and session",
+			env: map[string]string{
+				"GROK_AGENT":      "1",
+				"GROK_SESSION_ID": "sess",
+			},
+			want: []listHarness{listHarnessGrok},
+		},
+		{
+			name: "codex",
+			env:  map[string]string{"CODEX_THREAD_ID": "thread"},
+			want: []listHarness{listHarnessCodex},
+		},
+		{
+			name: "multiple sessions stay unscoped",
+			env: map[string]string{
+				"GROK_AGENT":      "1",
+				"CODEX_THREAD_ID": "thread",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearHarnessEnv(t)
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			got := inferHarnessFromEnv()
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("inferHarnessFromEnv() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveHarnessesPrefersFlags(t *testing.T) {
+	clearHarnessEnv(t)
+	t.Setenv("GROK_AGENT", "1")
+	t.Setenv("GROK_SESSION_ID", "sess")
+
+	got := resolveHarnesses([]listHarness{listHarnessClaude})
+	if !slices.Equal(got, []listHarness{listHarnessClaude}) {
+		t.Fatalf("explicit flags = %v, want claude", got)
+	}
+
+	got = resolveHarnesses(nil)
+	if !slices.Equal(got, []listHarness{listHarnessGrok}) {
+		t.Fatalf("inferred = %v, want grok", got)
+	}
+}
+
 func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
