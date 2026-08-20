@@ -373,19 +373,14 @@ description: >
 		t.Fatal(err)
 	}
 	want := `<skills>
-  <skill>
-    <name>alpha</name>
-    <description>Alpha's description does &lt;one&gt; &amp; one thing. It also does "another".</description>
+  <skill name="alpha" description="Alpha&#39;s description does &lt;one&gt; &amp; one thing. It also does &#34;another&#34;.">
     <references>NOTES.md
 references/
   escape&amp;me.md
   nested/details.md
   overview.md</references>
   </skill>
-  <skill>
-    <name>gamma</name>
-    <description>No references.</description>
-  </skill>
+  <skill name="gamma" description="No references."></skill>
 </skills>
 `
 	if output.String() != want {
@@ -429,10 +424,10 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "<name>manual</name>") {
+	if strings.Contains(output.String(), `name="manual"`) {
 		t.Fatalf("list exposed model-invocation-disabled skill:\n%s", output.String())
 	}
-	if !strings.Contains(output.String(), "<name>automatic</name>") {
+	if !strings.Contains(output.String(), `name="automatic"`) {
 		t.Fatalf("list omitted model-invocable skill:\n%s", output.String())
 	}
 
@@ -609,12 +604,12 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, name := range tt.wantNames {
-				if !strings.Contains(output.String(), "<name>"+name+"</name>") {
+				if !strings.Contains(output.String(), `name="`+name+`"`) {
 					t.Errorf("list omitted %q:\n%s", name, output.String())
 				}
 			}
 			for _, name := range tt.omitNames {
-				if strings.Contains(output.String(), "<name>"+name+"</name>") {
+				if strings.Contains(output.String(), `name="`+name+`"`) {
 					t.Errorf("list included out-of-scope skill %q:\n%s", name, output.String())
 				}
 			}
@@ -638,7 +633,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 	if err := manager.list(home, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "<name>user-skill</name>") {
+	if strings.Contains(output.String(), `name="user-skill"`) {
 		t.Fatalf("list --grok from home included a user agents skill:\n%s", output.String())
 	}
 
@@ -652,10 +647,10 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 	if err := manager.list(project, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "<name>local-skill</name>") {
+	if strings.Contains(output.String(), `name="local-skill"`) {
 		t.Fatalf("list --grok included a project agents skill:\n%s", output.String())
 	}
-	if strings.Contains(output.String(), "<name>user-skill</name>") {
+	if strings.Contains(output.String(), `name="user-skill"`) {
 		t.Fatalf("list --grok included a user agents skill from a project:\n%s", output.String())
 	}
 
@@ -678,7 +673,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 	if err := manager.list(linked, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "<name>linked-skill</name>") {
+	if strings.Contains(output.String(), `name="linked-skill"`) {
 		t.Fatalf("list --grok included a skill visible through a grok skills symlink:\n%s", output.String())
 	}
 }
@@ -809,7 +804,7 @@ func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "<name>local</name>") {
+	if !strings.Contains(output.String(), `name="local"`) {
 		t.Fatalf("list omitted default-enabled project skill:\n%s", output.String())
 	}
 
@@ -860,7 +855,7 @@ func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "<skills>\n  <skill>\n    <name>alpha</name>\n    <description>Alpha.</description>\n  </skill>\n</skills>\n"; output.String() != want {
+	if want := "<skills>\n  <skill name=\"alpha\" description=\"Alpha.\"></skill>\n</skills>\n"; output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
 	assertLock(t, manager.paths.globalLockDir, selected)
@@ -883,7 +878,7 @@ func TestListSkipsMalformedEnabledSkillWithoutChangingSelection(t *testing.T) {
 	if err := manager.list(project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "<skills>\n  <skill>\n    <name>alpha</name>\n    <description>Alpha.</description>\n  </skill>\n</skills>\n"; output.String() != want {
+	if want := "<skills>\n  <skill name=\"alpha\" description=\"Alpha.\"></skill>\n</skills>\n"; output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
 	}
 	assertLock(t, project, selected)

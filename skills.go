@@ -720,8 +720,8 @@ func catalogSkills(skills []discoveredSkill, harnesses []listHarness) []discover
 }
 
 type listedSkillXML struct {
-	Name        string         `xml:"name"`
-	Description listedTextXML  `xml:"description"`
+	Name        string         `xml:"name,attr"`
+	Description string         `xml:"description,attr"`
 	References  *listedTextXML `xml:"references,omitempty"`
 }
 
@@ -768,13 +768,9 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 		if err != nil {
 			return fmt.Errorf("%s: %w", skill.Name, err)
 		}
-		description, err := escapeXMLText(skill.Description)
-		if err != nil {
-			return fmt.Errorf("format description for %s: %w", skill.Name, err)
-		}
 		listed := listedSkillXML{
 			Name:        skill.Name,
-			Description: listedTextXML{Content: description},
+			Description: skill.Description,
 		}
 		if len(references) > 0 {
 			content, err := formatReferenceList(references)
