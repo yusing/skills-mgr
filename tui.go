@@ -1818,10 +1818,16 @@ func (m *manager) applyEnabledDraft(
 		return selectionState{}, fmt.Errorf("read enabled editor draft: %w", err)
 	}
 	var desired enabledValue
-	desiredExists := len(strings.TrimSpace(string(data))) > 0
+	draftValue := strings.TrimSpace(string(data))
+	desiredExists := draftValue != ""
 	if desiredExists {
-		if err := json.Unmarshal(data, &desired); err != nil {
-			return selectionState{}, fmt.Errorf("decode enabled editor draft: %w", err)
+		switch {
+		case draftValue == "true" || draftValue == "false" || strings.HasPrefix(draftValue, `"`):
+			if err := json.Unmarshal([]byte(draftValue), &desired); err != nil {
+				return selectionState{}, fmt.Errorf("decode enabled editor draft: %w", err)
+			}
+		default:
+			desired.Expression = draftValue
 		}
 	}
 

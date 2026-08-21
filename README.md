@@ -224,13 +224,14 @@ is an error. External commands in an expression are still started normally.
 Project values override inherited global values. Removing a project value
 resumes global inheritance.
 
-Press `i` in the TUI to edit one JSON scalar without exposing the rest of the
-selection file. Enter `true`, `false`, or a JSON string; save an empty file to
-remove the current-layer value. A conditional remote entry does not create
-managed autocomplete placeholders in its own layer, because those placeholders
-would bypass a false condition. A project override cannot hide a placeholder
-created by an inherited global `true` entry from native harness discovery;
-`skills-mgr list`, `get`, and `run` still honor the project override.
+Press `i` in the TUI to edit one value without exposing the rest of the
+selection file. Enter `true`, `false`, a bare Bash expression, or a JSON string;
+save an empty file to remove the current-layer value. A conditional remote entry
+does not create managed autocomplete placeholders in its own layer, because
+those placeholders would bypass a false condition. A project override cannot
+hide a placeholder created by an inherited global `true` entry from native
+harness discovery; `skills-mgr list`, `get`, and `run` still honor the project
+override.
 
 Commit a project's `.skills-mgr.json` when the repository should share a
 selection. Configured names that are not discovered are retained and ignored.

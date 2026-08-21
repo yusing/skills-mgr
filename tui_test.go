@@ -1556,7 +1556,7 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 	editor := filepath.Join(t.TempDir(), "editor")
 	if err := os.WriteFile(
 		editor,
-		[]byte("#!/bin/sh\nprintf '%s\\n' '\"[[ -f go.mod ]]\"' > \"$2\"\n"),
+		[]byte("#!/bin/sh\nprintf '%s\\n' '[ -f go.mod ]' > \"$2\"\n"),
 		0o755,
 	); err != nil {
 		t.Fatal(err)
@@ -1592,13 +1592,13 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Expressions["admin"] != "[[ -f go.mod ]]" {
+	if value.Expressions["admin"] != "[ -f go.mod ]" {
 		t.Fatalf("enabled expression = %#v", value.Expressions)
 	}
 	if _, boolean := value.Skills["admin"]; boolean {
 		t.Fatalf("enabled boolean was retained: %#v", value.Skills)
 	}
-	if state.expressions["admin"] != "[[ -f go.mod ]]" {
+	if state.expressions["admin"] != "[ -f go.mod ]" {
 		t.Fatalf("selection state = %#v", state)
 	}
 }
@@ -1649,7 +1649,7 @@ func TestInvalidEnabledEditorDraftPreservesPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), "enabled.json")
-	writeFile(t, draft, "null\n")
+	writeFile(t, draft, "\"unterminated\n")
 	skill, err := manager.findSkill(project, "alpha")
 	if err != nil {
 		t.Fatal(err)
