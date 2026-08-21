@@ -2,31 +2,17 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"mvdan.cc/sh/v3/interp"
 )
 
 const languageBuiltin = "lang"
 
-type languageIndex struct {
-	mu          sync.Mutex
-	languages   map[string]bool
-	directories []string
-	err         error
-}
-
-func languageCallHandler(project string) interp.CallHandlerFunc {
-	index := &languageIndex{
-		languages:   make(map[string]bool),
-		directories: []string{project},
-	}
+func languageCallHandler(evidence *projectEvidenceIndex) interp.CallHandlerFunc {
 	return func(ctx context.Context, args []string) ([]string, error) {
 		if args[0] != languageBuiltin {
 			return args, nil
@@ -38,7 +24,7 @@ func languageCallHandler(project string) interp.CallHandlerFunc {
 		if !ok {
 			return nil, fmt.Errorf("%s: unsupported language %q", languageBuiltin, args[1])
 		}
-		found, err := index.has(ctx, language)
+		found, err := evidence.has(ctx, evidence.evidence.languages, language)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", languageBuiltin, err)
 		}
@@ -63,53 +49,6 @@ func canonicalLanguage(language string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func (index *languageIndex) has(ctx context.Context, language string) (bool, error) {
-	index.mu.Lock()
-	defer index.mu.Unlock()
-	if index.languages[language] {
-		return true, nil
-	}
-	if index.err != nil {
-		return false, index.err
-	}
-	for len(index.directories) > 0 {
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		directory := index.directories[len(index.directories)-1]
-		index.directories = index.directories[:len(index.directories)-1]
-		entries, err := os.ReadDir(directory)
-		if errors.Is(err, os.ErrPermission) {
-			continue
-		}
-		if err != nil {
-			index.err = fmt.Errorf("read language directory %s: %w", directory, err)
-			return false, index.err
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				switch entry.Name() {
-				case ".git", "node_modules", "target":
-					continue
-				}
-				index.directories = append(
-					index.directories,
-					filepath.Join(directory, entry.Name()),
-				)
-				continue
-			}
-			recordLanguageFile(index.languages, entry.Name())
-		}
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		if index.languages[language] {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func recordLanguageFile(index map[string]bool, name string) {
