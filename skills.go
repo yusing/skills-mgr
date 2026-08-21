@@ -676,11 +676,7 @@ func (m *manager) selection(project string) (map[string]bool, error) {
 	}
 	ctx := context.Background()
 	for _, skill := range skills {
-		expression, conditional := state.expressions[skill.Name]
-		if !conditional || !state.selected[skill.Name] {
-			continue
-		}
-		enabled, err := evaluateEnabled(ctx, project, skill.Name, expression)
+		enabled, err := state.enabled(ctx, project, skill.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -696,6 +692,21 @@ type selectionState struct {
 	expressions        map[string]string
 	globalExpressions  map[string]string
 	projectExpressions map[string]string
+}
+
+func (s selectionState) enabled(
+	ctx context.Context,
+	project string,
+	name string,
+) (bool, error) {
+	if !s.selected[name] {
+		return false, nil
+	}
+	expression, conditional := s.expressions[name]
+	if !conditional {
+		return true, nil
+	}
+	return evaluateEnabled(ctx, project, name, expression)
 }
 
 func (m *manager) selectionState(
@@ -1203,19 +1214,16 @@ func (m *manager) listContext(
 
 	document := skillListXML{}
 	for _, skill := range skills {
-		if !selection.selected[skill.Name] ||
-			skill.DisableModelInvocation ||
+		if skill.DisableModelInvocation ||
 			harnessVisible[skill.Name] {
 			continue
 		}
-		if expression, conditional := selection.expressions[skill.Name]; conditional {
-			enabled, err := evaluateEnabled(ctx, project, skill.Name, expression)
-			if err != nil {
-				return err
-			}
-			if !enabled {
-				continue
-			}
+		enabled, err := selection.enabled(ctx, project, skill.Name)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			continue
 		}
 		references, err := referenceFiles(skill.Root)
 		if err != nil {
@@ -1482,17 +1490,12 @@ func (m *manager) openSkillContext(
 	if err != nil {
 		return nil, err
 	}
-	if !selection.selected[skill] {
-		return nil, fmt.Errorf("skill %q is not enabled", skill)
+	enabled, err := selection.enabled(ctx, project, skill)
+	if err != nil {
+		return nil, err
 	}
-	if expression, conditional := selection.expressions[skill]; conditional {
-		enabled, err := evaluateEnabled(ctx, project, skill, expression)
-		if err != nil {
-			return nil, err
-		}
-		if !enabled {
-			return nil, fmt.Errorf("skill %q is not enabled", skill)
-		}
+	if !enabled {
+		return nil, fmt.Errorf("skill %q is not enabled", skill)
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {

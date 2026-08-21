@@ -983,6 +983,40 @@ func TestEditDoneRefreshErrorPreservesMetadata(t *testing.T) {
 	}
 }
 
+func TestEnabledEditKeepsEditedSkillSelectedAfterReordering(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{
+			{Name: "alpha"},
+			{Name: "beta"},
+		},
+		selected:        map[string]bool{"beta": true},
+		projectSelected: map[string]bool{"beta": true},
+		cursor:          1,
+		width:           40,
+		height:          10,
+		busy:            true,
+	}
+	current.applyEnabledEditDone(enabledEditDone{
+		skill: "alpha",
+		selection: selectionState{
+			selected:        map[string]bool{"alpha": true, "beta": true},
+			projectSelected: map[string]bool{"alpha": true, "beta": true},
+		},
+	})
+
+	indices := current.localSkillIndices()
+	if current.busy || current.cursor != 0 || current.offset != 0 ||
+		current.skills[indices[current.cursor]].Name != "alpha" {
+		t.Fatalf(
+			"enabled edit left busy, cursor, offset, skill = %v, %d, %d, %q",
+			current.busy,
+			current.cursor,
+			current.offset,
+			current.skills[indices[current.cursor]].Name,
+		)
+	}
+}
+
 func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -993,18 +1027,18 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
 
-	skills, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	skills, selection, err := manager.refreshEditedSkill(project, "alpha", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(skills) != 1 || skills[0].Name != "renamed" || skills[0].Description != "New." {
 		t.Fatalf("skills = %#v", skills)
 	}
-	if !selected["renamed"] {
-		t.Fatalf("renamed skill is not enabled: %#v", selected)
+	if !selection.selected["renamed"] {
+		t.Fatalf("renamed skill is not enabled: %#v", selection.selected)
 	}
-	if _, exists := selected["alpha"]; exists {
-		t.Fatalf("obsolete selection was retained: %#v", selected)
+	if _, exists := selection.selected["alpha"]; exists {
+		t.Fatalf("obsolete selection was retained: %#v", selection.selected)
 	}
 
 	value, err := loadLock(project)
@@ -1050,6 +1084,80 @@ func TestRefreshEditedSkillMigratesRenamedEnabledExpression(t *testing.T) {
 	}
 }
 
+func TestRefreshEditedSkillRejectsEnabledExpressionCollisions(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		global     bool
+		oldEnabled enabledValue
+		newEnabled enabledValue
+	}{
+		{
+			name:       "project old expression",
+			oldEnabled: enabledValue{Expression: "[[ -f go.mod ]]"},
+			newEnabled: enabledValue{Boolean: new(true)},
+		},
+		{
+			name:       "project new expression",
+			oldEnabled: enabledValue{Boolean: new(true)},
+			newEnabled: enabledValue{Expression: "[[ -f package.json ]]"},
+		},
+		{
+			name:       "global old expression",
+			global:     true,
+			oldEnabled: enabledValue{Expression: "[[ -f go.mod ]]"},
+			newEnabled: enabledValue{Boolean: new(true)},
+		},
+		{
+			name:       "global new expression",
+			global:     true,
+			oldEnabled: enabledValue{Boolean: new(true)},
+			newEnabled: enabledValue{Expression: "[[ -f package.json ]]"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := newTestManager(t)
+			manager.global = test.global
+			project := t.TempDir()
+			path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+			writeFile(t, path, skillFile("alpha", "Old.", ""))
+			lockDir := project
+			if test.global {
+				lockDir = manager.paths.globalLockDir
+			}
+			value := newLock()
+			value.setEnabled("alpha", test.oldEnabled)
+			value.setEnabled("renamed", test.newEnabled)
+			if err := saveLock(lockDir, value); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, path, skillFile("renamed", "New.", ""))
+
+			_, _, err := manager.refreshEditedSkill(project, "alpha", path)
+			if err == nil || !strings.Contains(err.Error(), "either value is an expression") {
+				t.Fatalf("rename collision error = %v", err)
+			}
+			got, err := loadLock(lockDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, want := range map[string]enabledValue{
+				"alpha":   test.oldEnabled,
+				"renamed": test.newEnabled,
+			} {
+				current, exists := got.enabled(name)
+				if !exists {
+					t.Fatalf("%s enabled value was removed: %#v", name, got)
+				}
+				currentJSON, _ := json.Marshal(current)
+				wantJSON, _ := json.Marshal(want)
+				if string(currentJSON) != string(wantJSON) {
+					t.Fatalf("%s enabled value = %s, want %s", name, currentJSON, wantJSON)
+				}
+			}
+		})
+	}
+}
+
 func TestRefreshEditedSkillOverridesInheritedGlobalSelection(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -1062,12 +1170,12 @@ func TestRefreshEditedSkillOverridesInheritedGlobalSelection(t *testing.T) {
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
 
-	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selected["renamed"] || selected["alpha"] {
-		t.Fatalf("selection after inherited rename = %#v", selected)
+	if !selection.selected["renamed"] || selection.selected["alpha"] {
+		t.Fatalf("selection after inherited rename = %#v", selection.selected)
 	}
 	assertLock(t, project, map[string]bool{
 		"alpha":   false,
@@ -1093,12 +1201,12 @@ func TestRefreshEditedSkillPreservesProjectOverrideOfGlobalSelection(t *testing.
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
 
-	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected["renamed"] || selected["alpha"] {
-		t.Fatalf("selection after overridden rename = %#v", selected)
+	if selection.selected["renamed"] || selection.selected["alpha"] {
+		t.Fatalf("selection after overridden rename = %#v", selection.selected)
 	}
 	assertLock(t, project, map[string]bool{
 		"alpha":   false,
@@ -1120,15 +1228,15 @@ func TestRefreshEditedSkillMigratesGlobalSelectionInGlobalMode(t *testing.T) {
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
 
-	_, selected, err := manager.refreshEditedSkill(project, "alpha", path)
+	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selected["renamed"] {
-		t.Fatalf("global selection after rename = %#v", selected)
+	if !selection.selected["renamed"] {
+		t.Fatalf("global selection after rename = %#v", selection.selected)
 	}
-	if _, exists := selected["alpha"]; exists {
-		t.Fatalf("obsolete global selection was retained: %#v", selected)
+	if _, exists := selection.selected["alpha"]; exists {
+		t.Fatalf("obsolete global selection was retained: %#v", selection.selected)
 	}
 	assertLock(t, manager.paths.globalLockDir, map[string]bool{"renamed": true})
 }

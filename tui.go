@@ -426,6 +426,13 @@ func (m *model) applyEnabledEditDone(message enabledEditDone) {
 	}
 	m.applySelectionState(message.selection)
 	m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+	for index, skillIndex := range m.localSkillIndices() {
+		if m.skills[skillIndex].Name == message.skill {
+			m.cursor = index
+			break
+		}
+	}
+	m.syncViewport()
 	m.status = "saved enabled value for " + message.skill
 }
 
@@ -633,18 +640,11 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				return editDone{skill: skill.Name, editorErr: err}
 			}
-			skills, _, refreshErr := m.manager.refreshEditedSkill(
+			skills, selection, refreshErr := m.manager.refreshEditedSkill(
 				m.project,
 				skill.Name,
 				skill.Path,
 			)
-			var selection selectionState
-			if refreshErr == nil {
-				selection, refreshErr = m.manager.selectionState(
-					m.project,
-					nil,
-				)
-			}
 			return editDone{
 				skill: skill.Name, path: skill.Path,
 				skills: skills, selection: selection,
@@ -962,10 +962,10 @@ func (m *manager) refreshEditedSkill(
 	project string,
 	oldName string,
 	path string,
-) ([]discoveredSkill, map[string]bool, error) {
+) ([]discoveredSkill, selectionState, error) {
 	skills, err := m.skills(project)
 	if err != nil {
-		return nil, nil, err
+		return nil, selectionState{}, err
 	}
 	newName := ""
 	for _, skill := range skills {
@@ -976,7 +976,18 @@ func (m *manager) refreshEditedSkill(
 	}
 	if newName == "" || newName == oldName {
 		selection, err := m.selectionState(project, skills)
-		return skills, selection.selected, err
+		return skills, selection, err
+	}
+	mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
+		if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
+			return enabledValue{}, fmt.Errorf(
+				"cannot merge enabled values while renaming skill %q to %q when either value is an expression",
+				oldName,
+				newName,
+			)
+		}
+		merged := *newEnabled.Boolean || *oldEnabled.Boolean
+		return enabledValue{Boolean: new(merged)}, nil
 	}
 
 	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
@@ -989,9 +1000,12 @@ func (m *manager) refreshEditedSkill(
 			switch {
 			case !newExists:
 				value.setEnabled(newName, oldEnabled)
-			case oldEnabled.Boolean != nil && newEnabled.Boolean != nil:
-				merged := *newEnabled.Boolean || *oldEnabled.Boolean
-				value.setEnabled(newName, enabledValue{Boolean: new(merged)})
+			default:
+				merged, err := mergeEnabled(oldEnabled, newEnabled)
+				if err != nil {
+					return false, err
+				}
+				value.setEnabled(newName, merged)
 			}
 			value.deleteEnabled(oldName)
 			return true, nil
@@ -1014,9 +1028,12 @@ func (m *manager) refreshEditedSkill(
 		switch {
 		case !newExists:
 			value.setEnabled(newName, effective)
-		case effective.Boolean != nil && newEnabled.Boolean != nil:
-			merged := *newEnabled.Boolean || *effective.Boolean
-			value.setEnabled(newName, enabledValue{Boolean: new(merged)})
+		default:
+			merged, err := mergeEnabled(effective, newEnabled)
+			if err != nil {
+				return false, err
+			}
+			value.setEnabled(newName, merged)
 		}
 		if _, inherited := global.enabled(oldName); inherited {
 			value.setEnabled(oldName, enabledValue{Boolean: new(false)})
@@ -1026,10 +1043,10 @@ func (m *manager) refreshEditedSkill(
 		return true, nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, selectionState{}, err
 	}
 	selection, err := m.selectionState(project, skills)
-	return skills, selection.selected, err
+	return skills, selection, err
 }
 
 func (m *model) toggleCurrentExpanded(index int) {
