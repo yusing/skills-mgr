@@ -224,6 +224,14 @@ is an error. External commands in an expression are still started normally.
 Project values override inherited global values. Removing a project value
 resumes global inheritance.
 
+Expressions can use `has_dependency <name> '<operator><version>'` to test direct
+dependencies in `go.mod`, `Cargo.toml`, or `package.json` files anywhere in the
+project tree. The supported operators are `>=`, `==`, and `<=`. Comparisons use
+the precision supplied, so `==2` matches any declared version in major version
+`2`, while `==2.1` also compares the minor version. The builtin ignores indirect
+Go requirements and recognizes Cargo dependency versions plus package
+dependencies, development dependencies, and optional dependencies.
+
 Press `i` in the TUI to edit one value without exposing the rest of the
 selection file. Enter `true`, `false`, a bare Bash expression, or a JSON string;
 save an empty file to remove the current-layer value. A conditional remote entry
