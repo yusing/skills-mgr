@@ -93,6 +93,11 @@ type remoteToggleDone struct {
 	err    error
 }
 
+type remoteUninstallDone struct {
+	result remoteUninstallResult
+	err    error
+}
+
 type editDone struct {
 	skill      string
 	path       string
@@ -244,6 +249,23 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "disabled " + message.result.Skill
 		}
+		m.syncViewport()
+	case remoteUninstallDone:
+		m.busy = false
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		m.allSkills = message.result.Skills
+		m.applyCatalog()
+		m.selected = message.result.Selected
+		m.globalSelected = message.result.GlobalSelected
+		m.projectSelected = message.result.ProjectSelected
+		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		if m.expanded == message.result.Skill {
+			m.expanded = ""
+		}
+		m.status = "uninstalled " + message.result.Skill
 		m.syncViewport()
 	case editDone:
 		m.busy = false
@@ -407,6 +429,29 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleCurrentExpanded(m.cursor)
 	case " ":
 		return toggleSelectedSkill(m)
+	case "u":
+		if !isLocalTab(m.tab) || m.manager == nil {
+			break
+		}
+		skillIndex, ok := m.localSkillIndex(m.cursor)
+		if !ok {
+			break
+		}
+		skill := m.skills[skillIndex]
+		if skill.RemoteKey == "" {
+			break
+		}
+		m.busy = true
+		m.status = "uninstalling " + skill.Name
+		return m, func() tea.Msg {
+			result, err := m.manager.uninstallRemote(
+				context.Background(),
+				m.project,
+				skill.Name,
+				skill.RemoteKey,
+			)
+			return remoteUninstallDone{result: result, err: err}
+		}
 	case "e":
 		if !isLocalTab(m.tab) {
 			break
@@ -967,6 +1012,8 @@ func (m model) View() string {
 	}
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	switch m.tab {
+	case localTab:
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • u uninstall • e edit • q quit"
 	case codexTab:
 		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
 	case remoteTab:

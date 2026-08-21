@@ -222,6 +222,37 @@ func (s *remoteSkillStore) needsRefresh(ref remoteSkillRef) (bool, error) {
 	return current.SchemaRevision == 0 || !current.fresh(time.Now()), nil
 }
 
+func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error {
+	if err := ref.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	storeLock, err := s.lockExclusive(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeRemoteStoreLock(storeLock)
+
+	records, err := s.recordsLocked()
+	if err != nil {
+		return err
+	}
+	current, err := findRemoteRecord(records, ref)
+	if err != nil {
+		return err
+	}
+	if current.SchemaRevision == 0 {
+		return fmt.Errorf("persisted remote skill %q is missing", ref.Name)
+	}
+	path := filepath.Join(s.root, "entries", ref.key()+".json")
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove remote skill metadata: %w", err)
+	}
+	return nil
+}
+
 func (s *remoteSkillStore) refresh(
 	ctx context.Context,
 	record remoteSkillRecord,
@@ -730,6 +761,14 @@ type remoteToggleResult struct {
 	RemoteSelected map[string]bool
 }
 
+type remoteUninstallResult struct {
+	Skill           string
+	Skills          []discoveredSkill
+	Selected        map[string]bool
+	GlobalSelected  map[string]bool
+	ProjectSelected map[string]bool
+}
+
 func (m *manager) sync(
 	ctx context.Context,
 	project string,
@@ -997,6 +1036,91 @@ func (m *manager) toggleRemote(
 		return remoteToggleResult{}, errors.Join(err, cleanupErr)
 	}
 	return newRemoteToggleResult(ref.Name, true, skills, selected), nil
+}
+
+func (m *manager) uninstallRemote(
+	ctx context.Context,
+	project string,
+	name string,
+	key string,
+) (remoteUninstallResult, error) {
+	if m.remoteStore == nil {
+		return remoteUninstallResult{}, fmt.Errorf("remote skill store is unavailable")
+	}
+	ref, err := m.persistedRemoteRef(key, name)
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
+	frontmatter, err := m.remoteSkillFrontmatter(ref)
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
+
+	var previousEnabled bool
+	var previousExists bool
+	var previousRemote remoteSkillRef
+	var previousRemoteExists bool
+	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+		previousEnabled, previousExists = value.Skills[name]
+		previousRemote, previousRemoteExists = value.Remote[name]
+		delete(value.Skills, name)
+		delete(value.Remote, name)
+		return previousExists || previousRemoteExists, nil
+	})
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
+
+	rollbackSelection := func() error {
+		return m.updateSelectionLock(project, func(value *lock) (bool, error) {
+			if _, exists := value.Skills[name]; exists {
+				return false, fmt.Errorf("remote selection changed during uninstall rollback")
+			}
+			if _, exists := value.Remote[name]; exists {
+				return false, fmt.Errorf("remote selection changed during uninstall rollback")
+			}
+			if previousExists {
+				value.Skills[name] = previousEnabled
+			}
+			if previousRemoteExists {
+				value.Remote[name] = previousRemote
+			}
+			return previousExists || previousRemoteExists, nil
+		})
+	}
+	undoPlaceholders, err := m.changeRemotePlaceholders(project, name, frontmatter, false)
+	if err != nil {
+		return remoteUninstallResult{}, errors.Join(err, rollbackSelection())
+	}
+	rollbackPlaceholders := func() error {
+		if undoPlaceholders == nil {
+			return nil
+		}
+		return undoPlaceholders()
+	}
+	if err := m.remoteStore.remove(ctx, ref); err != nil {
+		return remoteUninstallResult{}, errors.Join(
+			err,
+			rollbackSelection(),
+			rollbackPlaceholders(),
+		)
+	}
+
+	skills, err := m.skills(project)
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
+	selected, globalSelected, projectSelected, err := m.selectionLayers(project)
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
+	return remoteUninstallResult{
+		Skill:           name,
+		Skills:          skills,
+		Selected:        selected,
+		GlobalSelected:  globalSelected,
+		ProjectSelected: projectSelected,
+	}, nil
 }
 
 func newRemoteToggleResult(

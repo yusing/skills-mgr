@@ -423,6 +423,142 @@ func TestRemoteTogglePersistsIdentityWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestUninstallRemoteRemovesInstallationAndCurrentSelection(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			manager := newTestManager(t)
+			project := t.TempDir()
+			ref := remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo/alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo/alpha",
+			}
+			provider := &staticRemoteProvider{files: []remoteSkillFile{{
+				Path:     "SKILL.md",
+				Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+			}}}
+			record, err := manager.remoteStore.ensure(t.Context(), ref, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contentRoot, err := manager.remoteStore.contentRoot(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+				t.Fatal(err)
+			}
+			if !enabled {
+				if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+					t.Fatal(err)
+				}
+			}
+			otherProject := t.TempDir()
+			if _, err := manager.toggleRemote(t.Context(), otherProject, ref); err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := manager.uninstallRemote(
+				t.Context(), project, ref.Name, ref.key(),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Skill != ref.Name || len(result.Skills) != 0 ||
+				result.Selected[ref.Name] || result.ProjectSelected[ref.Name] {
+				t.Fatalf("uninstall result = %#v", result)
+			}
+			records, err := manager.remoteStore.records()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 0 {
+				t.Fatalf("uninstall retained metadata: %#v", records)
+			}
+			selection, err := loadLock(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := selection.Skills[ref.Name]; exists {
+				t.Fatalf("uninstall retained enabled state: %#v", selection)
+			}
+			if _, exists := selection.Remote[ref.Name]; exists {
+				t.Fatalf("uninstall retained remote identity: %#v", selection)
+			}
+			for _, path := range []string{
+				filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
+				filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
+			} {
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("uninstall retained placeholder %s: %v", path, err)
+				}
+			}
+			if _, err := os.Stat(contentRoot); err != nil {
+				t.Fatalf("uninstall removed reader-visible content generation: %v", err)
+			}
+			otherSelection, err := loadLock(otherProject)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !otherSelection.Skills[ref.Name] || otherSelection.Remote[ref.Name] != ref {
+				t.Fatalf("uninstall changed another project selection: %#v", otherSelection)
+			}
+			assertFile(
+				t,
+				filepath.Join(otherProject, ".agents", "skills", ref.Name, "SKILL.md"),
+				"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+			)
+		})
+	}
+}
+
+func TestUninstallRemoteCancellationRestoresCurrentSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := manager.uninstallRemote(ctx, project, ref.Name, ref.key()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("uninstall error = %v, want context cancellation", err)
+	}
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("canceled uninstall changed metadata: %#v", records)
+	}
+	selection, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+		t.Fatalf("canceled uninstall changed selection: %#v", selection)
+	}
+	for _, path := range []string{
+		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
+		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
+	} {
+		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+	}
+}
+
 func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	manager := newTestManager(t)
 	alpha := remoteSkillRef{
@@ -1777,6 +1913,63 @@ func TestTUIRemoteSpaceToggleRefreshesInstalledAndCatalogState(t *testing.T) {
 		strings.Contains(current.View(), "alpha [enabled]") ||
 		gitCloneCount(t, gitLog) != 1 {
 		t.Fatalf("remote disable = %#v, clones = %d", current, gitCloneCount(t, gitLog))
+	}
+}
+
+func TestTUIUninstallsSelectedRemoteSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.width = 120
+	current.height = 10
+	if !strings.Contains(current.View(), "u uninstall") {
+		t.Fatalf("Installed help omitted uninstall action:\n%s", current.View())
+	}
+
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	current = updated.(model)
+	if command == nil || !current.busy || current.status != "uninstalling alpha" {
+		t.Fatalf("remote uninstall did not start: %#v", current)
+	}
+	updated, _ = current.Update(command())
+	current = updated.(model)
+	if current.busy || current.status != "uninstalled alpha" || len(current.skills) != 0 {
+		t.Fatalf("remote uninstall did not refresh model: %#v\n%s", current, current.View())
+	}
+	if current.remoteSelected[ref.key()] {
+		t.Fatalf("remote uninstall retained catalog selection: %#v", current.remoteSelected)
+	}
+}
+
+func TestTUIUninstallIgnoresLocalSkill(t *testing.T) {
+	current := model{
+		tab:      localTab,
+		skills:   []discoveredSkill{{Name: "local", Source: "user"}},
+		selected: map[string]bool{"local": true},
+	}
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	got := updated.(model)
+	if command != nil || got.busy || got.status != "" || !got.selected["local"] {
+		t.Fatalf("local uninstall key changed model: %#v", got)
 	}
 }
 
