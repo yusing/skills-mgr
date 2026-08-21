@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -113,6 +115,36 @@ func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
 	}
 }
 
+func TestSelectionStateLayersEnabledExpressionsWithoutEvaluatingThem(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	if err := saveLock(manager.paths.globalLockDir, lock{
+		Expressions: map[string]string{"inherited": "exit 2", "project-boolean": "exit 2"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{
+		Skills:      map[string]bool{"inherited": true},
+		Expressions: map[string]string{"project-boolean": "[[ -f go.mod ]]"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := manager.selectionState(project, []discoveredSkill{
+		{Name: "inherited"},
+		{Name: "project-boolean"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.selected["inherited"] ||
+		state.expressions["inherited"] != "" ||
+		!state.selected["project-boolean"] ||
+		state.expressions["project-boolean"] != "[[ -f go.mod ]]" {
+		t.Fatalf("selection state = %#v", state)
+	}
+}
+
 func TestToggleCreatesProjectOverrideForInheritedState(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -128,6 +160,32 @@ func TestToggleCreatesProjectOverrideForInheritedState(t *testing.T) {
 	}
 	assertLock(t, project, map[string]bool{"alpha": false})
 	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+}
+
+func TestToggleReplacesEnabledExpressionWithBoolean(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
+	if err := saveLock(project, lock{
+		Expressions: map[string]string{"alpha": "[[ -f go.mod ]]"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := manager.toggle(project, "alpha")
+	if err != nil || enabled {
+		t.Fatalf("toggle conditional skill = %v, %v; want disabled", enabled, err)
+	}
+	value, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expression := value.Expressions["alpha"]; expression != "" {
+		t.Fatalf("conditional expression was retained: %q", expression)
+	}
+	if current, exists := value.Skills["alpha"]; !exists || current {
+		t.Fatalf("boolean selection = %#v, want false", value.Skills)
+	}
 }
 
 func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
@@ -252,8 +310,8 @@ func TestLoadLegacyLockAndUpgradeOnSelectionChange(t *testing.T) {
 	alpha := current.Skills["alpha"].Enabled
 	beta := current.Skills["beta"].Enabled
 	if current.SchemaRevision != lockSchemaRevision ||
-		alpha == nil || !*alpha ||
-		beta == nil || !*beta {
+		alpha == nil || alpha.Boolean == nil || !*alpha.Boolean ||
+		beta == nil || beta.Boolean == nil || !*beta.Boolean {
 		t.Fatalf("upgraded lock = %#v", current)
 	}
 }
@@ -283,6 +341,30 @@ func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
     }
   }
 }`,
+		"empty expression": `{
+  "schema_revision": 3,
+  "skills": {
+    "alpha": {
+      "enabled": "   "
+    }
+  }
+}`,
+		"numeric enabled": `{
+  "schema_revision": 3,
+  "skills": {
+    "alpha": {
+      "enabled": 1
+    }
+  }
+}`,
+		"null enabled": `{
+  "schema_revision": 3,
+  "skills": {
+    "alpha": {
+      "enabled": null
+    }
+  }
+}`,
 	}
 	for name, contents := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -295,10 +377,62 @@ func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
 	}
 }
 
+func TestLockRoundTripsEnabledExpression(t *testing.T) {
+	project := t.TempDir()
+	want := "[[ -f go.mod ]]"
+	if err := saveLock(project, lock{
+		Expressions: map[string]string{"go-review": want},
+		Remote: map[string]remoteSkillRef{
+			"go-review": {
+				Provider: skillsShProvider,
+				ID:       "owner/repo/go-review",
+				Name:     "go-review",
+				Locator:  "owner/repo/go-review",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SchemaRevision != lockSchemaRevision ||
+		got.Expressions["go-review"] != want ||
+		got.Remote["go-review"].Name != "go-review" {
+		t.Fatalf("round-tripped lock = %#v", got)
+	}
+}
+
+func TestLoadPreviousLockAndUpgradeOnSelectionChange(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(t, filepath.Join(project, lockName), `{
+  "schema_revision": 2,
+  "skills": {
+    "alpha": {
+      "enabled": true
+    }
+  }
+}`)
+
+	if enabled, err := manager.toggle(project, "alpha"); err != nil || enabled {
+		t.Fatalf("toggle previous selection = %v, %v", enabled, err)
+	}
+	got, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SchemaRevision != lockSchemaRevision || got.Skills["alpha"] {
+		t.Fatalf("upgraded lock = %#v", got)
+	}
+}
+
 func TestLoadLockRejectsUnsupportedSchemaRevision(t *testing.T) {
 	project := t.TempDir()
 	writeFile(t, filepath.Join(project, lockName), `{
-  "schema_revision": 3,
+  "schema_revision": 4,
   "skills": {}
 }`)
 
@@ -321,6 +455,13 @@ func TestLockSchemaMatchesSupportedRevisions(t *testing.T) {
 					} `json:"schema_revision"`
 				} `json:"properties"`
 			} `json:"legacyLock"`
+			Previous struct {
+				Properties struct {
+					SchemaRevision struct {
+						Const int `json:"const"`
+					} `json:"schema_revision"`
+				} `json:"properties"`
+			} `json:"previousLock"`
 			Current struct {
 				Properties struct {
 					SchemaRevision struct {
@@ -335,6 +476,8 @@ func TestLockSchemaMatchesSupportedRevisions(t *testing.T) {
 	}
 	if schema.Definitions.Legacy.Properties.SchemaRevision.Const !=
 		legacyLockSchemaRevision ||
+		schema.Definitions.Previous.Properties.SchemaRevision.Const !=
+			previousLockSchemaRevision ||
 		schema.Definitions.Current.Properties.SchemaRevision.Const !=
 			lockSchemaRevision {
 		t.Fatalf("schema revisions = %#v", schema.Definitions)
@@ -513,6 +656,111 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	output.Reset()
 	if err := manager.get(project, "manual", "", &output); err == nil {
 		t.Fatal("get read an explicitly disabled manual-only skill")
+	}
+}
+
+func TestEnabledExpressionControlsListGetAndRun(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	root := filepath.Join(project, ".agents", "skills", "go-review")
+	writeFile(
+		t,
+		filepath.Join(root, "SKILL.md"),
+		skillFile("go-review", "Review Go code.", "body\n"),
+	)
+	writeExecutable(t, filepath.Join(root, "check.sh"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("SKILLS_MGR_TEST_ENABLED", "yes")
+	if err := saveLock(project, lock{
+		Expressions: map[string]string{
+			"go-review": "[[ -f go.mod && $SKILLS_MGR_TEST_ENABLED == yes ]]",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), `name="go-review"`) {
+		t.Fatalf("false expression listed skill:\n%s", output.String())
+	}
+	if err := manager.get(project, "go-review", "", io.Discard); err == nil ||
+		!strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("get error = %v, want disabled", err)
+	}
+	if _, err := manager.scriptCommand(project, "go-review/check.sh", nil); err == nil ||
+		!strings.Contains(err.Error(), "not enabled") {
+		t.Fatalf("run error = %v, want disabled", err)
+	}
+
+	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
+	output.Reset()
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `name="go-review"`) {
+		t.Fatalf("true expression omitted skill:\n%s", output.String())
+	}
+	if err := manager.get(project, "go-review", "", io.Discard); err != nil {
+		t.Fatalf("get with true expression: %v", err)
+	}
+	if _, err := manager.scriptCommand(project, "go-review/check.sh", nil); err != nil {
+		t.Fatalf("run with true expression: %v", err)
+	}
+}
+
+func TestEnabledExpressionUsesStatusOneForFalseAndHigherStatusForError(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
+		skillFile("alpha", "Alpha.", "body\n"),
+	)
+
+	for _, test := range []struct {
+		name       string
+		expression string
+		wantError  string
+	}{
+		{name: "false", expression: "exit 1"},
+		{name: "status two", expression: "exit 2", wantError: "status 2"},
+		{name: "parse error", expression: "[[", wantError: "parse enabled expression"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := saveLock(project, lock{
+				Expressions: map[string]string{"alpha": test.expression},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			err := manager.list(project, &output)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(output.String(), `name="alpha"`) {
+					t.Fatalf("false expression listed skill:\n%s", output.String())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("list error = %v, want %q", err, test.wantError)
+			}
+			if output.Len() != 0 {
+				t.Fatalf("failed list wrote partial XML: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestEnabledExpressionHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := evaluateEnabled(ctx, t.TempDir(), "alpha", "while true; do :; done")
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("evaluateEnabled error = %v, want canceled context", err)
 	}
 }
 

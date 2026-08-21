@@ -7,6 +7,9 @@
       "$ref": "#/$defs/legacyLock"
     },
     {
+      "$ref": "#/$defs/previousLock"
+    },
+    {
       "$ref": "#/$defs/currentLock"
     }
   ],
@@ -30,7 +33,7 @@
       },
       "additionalProperties": false
     },
-    "currentLock": {
+    "previousLock": {
       "type": "object",
       "required": [
         "schema_revision",
@@ -43,8 +46,51 @@
         "skills": {
           "type": "object",
           "additionalProperties": {
+            "$ref": "#/$defs/previousSelection"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "currentLock": {
+      "type": "object",
+      "required": [
+        "schema_revision",
+        "skills"
+      ],
+      "properties": {
+        "schema_revision": {
+          "const": 3
+        },
+        "skills": {
+          "type": "object",
+          "additionalProperties": {
             "$ref": "#/$defs/selection"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "previousSelection": {
+      "type": "object",
+      "anyOf": [
+        {
+          "required": [
+            "enabled"
+          ]
+        },
+        {
+          "required": [
+            "remote"
+          ]
+        }
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "remote": {
+          "$ref": "#/$defs/remote"
         }
       },
       "additionalProperties": false
@@ -65,7 +111,15 @@
       ],
       "properties": {
         "enabled": {
-          "type": "boolean"
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          ]
         },
         "remote": {
           "$ref": "#/$defs/remote"

@@ -418,7 +418,11 @@ func TestRemoteTogglePersistsIdentityWhenDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := persisted.Skills["alpha"]
-	if selection.Enabled == nil || *selection.Enabled || selection.Remote == nil || *selection.Remote != ref {
+	if selection.Enabled == nil ||
+		selection.Enabled.Boolean == nil ||
+		*selection.Enabled.Boolean ||
+		selection.Remote == nil ||
+		*selection.Remote != ref {
 		t.Fatalf("persisted remote selection = %#v", selection)
 	}
 }
@@ -963,6 +967,72 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 	}
 }
 
+func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/go-review",
+		Name:     "go-review",
+		Locator:  "owner/repo/go-review",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("go-review", "Review Go code.", "body\n")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		if _, err := os.Stat(filepath.Join(project, root, "skills", ref.Name, "SKILL.md")); err != nil {
+			t.Fatalf("initial placeholder in %s: %v", root, err)
+		}
+	}
+
+	draft := filepath.Join(t.TempDir(), "enabled.json")
+	writeFile(t, draft, `"[[ -f go.mod ]]"`)
+	skill, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.applyEnabledDraft(project, skill, draft); err != nil {
+		t.Fatal(err)
+	}
+	value, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Expressions[ref.Name] != "[[ -f go.mod ]]" ||
+		value.Remote[ref.Name] != ref {
+		t.Fatalf("remote conditional selection = %#v", value)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		_, err := os.Stat(filepath.Join(project, root, "skills", ref.Name, "SKILL.md"))
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("conditional placeholder in %s was retained: %v", root, err)
+		}
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), `name="go-review"`) {
+		t.Fatalf("false remote expression listed skill:\n%s", output.String())
+	}
+	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
+	output.Reset()
+	if err := manager.list(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `name="go-review"`) {
+		t.Fatalf("true remote expression omitted skill:\n%s", output.String())
+	}
+}
+
 func TestRemoteModelInvocationOverrideSurvivesRefresh(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -1257,7 +1327,8 @@ func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	}
 	explicit := persisted.Skills["beta"]
 	if explicit.Enabled == nil ||
-		*explicit.Enabled ||
+		explicit.Enabled.Boolean == nil ||
+		*explicit.Enabled.Boolean ||
 		explicit.Remote == nil ||
 		*explicit.Remote != beta {
 		t.Fatalf("persisted explicit selection = %#v", explicit)

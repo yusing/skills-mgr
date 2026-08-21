@@ -8,6 +8,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/mattn/go-shellwords v1.0.14
 	golang.org/x/term v0.45.0
+	mvdan.cc/sh/v3 v3.13.1
 )
 
 require (

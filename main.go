@@ -59,7 +59,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		return manager.list(project, os.Stdout, resolveHarnesses(harnesses)...)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.listContext(ctx, project, os.Stdout, resolveHarnesses(harnesses)...)
 	case args[0] == "sync":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr sync")
@@ -87,7 +89,9 @@ func run(args []string) error {
 		if len(rest) == 2 {
 			lineRange = rest[1]
 		}
-		return manager.get(project, rest[0], lineRange, os.Stdout)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.getContext(ctx, project, rest[0], lineRange, os.Stdout)
 	case args[0] == "run":
 		_, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {
@@ -100,7 +104,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		command, err := manager.scriptCommand(project, rest[0], rest[1:])
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		command, err := manager.scriptCommandContext(ctx, project, rest[0], rest[1:])
 		if err != nil {
 			return err
 		}

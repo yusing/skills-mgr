@@ -986,6 +986,7 @@ func (m *manager) sync(
 		return err
 	}
 	originalSkills := maps.Clone(projectLock.Skills)
+	originalExpressions := maps.Clone(projectLock.Expressions)
 	originalRemote := maps.Clone(projectLock.Remote)
 	persistedRefs, err := m.persistedRemoteRefs()
 	if err != nil {
@@ -1000,7 +1001,7 @@ func (m *manager) sync(
 		return fmt.Errorf("reconcile remote metadata: %w", err)
 	}
 
-	selected := mergeSelections(globalLock.Skills, projectLock.Skills)
+	selected, _ := mergeSelectionLocks(globalLock, projectLock)
 	discovered, err := m.skills(project)
 	if err != nil {
 		return err
@@ -1064,6 +1065,7 @@ func (m *manager) sync(
 	}
 	err = updateLock(project, m.paths.selectionLocks, func(current *lock) (bool, error) {
 		if !maps.Equal(current.Skills, originalSkills) ||
+			!maps.Equal(current.Expressions, originalExpressions) ||
 			!maps.Equal(current.Remote, originalRemote) {
 			return false, fmt.Errorf("project selection changed during sync")
 		}
@@ -1118,17 +1120,20 @@ func (m *manager) toggleRemote(
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
-	previousEnabled, previousExists := selectionLock.Skills[ref.Name]
+	previousEnabled, previousExists := selectionLock.enabled(ref.Name)
 	previousRemote, previousRemoteExists := selectionLock.Remote[ref.Name]
 	rollbackSelection := func(expected bool) error {
 		return m.updateSelectionLock(project, func(value *lock) (bool, error) {
-			if value.Skills[ref.Name] != expected || value.Remote[ref.Name] != ref {
+			current, exists := value.enabled(ref.Name)
+			if !exists || current.Boolean == nil ||
+				*current.Boolean != expected ||
+				value.Remote[ref.Name] != ref {
 				return false, fmt.Errorf("remote selection changed during placeholder rollback")
 			}
 			if previousExists {
-				value.Skills[ref.Name] = previousEnabled
+				value.setEnabled(ref.Name, previousEnabled)
 			} else {
-				delete(value.Skills, ref.Name)
+				value.deleteEnabled(ref.Name)
 			}
 			if previousRemoteExists {
 				value.Remote[ref.Name] = previousRemote
@@ -1142,10 +1147,11 @@ func (m *manager) toggleRemote(
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
-	selected, err := m.selection(project)
+	selection, err := m.selectionState(project, skills)
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
+	selected := selection.selected
 	key := ref.key()
 	enabled := false
 	for _, skill := range skills {
@@ -1247,14 +1253,14 @@ func (m *manager) uninstallRemote(
 		return remoteUninstallResult{}, err
 	}
 
-	var previousEnabled bool
+	var previousEnabled enabledValue
 	var previousExists bool
 	var previousRemote remoteSkillRef
 	var previousRemoteExists bool
 	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		previousEnabled, previousExists = value.Skills[name]
+		previousEnabled, previousExists = value.enabled(name)
 		previousRemote, previousRemoteExists = value.Remote[name]
-		delete(value.Skills, name)
+		value.deleteEnabled(name)
 		delete(value.Remote, name)
 		return previousExists || previousRemoteExists, nil
 	})
@@ -1264,14 +1270,14 @@ func (m *manager) uninstallRemote(
 
 	rollbackSelection := func() error {
 		return m.updateSelectionLock(project, func(value *lock) (bool, error) {
-			if _, exists := value.Skills[name]; exists {
+			if _, exists := value.enabled(name); exists {
 				return false, fmt.Errorf("remote selection changed during uninstall rollback")
 			}
 			if _, exists := value.Remote[name]; exists {
 				return false, fmt.Errorf("remote selection changed during uninstall rollback")
 			}
 			if previousExists {
-				value.Skills[name] = previousEnabled
+				value.setEnabled(name, previousEnabled)
 			}
 			if previousRemoteExists {
 				value.Remote[name] = previousRemote
@@ -1293,7 +1299,7 @@ func (m *manager) uninstallRemote(
 		m.paths.globalLockDir,
 		m.paths.selectionLocks,
 		func(global *lock) (bool, error) {
-			_, globallySelected := global.Skills[name]
+			_, globallySelected := global.enabled(name)
 			_, globallyConfigured := global.Remote[name]
 			legacyGlobalSelection := global.SchemaRevision == legacyLockSchemaRevision &&
 				globallySelected
@@ -1321,16 +1327,16 @@ func (m *manager) uninstallRemote(
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}
-	selected, globalSelected, projectSelected, err := m.selectionLayers(project, nil)
+	selection, err := m.selectionState(project, nil)
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}
 	return remoteUninstallResult{
 		Skill:           name,
 		Skills:          skills,
-		Selected:        selected,
-		GlobalSelected:  globalSelected,
-		ProjectSelected: projectSelected,
+		Selected:        selection.selected,
+		GlobalSelected:  selection.globalSelected,
+		ProjectSelected: selection.projectSelected,
 	}, nil
 }
 
