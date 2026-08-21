@@ -66,15 +66,15 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 		}
 		if len(args) < 2 || len(args) > 3 {
 			return nil, fmt.Errorf(
-				"%s: usage: %s <name> [<operator><version>]",
+				"%s: usage: %s <name> [<constraint-expression>]",
 				dependencyBuiltin,
 				dependencyBuiltin,
 			)
 		}
-		var want dependencyConstraint
+		var constraintGroups [][]dependencyConstraint
 		if len(args) == 3 {
 			var err error
-			want, err = parseDependencyConstraint(args[2])
+			constraintGroups, err = parseDependencyConstraintExpression(args[2])
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", dependencyBuiltin, err)
 			}
@@ -89,7 +89,19 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 			_, found := index[args[1]]
 			return []string{strconv.FormatBool(found)}, nil
 		}
-		return []string{strconv.FormatBool(index.matches(args[1], want))}, nil
+		for _, constraints := range constraintGroups {
+			matched := true
+			for _, constraint := range constraints {
+				if !index.matches(args[1], constraint) {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return []string{"true"}, nil
+			}
+		}
+		return []string{"false"}, nil
 	}
 }
 
@@ -281,6 +293,23 @@ func parseDependencyConstraint(constraint string) (dependencyConstraint, error) 
 		version:   version,
 		precision: precision,
 	}, nil
+}
+
+func parseDependencyConstraintExpression(expression string) ([][]dependencyConstraint, error) {
+	// The outer slice contains OR alternatives; each inner slice is an AND group.
+	groups := make([][]dependencyConstraint, 0)
+	for alternative := range strings.SplitSeq(expression, "||") {
+		constraints := make([]dependencyConstraint, 0)
+		for part := range strings.SplitSeq(alternative, "&&") {
+			constraint, err := parseDependencyConstraint(part)
+			if err != nil {
+				return nil, fmt.Errorf("invalid constraint %q: %w", strings.TrimSpace(part), err)
+			}
+			constraints = append(constraints, constraint)
+		}
+		groups = append(groups, constraints)
+	}
+	return groups, nil
 }
 
 func requirementMatches(requirement string, want dependencyConstraint) bool {

@@ -227,13 +227,14 @@ resumes global inheritance.
 Expressions can use `has_dependency <name>` to test for a direct dependency, or
 `has_dependency <name> '<operator><version>'` to also test its version, in
 `go.mod`, `Cargo.toml`, or `package.json` files anywhere in the project tree. The
-supported operators are `>=`, `==`, `<=`, and `<`. Comparisons use the precision
-supplied, so `==2` matches any declared version in major version `2`, while
-`==2.1` also compares the minor version. The builtin ignores indirect Go
-requirements and recognizes Cargo dependency versions plus package dependencies,
-development dependencies, and optional dependencies. A dependency without a
-declared version, such as a Cargo path dependency, matches only the name-only
-form.
+supported comparison operators are `>=`, `==`, `<=`, and `<`. A quoted version
+argument can combine comparisons with `&&` and `||`; `&&` is evaluated before
+`||`. Comparisons use the precision supplied, so `==2` matches any declared
+version in major version `2`, while `==2.1` also compares the minor version. The
+builtin ignores indirect Go requirements and recognizes Cargo dependency versions
+plus package dependencies, development dependencies, and optional dependencies.
+A dependency without a declared version, such as a Cargo path dependency, matches
+only the name-only form.
 
 For example, this global override enables the `tauri-v2` skill only when the
 project directly depends on Tauri, its JavaScript API, or its CLI at a major
@@ -244,7 +245,7 @@ version `2`:
   "schema_revision": 3,
   "skills": {
     "tauri-v2": {
-      "enabled": "(has_dependency tauri '>=2' && has_dependency tauri '<3') || (has_dependency '@tauri-apps/api' '>=2' && has_dependency '@tauri-apps/api' '<3') || (has_dependency '@tauri-apps/cli' '>=2' && has_dependency '@tauri-apps/cli' '<3')"
+      "enabled": "has_dependency tauri '>=2 && <3' || has_dependency '@tauri-apps/api' '>=2 && <3' || has_dependency '@tauri-apps/cli' '>=2 && <3'"
     }
   }
 }

@@ -132,6 +132,39 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			expression: "has_dependency '@tauri-apps/api' '<3'",
 		},
 		{
+			name:       "package constraint conjunction",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"2.8.5"}}`,
+			expression: "has_dependency '@tauri-apps/api' '>=2 && <3'",
+			want:       true,
+		},
+		{
+			name:       "package constraint conjunction rejects upper bound",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '>=2 && <3'",
+		},
+		{
+			name:       "package constraint disjunction",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '==2 || ==3'",
+			want:       true,
+		},
+		{
+			name:       "package constraint disjunction rejects alternatives",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '==1 || ==2'",
+		},
+		{
+			name:       "package constraint operator precedence",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '<2 || >=3 && <4'",
+			want:       true,
+		},
+		{
 			name:       "package range crosses exclusive upper bound",
 			path:       "package.json",
 			manifest:   `{"dependencies":{"@tauri-apps/api":">=2 <4"}}`,
@@ -212,6 +245,15 @@ func TestEnabledHasDependencyBuiltinComposesAndValidatesArguments(t *testing.T) 
 	)
 	if err == nil || !strings.Contains(err.Error(), ">=, ==, <=, or <") {
 		t.Fatalf("invalid builtin constraint error = %v", err)
+	}
+	_, err = evaluateEnabled(
+		t.Context(),
+		project,
+		"tauri-v2",
+		"has_dependency '@tauri-apps/cli' '>=2 &&'",
+	)
+	if err == nil || !strings.Contains(err.Error(), ">=, ==, <=, or <") {
+		t.Fatalf("incomplete builtin constraint error = %v", err)
 	}
 }
 
