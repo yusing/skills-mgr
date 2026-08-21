@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/mod/modfile"
@@ -42,8 +43,15 @@ type packageManifest struct {
 }
 
 type cargoManifest struct {
-	Dependencies map[string]any `toml:"dependencies"`
-	Workspace    struct {
+	Dependencies      map[string]any `toml:"dependencies"`
+	DevDependencies   map[string]any `toml:"dev-dependencies"`
+	BuildDependencies map[string]any `toml:"build-dependencies"`
+	Target            map[string]struct {
+		Dependencies      map[string]any `toml:"dependencies"`
+		DevDependencies   map[string]any `toml:"dev-dependencies"`
+		BuildDependencies map[string]any `toml:"build-dependencies"`
+	} `toml:"target"`
+	Workspace struct {
 		Dependencies map[string]any `toml:"dependencies"`
 	} `toml:"workspace"`
 }
@@ -51,7 +59,7 @@ type cargoManifest struct {
 func enabledCallHandler(project string) interp.CallHandlerFunc {
 	var index dependencyIndex
 	var indexErr error
-	loaded := false
+	var loadOnce sync.Once
 	return func(ctx context.Context, args []string) ([]string, error) {
 		if args[0] != dependencyBuiltin {
 			return args, nil
@@ -67,10 +75,9 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", dependencyBuiltin, err)
 		}
-		if !loaded {
+		loadOnce.Do(func() {
 			index, indexErr = loadDependencyIndex(ctx, project)
-			loaded = true
-		}
+		})
 		if indexErr != nil {
 			return nil, fmt.Errorf("%s: %w", dependencyBuiltin, indexErr)
 		}
@@ -213,10 +220,7 @@ func (index dependencyIndex) addManifest(path string) error {
 	if err := toml.Unmarshal(data, &manifest); err != nil {
 		return fmt.Errorf("decode dependency manifest %s: %w", path, err)
 	}
-	for _, dependencies := range []map[string]any{
-		manifest.Dependencies,
-		manifest.Workspace.Dependencies,
-	} {
+	addCargoDependencies := func(dependencies map[string]any) {
 		for name, value := range dependencies {
 			switch value := value.(type) {
 			case string:
@@ -225,6 +229,23 @@ func (index dependencyIndex) addManifest(path string) error {
 				version, _ := value["version"].(string)
 				add(name, version)
 			}
+		}
+	}
+	for _, dependencies := range []map[string]any{
+		manifest.Dependencies,
+		manifest.DevDependencies,
+		manifest.BuildDependencies,
+		manifest.Workspace.Dependencies,
+	} {
+		addCargoDependencies(dependencies)
+	}
+	for _, target := range manifest.Target {
+		for _, dependencies := range []map[string]any{
+			target.Dependencies,
+			target.DevDependencies,
+			target.BuildDependencies,
+		} {
+			addCargoDependencies(dependencies)
 		}
 	}
 	return nil
@@ -261,15 +282,11 @@ func requirementMatches(requirement string, want dependencyConstraint) bool {
 	for alternative := range strings.SplitSeq(requirement, "||") {
 		matched := false
 		for _, match := range lowerBoundPattern.FindAllStringSubmatch(alternative, -1) {
-			if strings.HasPrefix(match[1], "<") {
-				continue
-			}
 			matched = true
 			version, _ := versionFromMatch(match[2:])
 			if !want.matches(version) {
 				return false
 			}
-			break
 		}
 		if !matched {
 			return false

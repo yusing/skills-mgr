@@ -28,6 +28,27 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "cargo development dependency",
+			path:       "Cargo.toml",
+			manifest:   "[dev-dependencies]\ntauri = \"2.8.5\"\n",
+			expression: "has_dependency tauri '>=2'",
+			want:       true,
+		},
+		{
+			name:       "cargo build dependency",
+			path:       "Cargo.toml",
+			manifest:   "[build-dependencies]\ntauri = \"2.8.5\"\n",
+			expression: "has_dependency tauri '>=2'",
+			want:       true,
+		},
+		{
+			name:       "cargo target dependency",
+			path:       "Cargo.toml",
+			manifest:   "[target.'cfg(unix)'.dependencies]\ntauri = \"2.8.5\"\n",
+			expression: "has_dependency tauri '>=2'",
+			want:       true,
+		},
+		{
 			name:       "cargo version too old",
 			path:       "native/Cargo.toml",
 			manifest:   "[dependencies]\ntauri = \"1.6\"\n",
@@ -82,6 +103,12 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			name:       "package reaches exclusive upper bound",
 			path:       "package.json",
 			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '<3'",
+		},
+		{
+			name:       "package range crosses exclusive upper bound",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":">=2 <4"}}`,
 			expression: "has_dependency '@tauri-apps/api' '<3'",
 		},
 		{
@@ -159,5 +186,19 @@ func TestEnabledHasDependencyBuiltinUsesOneManifestSnapshot(t *testing.T) {
 	)
 	if err != nil || len(args) != 1 || args[0] != "false" {
 		t.Fatalf("cached dependency result = %v, %v", args, err)
+	}
+}
+
+func TestEnabledHasDependencyBuiltinLoadsManifestConcurrently(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/package.json", `{"dependencies":{"@tauri-apps/api":"2"}}`)
+	enabled, err := evaluateEnabled(
+		t.Context(),
+		project,
+		"tauri-v2",
+		"has_dependency '@tauri-apps/api' '>=2' & has_dependency '@tauri-apps/api' '<3' & wait",
+	)
+	if err != nil || !enabled {
+		t.Fatalf("concurrent dependency expression = %v, %v", enabled, err)
 	}
 }
