@@ -287,7 +287,7 @@ func readFrontmatter(input io.Reader) (string, io.Reader, frontmatterStatus, err
 		return "", nil, frontmatterMalformed, nil
 	}
 	size := len(line)
-	var metadata []string
+	var metadata strings.Builder
 	for {
 		line, err = reader.ReadString('\n')
 		size += len(line)
@@ -296,7 +296,7 @@ func readFrontmatter(input io.Reader) (string, io.Reader, frontmatterStatus, err
 		}
 		normalized := frontmatterLine(line)
 		if normalized == "---" {
-			return strings.Join(metadata, "\n"), reader, frontmatterValid, nil
+			return metadata.String(), reader, frontmatterValid, nil
 		}
 		if errors.Is(err, io.EOF) {
 			return "", nil, frontmatterMalformed, nil
@@ -304,7 +304,7 @@ func readFrontmatter(input io.Reader) (string, io.Reader, frontmatterStatus, err
 		if err != nil {
 			return "", nil, frontmatterMalformed, err
 		}
-		metadata = append(metadata, normalized)
+		metadata.WriteString(line)
 	}
 }
 
@@ -448,9 +448,9 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	if remoteRef == nil {
 		return enabled, nil
 	}
-	description, placeholderErr := m.remoteSkillDescription(*remoteRef)
+	frontmatter, placeholderErr := m.remoteSkillFrontmatter(*remoteRef)
 	if placeholderErr == nil {
-		placeholderErr = m.setRemotePlaceholders(project, skill, description, enabled)
+		placeholderErr = m.setRemotePlaceholders(project, skill, frontmatter, enabled)
 	}
 	if placeholderErr != nil {
 		rollbackErr := m.updateSelectionLock(project, func(value *lock) (bool, error) {

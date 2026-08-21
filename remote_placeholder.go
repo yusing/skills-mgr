@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"github.com/goccy/go-yaml"
 )
 
 const remotePlaceholderMarker = "skills-mgr remote placeholder\n"
@@ -37,30 +35,22 @@ func isRemotePlaceholderRootAlias(base, source, path string) bool {
 }
 
 func (m *manager) setRemotePlaceholders(
-	project, name, description string,
+	project, name, frontmatter string,
 	enabled bool,
 ) error {
-	_, err := m.changeRemotePlaceholders(project, name, description, enabled)
+	_, err := m.changeRemotePlaceholders(project, name, frontmatter, enabled)
 	return err
 }
 
 func (m *manager) changeRemotePlaceholders(
-	project, name, description string,
+	project, name, frontmatter string,
 	enabled bool,
 ) (func() error, error) {
 	base := project
 	if m.global {
 		base = m.paths.globalLockDir
 	}
-	metadata, err := yaml.Marshal(skillFrontmatter{
-		Name:                   name,
-		Description:            description,
-		DisableModelInvocation: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode remote skill placeholder %q: %w", name, err)
-	}
-	content := fmt.Appendf(nil, "---\n%s---\n", metadata)
+	content := fmt.Appendf(nil, "---\n%s---\n", frontmatter)
 	marker := []byte(remotePlaceholderMarker)
 	rootDirs := []string{
 		filepath.Join(".agents", "skills"),
@@ -110,8 +100,8 @@ func (m *manager) changeRemotePlaceholders(
 		if err != nil {
 			return false, fmt.Errorf("inspect remote skill placeholder marker %s: %w", markerPath, err)
 		}
-		owned := skillExists && markerExists &&
-			bytes.Equal(skillData, content) && bytes.Equal(markerData, marker)
+		managed := skillExists && markerExists && bytes.Equal(markerData, marker)
+		owned := managed && bytes.Equal(skillData, content)
 		vacant := !skillExists && !markerExists
 
 		remove := func(path string) error {
@@ -132,6 +122,21 @@ func (m *manager) changeRemotePlaceholders(
 
 		if create {
 			if owned {
+				return false, nil
+			}
+			if managed {
+				skillInfo, skillErr := root.Lstat(skillPath)
+				markerInfo, markerErr := root.Lstat(markerPath)
+				if skillErr != nil || markerErr != nil || !skillInfo.Mode().IsRegular() || !markerInfo.Mode().IsRegular() {
+					return false, fmt.Errorf("update remote skill placeholder %s: managed files are not regular", skillPath)
+				}
+				if err := root.WriteFile(skillPath, content, 0o644); err != nil {
+					restoreErr := root.WriteFile(skillPath, skillData, 0o644)
+					return false, errors.Join(
+						fmt.Errorf("update remote skill placeholder %s: %w", skillPath, err),
+						restoreErr,
+					)
+				}
 				return false, nil
 			}
 			if !vacant {
@@ -181,7 +186,7 @@ func (m *manager) changeRemotePlaceholders(
 			return true, nil
 		}
 
-		if !owned {
+		if !managed {
 			return false, nil
 		}
 		if err := root.Remove(markerPath); err != nil {

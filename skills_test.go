@@ -816,7 +816,12 @@ func TestListHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.setRemotePlaceholders(project, name, "Remote skill.", true); err != nil {
+	if err := manager.setRemotePlaceholders(
+		project,
+		name,
+		"name: "+name+"\ndescription: Remote skill.\n",
+		true,
+	); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(
