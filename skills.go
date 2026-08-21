@@ -26,6 +26,8 @@ import (
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	yamlToken "github.com/goccy/go-yaml/token"
+	"mvdan.cc/sh/v3/interp"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 const (
@@ -664,36 +666,64 @@ func pathDepth(relative string) int {
 }
 
 func (m *manager) selection(project string) (map[string]bool, error) {
-	selected, _, _, err := m.selectionLayers(project, nil)
-	return selected, err
+	skills, err := m.skills(project)
+	if err != nil {
+		return nil, err
+	}
+	state, err := m.selectionState(project, skills)
+	if err != nil {
+		return nil, err
+	}
+	ctx := context.Background()
+	for _, skill := range skills {
+		expression, conditional := state.expressions[skill.Name]
+		if !conditional || !state.selected[skill.Name] {
+			continue
+		}
+		enabled, err := evaluateEnabled(ctx, project, skill.Name, expression)
+		if err != nil {
+			return nil, err
+		}
+		state.selected[skill.Name] = enabled
+	}
+	return state.selected, nil
 }
 
-func (m *manager) selectionLayers(
+type selectionState struct {
+	selected           map[string]bool
+	globalSelected     map[string]bool
+	projectSelected    map[string]bool
+	expressions        map[string]string
+	globalExpressions  map[string]string
+	projectExpressions map[string]string
+}
+
+func (m *manager) selectionState(
 	project string,
 	catalog []discoveredSkill,
-) (
-	selected map[string]bool,
-	globalSelected map[string]bool,
-	projectSelected map[string]bool,
-	err error,
-) {
+) (selectionState, error) {
 	global, err := loadLock(m.paths.globalLockDir)
 	if err != nil {
-		return nil, nil, nil, err
+		return selectionState{}, err
 	}
 	if m.global {
-		return global.Skills, nil, nil, nil
+		selected := configuredSelections(global)
+		return selectionState{
+			selected:          selected,
+			expressions:       maps.Clone(global.Expressions),
+			globalExpressions: maps.Clone(global.Expressions),
+		}, nil
 	}
 	projectLock, err := loadLock(project)
 	if err != nil {
-		return nil, nil, nil, err
+		return selectionState{}, err
 	}
-	selected = mergeSelections(global.Skills, projectLock.Skills)
+	selected, expressions := mergeSelectionLocks(global, projectLock)
 	var skills []discoveredSkill
 	if catalog == nil {
 		skills, err = m.skills(project)
 		if err != nil {
-			return nil, nil, nil, err
+			return selectionState{}, err
 		}
 	} else {
 		skills = catalog
@@ -703,7 +733,14 @@ func (m *manager) selectionLayers(
 			selected[skill.Name] = true
 		}
 	}
-	return selected, global.Skills, projectLock.Skills, nil
+	return selectionState{
+		selected:           selected,
+		globalSelected:     configuredSelections(global),
+		projectSelected:    configuredSelections(projectLock),
+		expressions:        expressions,
+		globalExpressions:  maps.Clone(global.Expressions),
+		projectExpressions: maps.Clone(projectLock.Expressions),
+	}, nil
 }
 
 func (m *manager) lockDir(project string) string {
@@ -738,18 +775,18 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	}
 
 	enabled := false
-	previousEnabled := false
+	var previousEnabled enabledValue
 	previousExists := false
 	var previousRemote remoteSkillRef
 	previousRemoteExists := false
 	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		selected := value.Skills
+		selected := configuredSelections(*value)
 		if !m.global {
 			global, err := loadLock(m.paths.globalLockDir)
 			if err != nil {
 				return false, err
 			}
-			selected = mergeSelections(global.Skills, value.Skills)
+			selected, _ = mergeSelectionLocks(global, *value)
 		}
 		enabled = !skillEnabled(selected, target)
 		if enabled && m.global && remoteRef != nil {
@@ -757,9 +794,9 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 				return false, err
 			}
 		}
-		previousEnabled, previousExists = value.Skills[skill]
+		previousEnabled, previousExists = value.enabled(skill)
 		previousRemote, previousRemoteExists = value.Remote[skill]
-		value.Skills[skill] = enabled
+		value.setEnabled(skill, enabledValue{Boolean: new(enabled)})
 		if remoteRef == nil {
 			delete(value.Remote, skill)
 		} else {
@@ -780,13 +817,16 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	}
 	if placeholderErr != nil {
 		rollbackErr := m.updateSelectionLock(project, func(value *lock) (bool, error) {
-			if value.Skills[skill] != enabled || value.Remote[skill] != *remoteRef {
+			current, exists := value.enabled(skill)
+			if !exists || current.Boolean == nil ||
+				*current.Boolean != enabled ||
+				value.Remote[skill] != *remoteRef {
 				return false, fmt.Errorf("remote selection changed during placeholder rollback")
 			}
 			if previousExists {
-				value.Skills[skill] = previousEnabled
+				value.setEnabled(skill, previousEnabled)
 			} else {
-				delete(value.Skills, skill)
+				value.deleteEnabled(skill)
 			}
 			if previousRemoteExists {
 				value.Remote[skill] = previousRemote
@@ -812,15 +852,15 @@ func (m *manager) setRemoteSelection(
 				return false, err
 			}
 		}
-		value.Skills[ref.Name] = enabled
+		value.setEnabled(ref.Name, enabledValue{Boolean: new(enabled)})
 		value.Remote[ref.Name] = ref
-		selected = value.Skills
+		selected = configuredSelections(*value)
 		if !m.global {
 			global, err := loadLock(m.paths.globalLockDir)
 			if err != nil {
 				return false, err
 			}
-			selected = mergeSelections(global.Skills, value.Skills)
+			selected, _ = mergeSelectionLocks(global, *value)
 		}
 		return true, nil
 	})
@@ -844,8 +884,12 @@ func (m *manager) updateSelectionLock(
 }
 
 func (m *manager) migrateSelectionLock(value *lock) (bool, error) {
-	if value.SchemaRevision != legacyLockSchemaRevision {
+	if value.SchemaRevision == lockSchemaRevision {
 		return false, nil
+	}
+	if value.SchemaRevision == previousLockSchemaRevision {
+		value.SchemaRevision = lockSchemaRevision
+		return true, nil
 	}
 	refs, err := m.persistedRemoteRefs()
 	if err != nil {
@@ -958,8 +1002,21 @@ func reconcileRemoteMetadata(
 			return false, err
 		}
 	}
+	for name := range projectLock.Expressions {
+		if err := add(name); err != nil {
+			return false, err
+		}
+	}
 	for name := range globalLock.Skills {
-		if _, overridden := projectLock.Skills[name]; overridden {
+		if _, overridden := projectLock.enabled(name); overridden {
+			continue
+		}
+		if err := add(name); err != nil {
+			return false, err
+		}
+	}
+	for name := range globalLock.Expressions {
+		if _, overridden := projectLock.enabled(name); overridden {
 			continue
 		}
 		if err := add(name); err != nil {
@@ -969,10 +1026,26 @@ func reconcileRemoteMetadata(
 	return changed, nil
 }
 
-func mergeSelections(global, project map[string]bool) map[string]bool {
-	selected := maps.Clone(global)
-	maps.Copy(selected, project)
+func configuredSelections(value lock) map[string]bool {
+	selected := maps.Clone(value.Skills)
+	for name := range value.Expressions {
+		selected[name] = true
+	}
 	return selected
+}
+
+func mergeSelectionLocks(global, project lock) (map[string]bool, map[string]string) {
+	selected := configuredSelections(global)
+	expressions := maps.Clone(global.Expressions)
+	for name, enabled := range project.Skills {
+		selected[name] = enabled
+		delete(expressions, name)
+	}
+	for name, expression := range project.Expressions {
+		selected[name] = true
+		expressions[name] = expression
+	}
+	return selected, expressions
 }
 
 func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
@@ -981,6 +1054,42 @@ func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
 		return enabled
 	}
 	return skill.Source == projectSkillSource || skill.DisableModelInvocation
+}
+
+func evaluateEnabled(
+	ctx context.Context,
+	project string,
+	skill string,
+	expression string,
+) (bool, error) {
+	program, err := syntax.NewParser(
+		syntax.Variant(syntax.LangBash),
+	).Parse(strings.NewReader(expression), "enabled")
+	if err != nil {
+		return false, fmt.Errorf("parse enabled expression for skill %q: %w", skill, err)
+	}
+	runner, err := interp.New(
+		interp.Dir(project),
+		interp.StdIO(nil, io.Discard, io.Discard),
+	)
+	if err != nil {
+		return false, fmt.Errorf("prepare enabled expression for skill %q: %w", skill, err)
+	}
+	err = runner.Run(ctx, program)
+	if err == nil {
+		return true, nil
+	}
+	if status, ok := errors.AsType[interp.ExitStatus](err); ok {
+		if status == 1 {
+			return false, nil
+		}
+		return false, fmt.Errorf(
+			"evaluate enabled expression for skill %q: status %d",
+			skill,
+			uint8(status),
+		)
+	}
+	return false, fmt.Errorf("evaluate enabled expression for skill %q: %w", skill, err)
 }
 
 func sourceAgent(source string) string {
@@ -1070,11 +1179,20 @@ const (
 )
 
 func (m *manager) list(project string, output io.Writer, harnesses ...listHarness) error {
-	selected, err := m.selection(project)
+	return m.listContext(context.Background(), project, output, harnesses...)
+}
+
+func (m *manager) listContext(
+	ctx context.Context,
+	project string,
+	output io.Writer,
+	harnesses ...listHarness,
+) error {
+	skills, err := m.skills(project, harnesses...)
 	if err != nil {
 		return err
 	}
-	skills, err := m.skills(project, harnesses...)
+	selection, err := m.selectionState(project, skills)
 	if err != nil {
 		return err
 	}
@@ -1085,10 +1203,19 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 
 	document := skillListXML{}
 	for _, skill := range skills {
-		if !selected[skill.Name] ||
+		if !selection.selected[skill.Name] ||
 			skill.DisableModelInvocation ||
 			harnessVisible[skill.Name] {
 			continue
+		}
+		if expression, conditional := selection.expressions[skill.Name]; conditional {
+			enabled, err := evaluateEnabled(ctx, project, skill.Name, expression)
+			if err != nil {
+				return err
+			}
+			if !enabled {
+				continue
+			}
 		}
 		references, err := referenceFiles(skill.Root)
 		if err != nil {
@@ -1206,11 +1333,19 @@ func escapeXMLText(value string) (string, error) {
 }
 
 func (m *manager) get(project, target, lineRange string, output io.Writer) error {
+	return m.getContext(context.Background(), project, target, lineRange, output)
+}
+
+func (m *manager) getContext(
+	ctx context.Context,
+	project, target, lineRange string,
+	output io.Writer,
+) error {
 	skill, relative, err := splitTarget(target)
 	if err != nil {
 		return err
 	}
-	root, err := m.openSkill(project, skill)
+	root, err := m.openSkillContext(ctx, project, skill)
 	if err != nil {
 		return err
 	}
@@ -1260,6 +1395,14 @@ func (m *manager) get(project, target, lineRange string, output io.Writer) error
 }
 
 func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {
+	return m.scriptCommandContext(context.Background(), project, target, args)
+}
+
+func (m *manager) scriptCommandContext(
+	ctx context.Context,
+	project, target string,
+	args []string,
+) (*exec.Cmd, error) {
 	if !strings.Contains(target, "/") {
 		return nil, fmt.Errorf("invalid script target %q; want <skill-name>/<relative/script>", target)
 	}
@@ -1267,7 +1410,7 @@ func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cm
 	if err != nil {
 		return nil, err
 	}
-	root, err := m.openSkill(project, skill)
+	root, err := m.openSkillContext(ctx, project, skill)
 	if err != nil {
 		return nil, err
 	}
@@ -1327,17 +1470,29 @@ func (m *manager) cachedJavaScriptRuntime() (string, error) {
 	return m.javascriptRuntime, m.javascriptRuntimeErr
 }
 
-func (m *manager) openSkill(project, skill string) (*os.Root, error) {
-	selected, err := m.selection(project)
-	if err != nil {
-		return nil, err
-	}
+func (m *manager) openSkillContext(
+	ctx context.Context,
+	project, skill string,
+) (*os.Root, error) {
 	discovered, err := m.findSkill(project, skill)
 	if err != nil {
 		return nil, err
 	}
-	if !selected[skill] {
+	selection, err := m.selectionState(project, []discoveredSkill{discovered})
+	if err != nil {
+		return nil, err
+	}
+	if !selection.selected[skill] {
 		return nil, fmt.Errorf("skill %q is not enabled", skill)
+	}
+	if expression, conditional := selection.expressions[skill]; conditional {
+		enabled, err := evaluateEnabled(ctx, project, skill, expression)
+		if err != nil {
+			return nil, err
+		}
+		if !enabled {
+			return nil, fmt.Errorf("skill %q is not enabled", skill)
+		}
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
@@ -1406,7 +1561,7 @@ func (m *manager) toggleModelInvocation(
 	if err != nil {
 		return modelInvocationResult{}, err
 	}
-	selected, globalSelected, projectSelected, err := m.selectionLayers(project, skills)
+	selection, err := m.selectionState(project, skills)
 	if err != nil {
 		return modelInvocationResult{}, err
 	}
@@ -1415,9 +1570,9 @@ func (m *manager) toggleModelInvocation(
 		RemoteKey:       current.RemoteKey,
 		Disabled:        disabled,
 		Skills:          skills,
-		Selected:        selected,
-		GlobalSelected:  globalSelected,
-		ProjectSelected: projectSelected,
+		Selected:        selection.selected,
+		GlobalSelected:  selection.globalSelected,
+		ProjectSelected: selection.projectSelected,
 	}, nil
 }
 

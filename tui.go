@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,36 +19,38 @@ import (
 
 //nolint:recvcheck // Bubble Tea's value-returning model uses pointer helpers on its local copy.
 type model struct {
-	manager         *manager
-	project         string
-	skills          []discoveredSkill
-	selected        map[string]bool
-	globalSelected  map[string]bool
-	projectSelected map[string]bool
-	remoteTopics    []remoteTopic
-	remoteCollapsed map[string]bool
-	remoteError     string
-	remoteSelected  map[string]bool
-	registrySkills  []registrySearchSkill
-	registryError   string
-	registryCancel  context.CancelFunc
-	registryRequest uint64
-	tab             int
-	cursor          int
-	offset          int
-	width           int
-	height          int
-	expanded        string
-	busy            bool
-	busyCancel      context.CancelFunc
-	quitAfterBusy   bool
-	status          string
-	progressTitle   string
-	progressDetail  string
-	filtering       bool
-	filterQuery     string
-	allSkills       []discoveredSkill
-	codexSubtab     int
+	manager            *manager
+	project            string
+	skills             []discoveredSkill
+	selected           map[string]bool
+	globalSelected     map[string]bool
+	projectSelected    map[string]bool
+	globalConditional  map[string]string
+	projectConditional map[string]string
+	remoteTopics       []remoteTopic
+	remoteCollapsed    map[string]bool
+	remoteError        string
+	remoteSelected     map[string]bool
+	registrySkills     []registrySearchSkill
+	registryError      string
+	registryCancel     context.CancelFunc
+	registryRequest    uint64
+	tab                int
+	cursor             int
+	offset             int
+	width              int
+	height             int
+	expanded           string
+	busy               bool
+	busyCancel         context.CancelFunc
+	quitAfterBusy      bool
+	status             string
+	progressTitle      string
+	progressDetail     string
+	filtering          bool
+	filterQuery        string
+	allSkills          []discoveredSkill
+	codexSubtab        int
 }
 
 const (
@@ -109,9 +113,14 @@ type editDone struct {
 	skill      string
 	path       string
 	skills     []discoveredSkill
-	selected   map[string]bool
-	global     map[string]bool
-	project    map[string]bool
+	selection  selectionState
+	editorErr  error
+	refreshErr error
+}
+
+type enabledEditDone struct {
+	skill      string
+	selection  selectionState
 	editorErr  error
 	refreshErr error
 }
@@ -135,16 +144,19 @@ func newModel(manager *manager, project string) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	selected, globalSelected, projectSelected, err := manager.selectionLayers(project, nil)
+	selection, err := manager.selectionState(project, nil)
 	if err != nil {
 		return model{}, err
 	}
 	current := model{
 		manager: manager, project: project, allSkills: discovered,
-		selected:       selected,
-		globalSelected: globalSelected, projectSelected: projectSelected,
-		remoteCollapsed: make(map[string]bool),
-		remoteSelected:  remoteSelectionFrom(discovered, selected),
+		selected:           selection.selected,
+		globalSelected:     selection.globalSelected,
+		projectSelected:    selection.projectSelected,
+		globalConditional:  selection.globalExpressions,
+		projectConditional: selection.projectExpressions,
+		remoteCollapsed:    make(map[string]bool),
+		remoteSelected:     remoteSelectionFrom(discovered, selection.selected),
 	}
 	current.applyCatalog()
 	current.status = fmt.Sprintf("%d skills", len(current.skills))
@@ -224,6 +236,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected[message.skill] = message.enabled
 			if m.projectSelected != nil {
 				m.projectSelected[message.skill] = message.enabled
+				delete(m.projectConditional, message.skill)
+			} else {
+				delete(m.globalConditional, message.skill)
 			}
 			catalog := m.allSkills
 			if catalog == nil {
@@ -249,6 +264,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.selected = message.result.Selected
 		if m.projectSelected != nil {
 			m.projectSelected[message.result.Skill] = message.result.Enabled
+			delete(m.projectConditional, message.result.Skill)
+		} else {
+			delete(m.globalConditional, message.result.Skill)
 		}
 		m.remoteSelected = message.result.RemoteSelected
 		if message.result.Enabled {
@@ -272,6 +290,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.selected = message.result.Selected
 		m.globalSelected = message.result.GlobalSelected
 		m.projectSelected = message.result.ProjectSelected
+		if m.projectSelected != nil {
+			delete(m.projectConditional, message.result.Skill)
+		} else {
+			delete(m.globalConditional, message.result.Skill)
+		}
 		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
 		if m.expanded == message.result.Skill {
 			m.expanded = ""
@@ -315,35 +338,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport()
 	case editDone:
-		m.busy = false
-		if message.editorErr != nil {
-			m.status = "editor failed: " + message.editorErr.Error()
-			break
-		}
-		if message.refreshErr != nil {
-			m.status = "refresh failed: " + message.refreshErr.Error()
-			break
-		}
-		wasExpanded := m.expanded == message.skill
-		m.allSkills = message.skills
-		m.applyCatalog()
-		m.selected = message.selected
-		m.globalSelected = message.global
-		m.projectSelected = message.project
-		m.expanded = ""
-		for index, skillIndex := range m.localSkillIndices() {
-			skill := m.skills[skillIndex]
-			if skill.Path != message.path {
-				continue
-			}
-			m.cursor = index
-			if wasExpanded {
-				m.expanded = skill.Name
-			}
-			break
-		}
-		m.syncViewport()
-		m.status = "saved " + message.skill
+		m.applySourceEditDone(message)
+	case enabledEditDone:
+		m.applyEnabledEditDone(message)
 	case registrySearchDone:
 		if message.request != m.registryRequest ||
 			message.query != normalizedRegistryQuery(m.filterQuery) ||
@@ -385,6 +382,59 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m *model) applySourceEditDone(message editDone) {
+	m.busy = false
+	if message.editorErr != nil {
+		m.status = "editor failed: " + message.editorErr.Error()
+		return
+	}
+	if message.refreshErr != nil {
+		m.status = "refresh failed: " + message.refreshErr.Error()
+		return
+	}
+	wasExpanded := m.expanded == message.skill
+	m.allSkills = message.skills
+	m.applyCatalog()
+	m.applySelectionState(message.selection)
+	m.expanded = ""
+	for index, skillIndex := range m.localSkillIndices() {
+		skill := m.skills[skillIndex]
+		if skill.Path != message.path {
+			continue
+		}
+		m.cursor = index
+		if wasExpanded {
+			m.expanded = skill.Name
+		}
+		break
+	}
+	m.syncViewport()
+	m.status = "saved " + message.skill
+}
+
+func (m *model) applyEnabledEditDone(message enabledEditDone) {
+	m.busy = false
+	if message.editorErr != nil {
+		m.status = "editor failed: " + message.editorErr.Error()
+		return
+	}
+	if message.refreshErr != nil {
+		m.status = "refresh failed: " + message.refreshErr.Error()
+		return
+	}
+	m.applySelectionState(message.selection)
+	m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+	m.status = "saved enabled value for " + message.skill
+}
+
+func (m *model) applySelectionState(selection selectionState) {
+	m.selected = selection.selected
+	m.globalSelected = selection.globalSelected
+	m.projectSelected = selection.projectSelected
+	m.globalConditional = selection.globalExpressions
+	m.projectConditional = selection.projectExpressions
 }
 
 func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -531,6 +581,38 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 			return remoteUninstallDone{result: result, err: err}
 		}
+	case "i":
+		if !isLocalTab(m.tab) {
+			break
+		}
+		skillIndex, ok := m.localSkillIndex(m.cursor)
+		if !ok {
+			break
+		}
+		skill := m.skills[skillIndex]
+		command, draft, err := m.enabledEditor(skill.Name)
+		if err != nil {
+			m.status = "error: " + err.Error()
+			break
+		}
+		m.busy = true
+		m.status = "editing enabled value for " + skill.Name
+		return m, tea.ExecProcess(command, func(err error) tea.Msg {
+			if err != nil {
+				_ = os.Remove(draft)
+				return enabledEditDone{skill: skill.Name, editorErr: err}
+			}
+			selection, refreshErr := m.manager.applyEnabledDraft(
+				m.project,
+				skill,
+				draft,
+			)
+			return enabledEditDone{
+				skill:      skill.Name,
+				selection:  selection,
+				refreshErr: refreshErr,
+			}
+		})
 	case "e":
 		if !isLocalTab(m.tab) {
 			break
@@ -556,17 +638,16 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				skill.Name,
 				skill.Path,
 			)
-			var selected, globalSelected, projectSelected map[string]bool
+			var selection selectionState
 			if refreshErr == nil {
-				selected, globalSelected, projectSelected, refreshErr = m.manager.selectionLayers(
+				selection, refreshErr = m.manager.selectionState(
 					m.project,
 					nil,
 				)
 			}
 			return editDone{
 				skill: skill.Name, path: skill.Path,
-				skills: skills, selected: selected,
-				global: globalSelected, project: projectSelected,
+				skills: skills, selection: selection,
 				refreshErr: refreshErr,
 			}
 		})
@@ -894,18 +975,25 @@ func (m *manager) refreshEditedSkill(
 		}
 	}
 	if newName == "" || newName == oldName {
-		selected, err := m.selection(project)
-		return skills, selected, err
+		selection, err := m.selectionState(project, skills)
+		return skills, selection.selected, err
 	}
 
 	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		oldEnabled, exists := value.Skills[oldName]
+		oldEnabled, exists := value.enabled(oldName)
 		if m.global {
 			if !exists {
 				return false, nil
 			}
-			value.Skills[newName] = value.Skills[newName] || oldEnabled
-			delete(value.Skills, oldName)
+			newEnabled, newExists := value.enabled(newName)
+			switch {
+			case !newExists:
+				value.setEnabled(newName, oldEnabled)
+			case oldEnabled.Boolean != nil && newEnabled.Boolean != nil:
+				merged := *newEnabled.Boolean || *oldEnabled.Boolean
+				value.setEnabled(newName, enabledValue{Boolean: new(merged)})
+			}
+			value.deleteEnabled(oldName)
 			return true, nil
 		}
 
@@ -913,23 +1001,35 @@ func (m *manager) refreshEditedSkill(
 		if err != nil {
 			return false, err
 		}
-		selected := mergeSelections(global.Skills, value.Skills)
-		if !exists && !selected[oldName] {
+		effective := oldEnabled
+		effectiveExists := exists
+		if !effectiveExists {
+			effective, effectiveExists = global.enabled(oldName)
+		}
+		if !effectiveExists ||
+			(!exists && effective.Boolean != nil && !*effective.Boolean) {
 			return false, nil
 		}
-		value.Skills[newName] = value.Skills[newName] || selected[oldName]
-		if _, inherited := global.Skills[oldName]; inherited {
-			value.Skills[oldName] = false
+		newEnabled, newExists := value.enabled(newName)
+		switch {
+		case !newExists:
+			value.setEnabled(newName, effective)
+		case effective.Boolean != nil && newEnabled.Boolean != nil:
+			merged := *newEnabled.Boolean || *effective.Boolean
+			value.setEnabled(newName, enabledValue{Boolean: new(merged)})
+		}
+		if _, inherited := global.enabled(oldName); inherited {
+			value.setEnabled(oldName, enabledValue{Boolean: new(false)})
 		} else {
-			delete(value.Skills, oldName)
+			value.deleteEnabled(oldName)
 		}
 		return true, nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
-	selected, err := m.selection(project)
-	return skills, selected, err
+	selection, err := m.selectionState(project, skills)
+	return skills, selection.selected, err
 }
 
 func (m *model) toggleCurrentExpanded(index int) {
@@ -1090,12 +1190,12 @@ func (m model) View() string {
 		}
 		remaining -= len(lines)
 	}
-	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e edit • q quit"
+	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	switch m.tab {
 	case localTab:
-		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • u uninstall • e edit • q quit"
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • u uninstall • e source • i enabled • q quit"
 	case codexTab:
-		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e edit • q quit"
+		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	case remoteTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
 	case skillsMPTab:
@@ -1438,6 +1538,19 @@ func (m model) skillLines(indices []int, index int) []string {
 	if skill.DisableModelInvocation {
 		name += selectedStyle(manualOnlyStyle, selected).Render(" [manual-only]")
 	}
+	_, projectConditional := m.projectConditional[skill.Name]
+	_, globalConditional := m.globalConditional[skill.Name]
+	_, projectConfigured := m.projectSelected[skill.Name]
+	effectiveGlobalConditional := globalConditional && !projectConfigured
+	if projectConditional || effectiveGlobalConditional {
+		label := " [conditional]"
+		if !projectConditional {
+			if effectiveGlobalConditional && (m.manager == nil || !m.manager.global) {
+				label = " [conditional inherited]"
+			}
+		}
+		name += selectedStyle(manualOnlyStyle, selected).Render(label)
+	}
 	if !m.selected[skill.Name] {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")
 	}
@@ -1613,11 +1726,15 @@ func terminalSafeText(value string) string {
 	return safe.String()
 }
 
-func (m model) editor(skill string) (*exec.Cmd, error) {
+func configuredEditor(file string) (*exec.Cmd, error) {
 	parts, err := shellwords.Parse(os.Getenv("EDITOR"))
 	if err != nil || len(parts) == 0 {
 		return nil, fmt.Errorf("$EDITOR is not set or invalid")
 	}
+	return exec.Command(parts[0], append(parts[1:], file)...), nil
+}
+
+func (m model) editor(skill string) (*exec.Cmd, error) {
 	discovered, err := m.manager.findSkill(m.project, skill)
 	if err != nil {
 		return nil, err
@@ -1629,7 +1746,127 @@ func (m model) editor(skill string) (*exec.Cmd, error) {
 	if info, err := os.Stat(file); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("missing %s", file)
 	}
-	return exec.Command(parts[0], append(parts[1:], file)...), nil
+	return configuredEditor(file)
+}
+
+func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr error) {
+	value, err := loadLock(m.manager.lockDir(m.project))
+	if err != nil {
+		return nil, "", err
+	}
+	current, configured := value.enabled(skill)
+	temp, err := os.CreateTemp("", "skills-mgr-enabled-*.json")
+	if err != nil {
+		return nil, "", fmt.Errorf("create enabled editor draft: %w", err)
+	}
+	draft = temp.Name()
+	draftPath := draft
+	defer func() {
+		if retErr != nil {
+			_ = temp.Close()
+			_ = os.Remove(draftPath)
+		}
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return nil, "", fmt.Errorf("secure enabled editor draft: %w", err)
+	}
+	if configured {
+		data, err := json.Marshal(current)
+		if err != nil {
+			return nil, "", fmt.Errorf("encode enabled editor draft: %w", err)
+		}
+		data = append(data, '\n')
+		if _, err := temp.Write(data); err != nil {
+			return nil, "", fmt.Errorf("write enabled editor draft: %w", err)
+		}
+	}
+	if err := temp.Close(); err != nil {
+		return nil, "", fmt.Errorf("close enabled editor draft: %w", err)
+	}
+	command, err := configuredEditor(draft)
+	if err != nil {
+		return nil, "", err
+	}
+	return command, draft, nil
+}
+
+func (m *manager) applyEnabledDraft(
+	project string,
+	skill discoveredSkill,
+	draft string,
+) (selectionState, error) {
+	defer os.Remove(draft)
+	data, err := os.ReadFile(draft)
+	if err != nil {
+		return selectionState{}, fmt.Errorf("read enabled editor draft: %w", err)
+	}
+	var desired enabledValue
+	desiredExists := len(strings.TrimSpace(string(data))) > 0
+	if desiredExists {
+		if err := json.Unmarshal(data, &desired); err != nil {
+			return selectionState{}, fmt.Errorf("decode enabled editor draft: %w", err)
+		}
+	}
+
+	var undoPlaceholder func() error
+	if skill.RemoteKey != "" {
+		ref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)
+		if err != nil {
+			return selectionState{}, err
+		}
+		frontmatter, err := m.remoteSkillFrontmatter(ref)
+		if err != nil {
+			return selectionState{}, err
+		}
+		effective, effectiveExists := desired, desiredExists
+		if !desiredExists && !m.global {
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return selectionState{}, err
+			}
+			effective, effectiveExists = global.enabled(skill.Name)
+		}
+		create := effectiveExists &&
+			effective.Boolean != nil &&
+			*effective.Boolean
+		undoPlaceholder, err = m.changeRemotePlaceholders(
+			project,
+			skill.Name,
+			frontmatter,
+			create,
+		)
+		if err != nil {
+			return selectionState{}, err
+		}
+	}
+
+	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+		current, currentExists := value.enabled(skill.Name)
+		same := currentExists == desiredExists
+		if same && currentExists {
+			same = current.Expression == desired.Expression &&
+				((current.Boolean == nil && desired.Boolean == nil) ||
+					(current.Boolean != nil &&
+						desired.Boolean != nil &&
+						*current.Boolean == *desired.Boolean))
+		}
+		if same {
+			return false, nil
+		}
+		if desiredExists {
+			value.setEnabled(skill.Name, desired)
+		} else {
+			value.deleteEnabled(skill.Name)
+		}
+		return true, nil
+	})
+	if err != nil {
+		if undoPlaceholder != nil {
+			err = errors.Join(err, undoPlaceholder())
+		}
+		return selectionState{}, err
+	}
+	return m.selectionState(project, nil)
 }
 
 func runTUI(manager *manager, project string) error {

@@ -66,6 +66,7 @@ environment variable is set. Requests are unauthenticated when it is unset.
 | Enter or click | Expand or collapse details |
 | Space | Enable or disable the selected skill |
 | `e` | Open an editable local skill in `$EDITOR` |
+| `i` | Edit the selected skill's current-layer `enabled` JSON value in `$EDITOR` |
 | `q` or Ctrl-C | Quit |
 
 ### Global selections
@@ -192,26 +193,50 @@ Default base prompts could be found in:
 
 ## Selection State
 
-The selection file is strict JSON with schema revision `1`:
+The selection file is strict JSON with schema revision `3`. An `enabled`
+value is either a Boolean or a Bash expression. Project expressions execute
+with the user's environment and filesystem permissions when the skill is
+checked, so review committed `.skills-mgr.json` changes before running
+`skills-mgr` in an untrusted repository.
 
 ```json
 {
-  "schema_revision": 1,
+  "schema_revision": 3,
   "skills": {
-    "writing-readme": true,
-    "unused-skill": false
+    "writing-readme": {
+      "enabled": true
+    },
+    "unused-skill": {
+      "enabled": false
+    },
+    "go-review": {
+      "enabled": "[ -f go.mod ]"
+    }
   }
 }
 ```
 
 Use the interactive interface to update this file. `true` enables a discovered
-skill; `false` explicitly disables it. Project values override inherited global
-values.
+skill; `false` explicitly disables it. A string is parsed with Bash syntax by
+`mvdan.cc/sh` and evaluated from the current project directory. Final status
+`0` enables the skill, status `1` disables it, and status `2` through `255`
+is an error. External commands in an expression are still started normally.
+Project values override inherited global values. Removing a project value
+resumes global inheritance.
+
+Press `i` in the TUI to edit one JSON scalar without exposing the rest of the
+selection file. Enter `true`, `false`, or a JSON string; save an empty file to
+remove the current-layer value. A conditional remote entry does not create
+managed autocomplete placeholders in its own layer, because those placeholders
+would bypass a false condition. A project override cannot hide a placeholder
+created by an inherited global `true` entry from native harness discovery;
+`skills-mgr list`, `get`, and `run` still honor the project override.
 
 Commit a project's `.skills-mgr.json` when the repository should share a
-selection. Every enabled name must still be discoverable on each machine or
-`skills-mgr list` will fail. Update coordination locks are kept in the user
-cache rather than the project directory.
+selection. Configured names that are not discovered are retained and ignored.
+Update coordination locks are kept in the user cache rather than the project
+directory. Schema revisions `1` and `2` remain readable and are upgraded on
+the next selection write.
 
 ## Remote Refresh Daemon
 
