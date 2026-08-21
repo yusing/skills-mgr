@@ -244,6 +244,57 @@ they do not fully interpret npm or Cargo range semantics. Exact numeric declarat
 produce the most predictable result; caret, tilde, compound, and alternative
 manifest ranges are evaluated only by their written numeric boundaries.
 
+Use `lang <language>` to test whether the project contains any matching package
+marker or file extension. Mixed-language projects satisfy every language found.
+Supported names are `go`, `rust`, `node`, `typescript` (`ts`), `javascript`
+(`js`), `python`, `c`, `c++`, `c#`, `java`, `lua`, `vb`, `php`, `r`, `ruby`,
+`swift`, `perl`, `assembly` (`asm`), `shell` (`sh`), `bash`, `postgres`, `sql`,
+`yaml`, `json`, `toml`, and `ini`. Names and aliases are lowercase.
+
+Detection uses this evidence:
+
+| Language | Package markers and file extensions |
+| --- | --- |
+| `go` | `go.mod`, `.go` |
+| `rust` | `Cargo.toml`, `.rs` |
+| `node` | `package.json` |
+| `typescript` / `ts` | `tsconfig.json`, `.ts`, `.tsx`, `.mts`, `.cts` |
+| `javascript` / `js` | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| `python` | `pyproject.toml`, `requirements.txt`, `Pipfile`, `.py`, `.pyw` |
+| `c` | `.c` |
+| `c++` | `.C`, `.cc`, `.cpp`, `.cxx`, `.c++`, `.hh`, `.hpp`, `.hxx` |
+| `c#` | `.cs`, `.csproj` |
+| `java` | `.java` |
+| `lua` | `.lua` |
+| `vb` | `.vb`, `.vbproj` |
+| `php` | `composer.json`, `.php` |
+| `r` | `.r`, `.rmd`, `.rproj`, matched case-insensitively |
+| `ruby` | `Gemfile`, `.rb` |
+| `swift` | `Package.swift`, `.swift` |
+| `perl` | `cpanfile`, `.pl`, `.pm` |
+| `assembly` / `asm` | `.asm`, `.s`, matched case-insensitively |
+| `shell` / `sh` | `.sh` |
+| `bash` | `.bash` |
+| `postgres` | `postgresql.conf`, `pg_hba.conf`, `pg_ident.conf`, `.psql` |
+| `sql` | `.sql` |
+| `yaml` | `.yaml`, `.yml` |
+| `json` | `.json` |
+| `toml` | `.toml` |
+| `ini` | `.ini` |
+
+An evidence file can detect more than one language. For example, `Cargo.toml`
+detects both `rust` and `toml`, and `package.json` detects both `node` and
+`json`. Git projects use tracked and unignored files plus untracked, unignored
+files. Non-Git projects are scanned recursively. Both paths ignore `.git`,
+`node_modules`, and `target` directories.
+
+For example, this expression enables a skill in a project containing Go or
+TypeScript evidence:
+
+```sh
+lang go || lang ts
+```
+
 For example, this global override enables the `tauri-v2` skill when the project
 declares or catalogs Tauri, its JavaScript API, or its CLI at a major version `2`:
 
