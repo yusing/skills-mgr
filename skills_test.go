@@ -2,11 +2,9 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1445,14 +1443,6 @@ func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	writeFile(t, path, content)
 	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestDaemonStopsWithContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := runDaemon(ctx, newTestManager(t), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 }

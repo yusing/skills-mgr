@@ -17,6 +17,7 @@ type paths struct {
 	remoteRegistry string
 	skillsMP       string
 	remoteSkills   string
+	daemonSocket   string
 }
 
 func defaultPaths() (paths, error) {
@@ -32,6 +33,10 @@ func defaultPaths() (paths, error) {
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
+	socketDir := os.Getenv("XDG_RUNTIME_DIR")
+	if socketDir == "" {
+		socketDir = filepath.Join(cache, "skills-mgr")
+	}
 	return paths{
 		userSkills:     filepath.Join(home, ".agents", "skills"),
 		claudeSkills:   filepath.Join(home, ".claude", "skills"),
@@ -43,5 +48,6 @@ func defaultPaths() (paths, error) {
 		remoteRegistry: filepath.Join(cache, "skills-mgr", "skills-sh.json"),
 		skillsMP:       filepath.Join(cache, "skills-mgr", "skillsmp.json"),
 		remoteSkills:   filepath.Join(cache, "skills-mgr", "remote-skills"),
+		daemonSocket:   filepath.Join(socketDir, "skills-mgr.sock"),
 	}, nil
 }

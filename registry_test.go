@@ -374,9 +374,13 @@ func TestDaemonRefreshFailureIsReportedWithoutReturning(t *testing.T) {
 		baseURL: server.URL, cachePath: filepath.Join(t.TempDir(), "skills-sh.json"),
 		client: server.Client(),
 	}
-	var stderr strings.Builder
-	refreshRemoteRegistry(t.Context(), registry, &stderr)
-	if !strings.Contains(stderr.String(), "try later") {
-		t.Fatalf("daemon diagnostic = %q", stderr.String())
+	logger, logs := testLogger()
+	err := refreshRemoteRegistry(t.Context(), registry, logger, "command")
+	if err == nil || !strings.Contains(err.Error(), "try later") {
+		t.Fatalf("refresh error = %v", err)
+	}
+	if !strings.Contains(logs.String(), "try later") ||
+		!strings.Contains(logs.String(), "registry cache refresh failed") {
+		t.Fatalf("daemon diagnostic = %q", logs.String())
 	}
 }

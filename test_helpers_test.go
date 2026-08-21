@@ -9,6 +9,16 @@ import (
 func newTestManager(t *testing.T) *manager {
 	t.Helper()
 	root := t.TempDir()
+	socketDir, err := os.MkdirTemp("", "smgr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDir); err != nil {
+			t.Errorf("remove daemon socket directory: %v", err)
+		}
+	})
+	cache := filepath.Join(root, "cache", "skills-mgr")
 	manager := &manager{paths: paths{
 		userSkills:     filepath.Join(root, "home", ".agents", "skills"),
 		claudeSkills:   filepath.Join(root, "home", ".claude", "skills"),
@@ -16,8 +26,11 @@ func newTestManager(t *testing.T) *manager {
 		codexHome:      filepath.Join(root, "home", ".codex"),
 		adminSkills:    filepath.Join(root, "etc", "codex", "skills"),
 		globalLockDir:  filepath.Join(root, "home"),
-		selectionLocks: filepath.Join(root, "cache", "skills-mgr", "selection-locks"),
-		remoteSkills:   filepath.Join(root, "cache", "skills-mgr", "remote-skills"),
+		selectionLocks: filepath.Join(cache, "selection-locks"),
+		remoteRegistry: filepath.Join(cache, "skills-sh.json"),
+		skillsMP:       filepath.Join(cache, "skillsmp.json"),
+		remoteSkills:   filepath.Join(cache, "remote-skills"),
+		daemonSocket:   filepath.Join(socketDir, "skills-mgr.sock"),
 	}}
 	if err := os.MkdirAll(manager.paths.globalLockDir, 0o755); err != nil {
 		t.Fatal(err)

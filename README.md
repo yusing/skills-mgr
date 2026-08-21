@@ -96,6 +96,8 @@ All project commands use the current working directory as the project.
 | `skills-mgr get <skill>/<path> <start>:<end>` | Write an inclusive, 1-based line range |
 | `skills-mgr run <skill>/<script> [args...]` | Run a script from the enabled skill and pass through its standard streams and exit status |
 | `skills-mgr daemon` | Refresh registry metadata and stale installed remote skills until interrupted |
+| `skills-mgr daemon refresh` | Ask the running daemon to refresh the skills.sh registry cache now |
+| `skills-mgr daemon sync` | Ask the running daemon to update stale persisted remote skills now |
 
 Markdown returned by `get` omits YAML frontmatter. For a line-range request,
 line numbers apply to that frontmatter-free content.
@@ -213,9 +215,20 @@ cache rather than the project directory.
 
 ## Remote Refresh Daemon
 
-`skills-mgr daemon` refreshes registry metadata immediately, then checks every
-five minutes. Installed remote content is refreshed after it becomes stale.
-Failures are written to stderr and do not stop later refresh cycles.
+`skills-mgr daemon` listens on `$XDG_RUNTIME_DIR/skills-mgr.sock`, or
+`skills-mgr.sock` under the user cache `skills-mgr` directory when
+`XDG_RUNTIME_DIR` is unset. It refreshes skills.sh registry metadata
+immediately, then checks every five minutes. Installed remote content is
+refreshed after it becomes stale.
+
+`skills-mgr daemon refresh` asks that running process to refresh the registry
+cache. `skills-mgr daemon sync` asks it to update stale persisted remote
+skills. Both wait until the work finishes. They fail if the daemon is not
+running and do not download previously unknown remote identities.
+
+The daemon writes structured text logs to stderr for start, stop, inbound
+commands, cache refresh, and each remote-skill update. Failures are logged
+and do not stop later refresh cycles.
 
 The included `skills-mgr.service` is a systemd user-unit template. Verify that
 its `ExecStart` path matches the installed binary before installing it.

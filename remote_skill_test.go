@@ -1694,7 +1694,9 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 	}
 	ageRemoteRecord(t, manager.remoteStore, beta)
 
-	refreshPersistedRemoteSkills(t.Context(), manager, &strings.Builder{})
+	if err := refreshPersistedRemoteSkills(t.Context(), manager, testLoggerSink(), "timer"); err != nil {
+		t.Fatal(err)
+	}
 	logged, err := os.ReadFile(gitLog)
 	if err != nil {
 		t.Fatal(err)
@@ -1704,8 +1706,12 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 	}
 	alphaRecord := ageRemoteRecord(t, manager.remoteStore, alpha)
 	t.Setenv("FAKE_GIT_ERROR", "still offline")
-	var diagnostic strings.Builder
-	refreshPersistedRemoteSkills(t.Context(), manager, &diagnostic)
+	logger, diagnostic := testLogger()
+	err = refreshPersistedRemoteSkills(t.Context(), manager, logger, "timer")
+	if err == nil || !strings.Contains(err.Error(), "owner/repo/alpha") ||
+		!strings.Contains(err.Error(), "still offline") {
+		t.Fatalf("refresh error = %v", err)
+	}
 	if !strings.Contains(diagnostic.String(), "owner/repo/alpha") ||
 		!strings.Contains(diagnostic.String(), "still offline") {
 		t.Fatalf("daemon diagnostic = %q", diagnostic.String())

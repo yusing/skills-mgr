@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -108,12 +109,17 @@ func run(args []string) error {
 		command.Stderr = os.Stderr
 		return command.Run()
 	case args[0] == "daemon":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: skills-mgr daemon")
-		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runDaemon(ctx, manager, os.Stderr)
+		switch {
+		case len(args) == 1:
+			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+			return runDaemon(ctx, manager, logger)
+		case len(args) == 2 && (args[1] == daemonCommandRefresh || args[1] == daemonCommandSync):
+			return triggerDaemon(ctx, manager.paths.daemonSocket, args[1])
+		default:
+			return fmt.Errorf("usage: skills-mgr daemon [refresh|sync]")
+		}
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
