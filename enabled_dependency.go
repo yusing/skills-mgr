@@ -90,14 +90,7 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 			return []string{strconv.FormatBool(found)}, nil
 		}
 		for _, constraints := range constraintGroups {
-			matched := true
-			for _, constraint := range constraints {
-				if !index.matches(args[1], constraint) {
-					matched = false
-					break
-				}
-			}
-			if matched {
+			if index.matchesAll(args[1], constraints) {
 				return []string{"true"}, nil
 			}
 		}
@@ -112,6 +105,9 @@ func loadDependencyIndex(ctx context.Context, project string) (dependencyIndex, 
 	}
 	index := make(dependencyIndex)
 	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err := index.addManifest(path); err != nil {
 			return nil, err
 		}
@@ -152,13 +148,16 @@ func dependencyManifestPaths(ctx context.Context, project string) ([]string, err
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
-	return scanDependencyManifestPaths(project)
+	return scanDependencyManifestPaths(ctx, project)
 }
 
-func scanDependencyManifestPaths(project string) ([]string, error) {
+func scanDependencyManifestPaths(ctx context.Context, project string) ([]string, error) {
 	paths := make([]string, 0)
 	directories := []string{project}
 	for len(directories) > 0 {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		directory := directories[len(directories)-1]
 		directories = directories[:len(directories)-1]
 		entries, err := os.ReadDir(directory)
@@ -169,6 +168,9 @@ func scanDependencyManifestPaths(project string) ([]string, error) {
 			return nil, fmt.Errorf("read dependency directory %s: %w", directory, err)
 		}
 		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			path := filepath.Join(directory, entry.Name())
 			if entry.IsDir() {
 				switch entry.Name() {
@@ -270,9 +272,16 @@ func (index dependencyIndex) addManifest(path string) error {
 	return nil
 }
 
-func (index dependencyIndex) matches(name string, want dependencyConstraint) bool {
+func (index dependencyIndex) matchesAll(name string, wants []dependencyConstraint) bool {
 	for _, requirement := range index[name] {
-		if requirementMatches(requirement, want) {
+		matched := true
+		for _, want := range wants {
+			if !requirementMatches(requirement, want) {
+				matched = false
+				break
+			}
+		}
+		if matched {
 			return true
 		}
 	}

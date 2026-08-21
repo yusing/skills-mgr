@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -276,6 +278,33 @@ func TestEnabledHasDependencyBuiltinUsesOneManifestSnapshot(t *testing.T) {
 	)
 	if err != nil || len(args) != 1 || args[0] != "false" {
 		t.Fatalf("cached dependency result = %v, %v", args, err)
+	}
+}
+
+func TestEnabledHasDependencyBuiltinRequiresOneMatchingDeclaration(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/v1/package.json", `{"dependencies":{"framework":"1.9.0"}}`)
+	writeFile(t, project+"/v3/package.json", `{"dependencies":{"framework":"3.1.0"}}`)
+	enabled, err := evaluateEnabled(
+		t.Context(),
+		project,
+		"framework-v2",
+		"has_dependency framework '>=2 && <3'",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("conjunction matched different dependency declarations")
+	}
+}
+
+func TestScanDependencyManifestPathsStopsWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := scanDependencyManifestPaths(ctx, t.TempDir())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("scan error = %v, want context.Canceled", err)
 	}
 }
 
