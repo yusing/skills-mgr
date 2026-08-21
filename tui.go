@@ -1788,7 +1788,7 @@ func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr er
 		return nil, "", fmt.Errorf("secure enabled editor draft: %w", err)
 	}
 	if configured {
-		data, err := json.Marshal(current)
+		data, err := marshalJSONUnescaped(current)
 		if err != nil {
 			return nil, "", fmt.Errorf("encode enabled editor draft: %w", err)
 		}

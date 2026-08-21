@@ -1082,6 +1082,7 @@ func evaluateEnabled(
 	runner, err := interp.New(
 		interp.Dir(project),
 		interp.StdIO(nil, io.Discard, io.Discard),
+		interp.CallHandler(enabledCallHandler(project)),
 	)
 	if err != nil {
 		return false, fmt.Errorf("prepare enabled expression for skill %q: %w", skill, err)

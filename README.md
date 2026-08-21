@@ -224,6 +224,40 @@ is an error. External commands in an expression are still started normally.
 Project values override inherited global values. Removing a project value
 resumes global inheritance.
 
+Expressions can use `has_dependency <name>` to test for a dependency declaration,
+or `has_dependency <name> '<operator><version>'` to also test its declared version,
+in `go.mod`, `Cargo.toml`, or `package.json` files anywhere in the project tree.
+The supported comparison operators are `>=`, `==`, `<=`, and `<`. A quoted version
+argument can combine comparisons with `&&` and `||`; `&&` is evaluated before
+`||`, and every comparison in an `&&` group must match the same declaration.
+Comparisons use the precision supplied, so `==2` matches any declared version in
+major version `2`, while `==2.1` also compares the minor version.
+
+The builtin ignores indirect Go requirements and recognizes Cargo dependency
+versions plus package dependencies, development dependencies, and optional
+dependencies. Cargo `[workspace.dependencies]` catalog entries count even when no
+workspace member inherits them. A dependency without a declared version, such as
+a Cargo path dependency, matches only the name-only form.
+
+Manifest version checks compare the numeric boundaries written in a declaration;
+they do not fully interpret npm or Cargo range semantics. Exact numeric declarations
+produce the most predictable result; caret, tilde, compound, and alternative
+manifest ranges are evaluated only by their written numeric boundaries.
+
+For example, this global override enables the `tauri-v2` skill when the project
+declares or catalogs Tauri, its JavaScript API, or its CLI at a major version `2`:
+
+```json
+{
+  "schema_revision": 3,
+  "skills": {
+    "tauri-v2": {
+      "enabled": "has_dependency tauri '>=2 && <3' || has_dependency '@tauri-apps/api' '>=2 && <3' || has_dependency '@tauri-apps/cli' '>=2 && <3'"
+    }
+  }
+}
+```
+
 Press `i` in the TUI to edit one value without exposing the rest of the
 selection file. Enter `true`, `false`, a bare Bash expression, or a JSON string;
 save an empty file to remove the current-layer value. A conditional remote entry
