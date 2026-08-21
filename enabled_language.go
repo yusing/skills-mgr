@@ -44,9 +44,9 @@ func languageCallHandler(project string) interp.CallHandlerFunc {
 
 func canonicalLanguage(language string) (string, bool) {
 	switch language {
-	case "go", "rust", "node", "typescript", "javascript", "python", "c", "c++", "c#",
-		"java", "lua", "vb", "php", "r", "ruby", "swift", "perl", "assembly", "shell",
-		"bash", "postgres", "sql", "yaml", "json", "toml", "ini":
+	case "go", "rust", "node", "typescript", "tsx", "javascript", "jsx", "html", "css",
+		"python", "c", "c++", "c#", "java", "lua", "vb", "php", "r", "ruby", "swift",
+		"perl", "assembly", "shell", "bash", "postgres", "sql", "yaml", "json", "toml", "ini":
 		return language, true
 	case "ts":
 		return "typescript", true
@@ -171,10 +171,20 @@ func recordLanguageFile(index map[string]bool, name string) {
 		index["go"] = true
 	case ".rs":
 		index["rust"] = true
-	case ".ts", ".tsx", ".mts", ".cts":
+	case ".ts", ".mts", ".cts":
 		index["typescript"] = true
-	case ".js", ".jsx", ".mjs", ".cjs":
+	case ".tsx":
+		index["typescript"] = true
+		index["tsx"] = true
+	case ".js", ".mjs", ".cjs":
 		index["javascript"] = true
+	case ".jsx":
+		index["javascript"] = true
+		index["jsx"] = true
+	case ".html", ".htm":
+		index["html"] = true
+	case ".css":
+		index["css"] = true
 	case ".py", ".pyw":
 		index["python"] = true
 	case ".c":

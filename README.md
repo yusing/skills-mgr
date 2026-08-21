@@ -246,10 +246,11 @@ manifest ranges are evaluated only by their written numeric boundaries.
 
 Use `lang <language>` to test whether the project contains any matching package
 marker or file extension. Mixed-language projects satisfy every language found.
-Supported names are `go`, `rust`, `node`, `typescript` (`ts`), `javascript`
-(`js`), `python`, `c`, `c++`, `c#`, `java`, `lua`, `vb`, `php`, `r`, `ruby`,
-`swift`, `perl`, `assembly` (`asm`), `shell` (`sh`), `bash`, `postgres`, `sql`,
-`yaml`, `json`, `toml`, and `ini`. Names and aliases are lowercase.
+Supported names are `go`, `rust`, `node`, `typescript` (`ts`), `tsx`,
+`javascript` (`js`), `jsx`, `html`, `css`, `python`, `c`, `c++`, `c#`, `java`,
+`lua`, `vb`, `php`, `r`, `ruby`, `swift`, `perl`, `assembly` (`asm`), `shell`
+(`sh`), `bash`, `postgres`, `sql`, `yaml`, `json`, `toml`, and `ini`. Names and
+aliases are lowercase.
 
 Detection uses this evidence:
 
@@ -259,7 +260,11 @@ Detection uses this evidence:
 | `rust` | `Cargo.toml`, `.rs` |
 | `node` | `package.json` |
 | `typescript` / `ts` | `tsconfig.json`, `.ts`, `.tsx`, `.mts`, `.cts` |
+| `tsx` | `.tsx` |
 | `javascript` / `js` | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| `jsx` | `.jsx` |
+| `html` | `.html`, `.htm` |
+| `css` | `.css` |
 | `python` | `pyproject.toml`, `requirements.txt`, `Pipfile`, `.py`, `.pyw` |
 | `c` | `.c` |
 | `c++` | `.C`, `.cc`, `.cpp`, `.cxx`, `.c++`, `.hh`, `.hpp`, `.hxx` |

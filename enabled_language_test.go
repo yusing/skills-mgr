@@ -16,7 +16,11 @@ func TestEnabledLangBuiltinDetectsSupportedLanguages(t *testing.T) {
 		{"rust", "Cargo.toml"},
 		{"node", "package.json"},
 		{"typescript", "src/main.ts"},
+		{"tsx", "src/component.tsx"},
 		{"javascript", "src/main.mjs"},
+		{"jsx", "src/component.jsx"},
+		{"html", "public/index.html"},
+		{"css", "public/app.css"},
 		{"python", "pyproject.toml"},
 		{"c", "src/main.c"},
 		{"c++", "src/main.cpp"},
@@ -59,10 +63,16 @@ func TestEnabledLangBuiltinAliasesAndMixedProjects(t *testing.T) {
 	writeFile(t, project+"/src/main.cpp", "")
 	writeFile(t, project+"/src/Program.cs", "")
 	writeFile(t, project+"/scripts/check.sh", "")
+	writeFile(t, project+"/public/index.html", "")
+	writeFile(t, project+"/public/app.css", "")
 
 	for _, expression := range []string{
 		"lang ts",
 		"lang js",
+		"lang tsx",
+		"lang jsx",
+		"lang html",
+		"lang css",
 		"lang asm",
 		"lang sh",
 		"lang c++",
