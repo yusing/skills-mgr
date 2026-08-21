@@ -290,16 +290,59 @@ Detection uses this evidence:
 An evidence file can detect more than one language. For example, `Cargo.toml`
 detects both `rust` and `toml`, and `package.json` detects both `node` and
 `json`. Each enabled expression uses one cached, resumable project walk. A
-predicate stops the walk as soon as its evidence is found; a later predicate in
-the same expression reuses evidence already seen and resumes the remaining
-directories. The walk includes Git-ignored files and skips `.git`,
-`node_modules`, and `target` directories.
+predicate stops after the first visited directory that establishes its
+evidence; a later predicate in the same expression reuses evidence already seen
+and resumes the remaining directories. The walk includes Git-ignored files and
+skips `.git`, `node_modules`, and `target` directories.
 
 For example, this expression enables a skill in a project containing Go or
 TypeScript evidence:
 
 ```sh
 lang go || lang ts
+```
+
+Use `tooling <name>` to test whether the project contains a conventional
+lockfile, configuration file, or build entrypoint for a tool. This checks
+project evidence rather than whether an executable is installed. Mixed-tooling
+projects satisfy every tool found. Supported names are `bun`, `yarn`, `deno`,
+`npm`, `pnpm`, `maven`, `composer`, `cmake`, `make`, `just`, `shadowtree`,
+`taskfile`, `bazel`, `docker`, `docker-compose`, `kubernetes` (`k8s`), `pip`, and
+`uv`.
+
+Detection uses this evidence:
+
+| Tool | Project evidence |
+| --- | --- |
+| `bun` | `bun.lock`, `bun.lockb`, `bunfig.toml` |
+| `yarn` | `yarn.lock`, `.yarnrc`, `.yarnrc.yml`, `.yarnrc.yaml` |
+| `deno` | `deno.json`, `deno.jsonc`, `deno.lock` |
+| `npm` | `package-lock.json`, `npm-shrinkwrap.json` |
+| `pnpm` | `pnpm-lock.yaml`, `pnpm-workspace.yaml` |
+| `maven` | `pom.xml`, `mvnw`, `mvnw.cmd` |
+| `composer` | `composer.json`, `composer.lock` |
+| `cmake` | `CMakeLists.txt`, `CMakePresets.json`, `CMakeUserPresets.json` |
+| `make` | `Makefile`, `makefile`, `GNUmakefile` |
+| `just` | `justfile`, `Justfile`, `.justfile` |
+| `shadowtree` | `.shadowtree.toml` |
+| `taskfile` | `Taskfile.yml`, `Taskfile.yaml`, `taskfile.yml`, `taskfile.yaml` |
+| `bazel` | `.bazelrc`, `MODULE.bazel`, `WORKSPACE`, `WORKSPACE.bazel`, `BUILD`, `BUILD.bazel` |
+| `docker` | `Dockerfile`, `Dockerfile.*`, `docker-bake.hcl`, `docker-bake.json`, or Docker Compose evidence |
+| `docker-compose` | `compose.yml`, `compose.yaml`, `docker-compose.yml`, `docker-compose.yaml` |
+| `kubernetes` / `k8s` | `kustomization.yml`, `kustomization.yaml`, `Kustomization`, `Chart.yaml`, `skaffold.yml`, `skaffold.yaml` |
+| `pip` | `pip.conf`, `pip.ini`, or a `requirements*.txt` file |
+| `uv` | `uv.lock`, `uv.toml` |
+
+Language and tooling predicates share the cached, resumable project walk for an
+enabled expression. Evidence observed for either predicate is immediately
+available to the other, and later predicates continue from the remaining
+directories instead of starting another walk.
+
+For example, this expression enables a skill in a TypeScript project using
+pnpm or Bun:
+
+```sh
+lang ts && (tooling pnpm || tooling bun)
 ```
 
 For example, this global override enables the `tauri-v2` skill when the project

@@ -7,9 +7,11 @@ import (
 )
 
 func enabledCallHandler(project string) interp.CallHandlerFunc {
+	evidence := newProjectEvidenceIndex(project)
 	handlers := [...]interp.CallHandlerFunc{
 		dependencyCallHandler(project),
-		languageCallHandler(project),
+		languageCallHandler(evidence),
+		toolingCallHandler(evidence),
 	}
 	return func(ctx context.Context, args []string) ([]string, error) {
 		var err error
