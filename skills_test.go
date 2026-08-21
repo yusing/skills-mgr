@@ -19,6 +19,30 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+func selectionForTest(
+	t *testing.T,
+	manager *manager,
+	project string,
+) (map[string]bool, error) {
+	t.Helper()
+	skills, err := manager.skills(project)
+	if err != nil {
+		return nil, err
+	}
+	state, err := manager.selectionState(project, skills)
+	if err != nil {
+		return nil, err
+	}
+	for _, skill := range skills {
+		enabled, err := state.enabled(t.Context(), project, skill.Name)
+		if err != nil {
+			return nil, err
+		}
+		state.selected[skill.Name] = enabled
+	}
+	return state.selected, nil
+}
+
 func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -95,7 +119,7 @@ func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +227,7 @@ func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
 	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
 	assertLock(t, project, map[string]bool{"alpha": false})
 
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +312,7 @@ func TestLoadLegacyLockAndUpgradeOnSelectionChange(t *testing.T) {
   }
 }`)
 
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -531,7 +555,7 @@ description: >
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	want := `<skills>
@@ -580,7 +604,7 @@ func TestListOmitsHiddenAndUnderscorePrefixedReferences(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	want := `<skills>
@@ -602,7 +626,7 @@ func TestListKeepsFullSkillDescription(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	listed := output.String()
@@ -633,7 +657,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,7 +666,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="manual"`) {
@@ -653,7 +677,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "manual", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "manual", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "manual body\n"; output.String() != want {
@@ -666,7 +690,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	}
 	assertLock(t, project, map[string]bool{"automatic": true, "manual": false})
 	output.Reset()
-	if err := manager.get(project, "manual", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "manual", "", &output); err == nil {
 		t.Fatal("get read an explicitly disabled manual-only skill")
 	}
 }
@@ -691,33 +715,33 @@ func TestEnabledExpressionControlsListGetAndRun(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="go-review"`) {
 		t.Fatalf("false expression listed skill:\n%s", output.String())
 	}
-	if err := manager.get(project, "go-review", "", io.Discard); err == nil ||
+	if err := manager.getContext(t.Context(), project, "go-review", "", io.Discard); err == nil ||
 		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("get error = %v, want disabled", err)
 	}
-	if _, err := manager.scriptCommand(project, "go-review/check.sh", nil); err == nil ||
+	if _, err := manager.scriptCommandContext(t.Context(), project, "go-review/check.sh", nil); err == nil ||
 		!strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("run error = %v, want disabled", err)
 	}
 
 	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
 	output.Reset()
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `name="go-review"`) {
 		t.Fatalf("true expression omitted skill:\n%s", output.String())
 	}
-	if err := manager.get(project, "go-review", "", io.Discard); err != nil {
+	if err := manager.getContext(t.Context(), project, "go-review", "", io.Discard); err != nil {
 		t.Fatalf("get with true expression: %v", err)
 	}
-	if _, err := manager.scriptCommand(project, "go-review/check.sh", nil); err != nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "go-review/check.sh", nil); err != nil {
 		t.Fatalf("run with true expression: %v", err)
 	}
 }
@@ -747,7 +771,7 @@ func TestEnabledExpressionUsesStatusOneForFalseAndHigherStatusForError(t *testin
 				t.Fatal(err)
 			}
 			var output bytes.Buffer
-			err := manager.list(project, &output)
+			err := manager.listContext(t.Context(), project, &output)
 			if test.wantError == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -1071,7 +1095,7 @@ func TestListEmptySelectionWritesXMLDocument(t *testing.T) {
 	project := t.TempDir()
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "<skills></skills>\n"; output.String() != want {
@@ -1216,7 +1240,7 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
-			if err := manager.list(project, &output, tt.harnesses...); err != nil {
+			if err := manager.listContext(t.Context(), project, &output, tt.harnesses...); err != nil {
 				t.Fatal(err)
 			}
 			for _, name := range tt.wantNames {
@@ -1246,7 +1270,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(home, &output, listHarnessGrok); err != nil {
+	if err := manager.listContext(t.Context(), home, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="user-skill"`) {
@@ -1260,7 +1284,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 		skillFile("local-skill", "Project agents skill.", ""),
 	)
 	output.Reset()
-	if err := manager.list(project, &output, listHarnessGrok); err != nil {
+	if err := manager.listContext(t.Context(), project, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="local-skill"`) {
@@ -1286,7 +1310,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 		t.Fatal(err)
 	}
 	output.Reset()
-	if err := manager.list(linked, &output, listHarnessGrok); err != nil {
+	if err := manager.listContext(t.Context(), linked, &output, listHarnessGrok); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="linked-skill"`) {
@@ -1320,14 +1344,14 @@ func TestGetAndRunResolveSkillsFromAnyAgentSource(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.get(project, "codex-only", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "codex-only", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "codex body\n" {
 		t.Fatalf("Codex skill output = %q", output.String())
 	}
 
-	command, err := manager.scriptCommand(project, "codex-only/scripts/echo.sh", nil)
+	command, err := manager.scriptCommandContext(t.Context(), project, "codex-only/scripts/echo.sh", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1340,7 +1364,7 @@ func TestGetAndRunResolveSkillsFromAnyAgentSource(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "project-claude", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "project-claude", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "claude body\n" {
@@ -1385,7 +1409,7 @@ func TestListHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T)
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output, listHarnessClaude); err != nil {
+	if err := manager.listContext(t.Context(), project, &output, listHarnessClaude); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `name="`+name+`"`) {
@@ -1518,7 +1542,7 @@ func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 		skillFile("local", "Repository-local skill.", "local body\n"),
 	)
 
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1527,7 +1551,7 @@ func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `name="local"`) {
@@ -1535,7 +1559,7 @@ func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "local", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "local", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "local body\n"; output.String() != want {
@@ -1549,13 +1573,13 @@ func TestProjectSkillDefaultsToEnabled(t *testing.T) {
 	assertLock(t, project, map[string]bool{"local": false})
 
 	output.Reset()
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "<skills></skills>\n"; output.String() != want {
 		t.Fatalf("disabled list output = %q, want %q", output.String(), want)
 	}
-	if err := manager.get(project, "local", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "local", "", &output); err == nil {
 		t.Fatal("get read an explicitly disabled project skill")
 	}
 }
@@ -1578,7 +1602,7 @@ func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "<skills>\n  <skill name=\"alpha\" description=\"Alpha.\"></skill>\n</skills>\n"; output.String() != want {
@@ -1601,7 +1625,7 @@ func TestListSkipsMalformedEnabledSkillWithoutChangingSelection(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if want := "<skills>\n  <skill name=\"alpha\" description=\"Alpha.\"></skill>\n</skills>\n"; output.String() != want {
@@ -1621,7 +1645,7 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.get(project, "alpha", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "first\nsecond\nthird\nfourth\n" {
@@ -1629,7 +1653,7 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "alpha/SKILL.md", "2:3", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha/SKILL.md", "2:3", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "second\nthird\n" {
@@ -1637,7 +1661,7 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "alpha/references/guide.md", "2:3", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha/references/guide.md", "2:3", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "two\nthree\n" {
@@ -1676,7 +1700,7 @@ func TestGetStripsMarkdownFrontmatter(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.get(project, "alpha", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "# Body\n\nText.\n" {
@@ -1684,7 +1708,7 @@ func TestGetStripsMarkdownFrontmatter(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "alpha/references/SKILL.md", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha/references/SKILL.md", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "# Reference\n" {
@@ -1692,7 +1716,7 @@ func TestGetStripsMarkdownFrontmatter(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "alpha/references/plain.md", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha/references/plain.md", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != plainReference {
@@ -1700,7 +1724,7 @@ func TestGetStripsMarkdownFrontmatter(t *testing.T) {
 	}
 
 	output.Reset()
-	if err := manager.get(project, "alpha/references/fixture.txt", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha/references/fixture.txt", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != delimiterText {
@@ -1721,7 +1745,7 @@ func TestGetMalformedSkillWritesNoOutput(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.get(project, "malformed", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "malformed", "", &output); err == nil {
 		t.Fatal("get accepted malformed skill frontmatter")
 	}
 	if output.Len() != 0 {
@@ -1733,7 +1757,7 @@ func TestGetMalformedSkillWritesNoOutput(t *testing.T) {
 		filepath.Join(manager.paths.userSkills, "malformed", "references", "guide.md"),
 		"---\ntitle: Missing closing delimiter.\n",
 	)
-	if err := manager.get(project, "malformed/references/guide.md", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "malformed/references/guide.md", "", &output); err == nil {
 		t.Fatal("get accepted malformed reference frontmatter")
 	}
 	if output.Len() != 0 {
@@ -1747,16 +1771,16 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 
 	var output bytes.Buffer
-	if err := manager.get(project, "unknown", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "unknown", "", &output); err == nil {
 		t.Fatal("get accepted an unknown skill")
 	}
-	if err := manager.get(project, "alpha", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err == nil {
 		t.Fatal("get read a disabled skill")
 	}
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.get(project, "alpha/../outside", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "alpha/../outside", "", &output); err == nil {
 		t.Fatal("get accepted a path outside the skill")
 	}
 
@@ -1765,7 +1789,7 @@ func TestGetRejectsDisabledAndEscapingTargets(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(manager.paths.userSkills, "alpha", "escape.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.get(project, "alpha/escape.md", "", &output); err == nil {
+	if err := manager.getContext(t.Context(), project, "alpha/escape.md", "", &output); err == nil {
 		t.Fatal("get followed a symlink outside the skill")
 	}
 }
@@ -1790,7 +1814,7 @@ func TestRunSkillScripts(t *testing.T) {
 					t.Skip("python3 is not installed")
 				}
 			}
-			command, err := manager.scriptCommand(project, target, []string{"argument"})
+			command, err := manager.scriptCommandContext(t.Context(), project, target, []string{"argument"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1827,7 +1851,7 @@ func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
 	writeExecutable(t, node, "#!/bin/sh\nexit 0")
 	t.Setenv("PATH", nodeBin)
 	for _, extension := range []string{".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"} {
-		command, err := primary.scriptCommand(project, "alpha/script"+extension, nil)
+		command, err := primary.scriptCommandContext(t.Context(), project, "alpha/script"+extension, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1840,7 +1864,7 @@ func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
 	bun := filepath.Join(bunBin, "bun")
 	writeExecutable(t, bun, "#!/bin/sh\nexit 0")
 	t.Setenv("PATH", bunBin)
-	command, err := primary.scriptCommand(project, "alpha/script.js", nil)
+	command, err := primary.scriptCommandContext(t.Context(), project, "alpha/script.js", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1849,7 +1873,7 @@ func TestRunJavaScriptRuntimeFallbackAndCache(t *testing.T) {
 	}
 
 	fallbackManager := &manager{paths: primary.paths}
-	command, err = fallbackManager.scriptCommand(project, "alpha/script.ts", nil)
+	command, err = fallbackManager.scriptCommandContext(t.Context(), project, "alpha/script.ts", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1871,7 +1895,7 @@ func TestRunJavaScriptRejectsMissingRuntimeAndUnrelatedNames(t *testing.T) {
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "nodejs"), "#!/bin/sh\nexit 0")
 	t.Setenv("PATH", bin)
-	if _, err := manager.scriptCommand(project, "alpha/script.js", nil); err == nil ||
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha/script.js", nil); err == nil ||
 		!strings.Contains(err.Error(), "neither node nor bun") {
 		t.Fatalf("missing runtime error = %v", err)
 	}
@@ -1957,19 +1981,19 @@ func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeFile(t, filepath.Join(root, "script.sh"), "exit 0")
 
-	if _, err := manager.scriptCommand(project, "alpha/script.sh", nil); err == nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha/script.sh", nil); err == nil {
 		t.Fatal("run accepted a script from a disabled skill")
 	}
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.scriptCommand(project, "alpha/../outside.sh", nil); err == nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha/../outside.sh", nil); err == nil {
 		t.Fatal("run accepted a path outside the skill")
 	}
-	if _, err := manager.scriptCommand(project, "alpha", nil); err == nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha", nil); err == nil {
 		t.Fatal("run accepted a malformed script target")
 	}
-	if _, err := manager.scriptCommand(project, "alpha/scripts", nil); err == nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha/scripts", nil); err == nil {
 		t.Fatal("run accepted a directory")
 	}
 
@@ -1978,12 +2002,12 @@ func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, "escape.sh")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.scriptCommand(project, "alpha/escape.sh", nil); err == nil {
+	if _, err := manager.scriptCommandContext(t.Context(), project, "alpha/escape.sh", nil); err == nil {
 		t.Fatal("run followed a symlink outside the skill")
 	}
 
 	writeFile(t, filepath.Join(root, "future.jsx"), "")
-	command, err := manager.scriptCommand(project, "alpha/future.jsx", nil)
+	command, err := manager.scriptCommandContext(t.Context(), project, "alpha/future.jsx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

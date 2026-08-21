@@ -75,14 +75,14 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 	}
 
 	var output strings.Builder
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `name="alpha"`) {
 		t.Fatalf("list omitted remote skill:\n%s", output.String())
 	}
 	output.Reset()
-	if err := manager.get(project, "alpha", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "body" {
@@ -102,7 +102,7 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 		}
 	}
 	otherProject := t.TempDir()
-	other, err := manager.selection(otherProject)
+	other, err := selectionForTest(t, manager, otherProject)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1017,7 +1017,7 @@ func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
 	}
 
 	var output bytes.Buffer
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(output.String(), `name="go-review"`) {
@@ -1025,7 +1025,7 @@ func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
 	output.Reset()
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `name="go-review"`) {
@@ -1339,7 +1339,7 @@ func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.global = false
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1943,7 +1943,7 @@ func TestRemoteToggleRefreshesStaleContentWithoutReplacingOnFailure(t *testing.T
 	if current.Content != original.Content || !current.FetchedAt.Equal(original.FetchedAt) {
 		t.Fatalf("failed refresh replaced metadata: %#v, want %#v", current, original)
 	}
-	selected, err := manager.selection(project)
+	selected, err := selectionForTest(t, manager, project)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1971,7 +1971,7 @@ func TestRemoteToggleRefreshesStaleContentWithoutReplacingOnFailure(t *testing.T
 		t.Fatalf("refreshed enable = %#v, clones = %d", result, gitCloneCount(t, gitLog))
 	}
 	var output strings.Builder
-	if err := manager.get(project, "alpha", "", &output); err != nil {
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "two" {

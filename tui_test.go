@@ -1049,7 +1049,7 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 		t.Fatalf("persisted selection = %#v", value.Skills)
 	}
 	var output strings.Builder
-	if err := manager.list(project, &output); err != nil {
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
 		t.Fatalf("list after rename: %v", err)
 	}
 	if !strings.Contains(output.String(), `name="renamed"`) {

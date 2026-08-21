@@ -665,26 +665,6 @@ func pathDepth(relative string) int {
 	return len(strings.Split(filepath.ToSlash(relative), "/"))
 }
 
-func (m *manager) selection(project string) (map[string]bool, error) {
-	skills, err := m.skills(project)
-	if err != nil {
-		return nil, err
-	}
-	state, err := m.selectionState(project, skills)
-	if err != nil {
-		return nil, err
-	}
-	ctx := context.Background()
-	for _, skill := range skills {
-		enabled, err := state.enabled(ctx, project, skill.Name)
-		if err != nil {
-			return nil, err
-		}
-		state.selected[skill.Name] = enabled
-	}
-	return state.selected, nil
-}
-
 type selectionState struct {
 	selected           map[string]bool
 	globalSelected     map[string]bool
@@ -1190,10 +1170,6 @@ const (
 	listHarnessCodex
 )
 
-func (m *manager) list(project string, output io.Writer, harnesses ...listHarness) error {
-	return m.listContext(context.Background(), project, output, harnesses...)
-}
-
 func (m *manager) listContext(
 	ctx context.Context,
 	project string,
@@ -1341,10 +1317,6 @@ func escapeXMLText(value string) (string, error) {
 	return strings.ReplaceAll(escaped, "&#39;", "'"), nil
 }
 
-func (m *manager) get(project, target, lineRange string, output io.Writer) error {
-	return m.getContext(context.Background(), project, target, lineRange, output)
-}
-
 func (m *manager) getContext(
 	ctx context.Context,
 	project, target, lineRange string,
@@ -1401,10 +1373,6 @@ func (m *manager) getContext(
 		return err
 	}
 	return writeLineRange(output, input, start, end)
-}
-
-func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {
-	return m.scriptCommandContext(context.Background(), project, target, args)
 }
 
 func (m *manager) scriptCommandContext(
