@@ -820,6 +820,73 @@ func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
 	}
 }
 
+func TestHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	const name = "writing-for-agents"
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		remoteSkillRef{
+			Provider: skillsShProvider,
+			ID:       "owner/repo/" + name,
+			Name:     name,
+			Locator:  "owner/repo/" + name,
+		},
+		&staticRemoteProvider{files: []remoteSkillFile{
+			{
+				Path:     "SKILL.md",
+				Contents: []byte(skillFile(name, "Remote skill.", "remote body\n")),
+			},
+			{
+				Path:     "scripts/echo.sh",
+				Contents: []byte("#!/bin/sh\nprintf remote\n"),
+				Mode:     0o755,
+			},
+		}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(project, name, "Remote skill.", true); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(
+		t,
+		filepath.Join(manager.paths.codexHome, "skills", name, "SKILL.md"),
+		skillFile(name, "Codex skill with the same name.", "codex body\n"),
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{name: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.list(project, &output, listHarnessClaude); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `name="`+name+`"`) {
+		t.Fatalf("Claude list omitted remote skill shadowed by a Codex skill:\n%s", output.String())
+	}
+
+	output.Reset()
+	if err := manager.get(project, name, "", &output, listHarnessClaude); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "remote body\n" {
+		t.Fatalf("Claude get output = %q, want remote skill body", output.String())
+	}
+
+	command, err := manager.scriptCommand(project, name+"/scripts/echo.sh", nil, listHarnessClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptOutput, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(scriptOutput) != "remote" {
+		t.Fatalf("Claude run output = %q, want remote", scriptOutput)
+	}
+}
+
 func TestParseHarnessArgs(t *testing.T) {
 	harnesses, rest, err := parseHarnessArgs([]string{"--claude", "--grok", "--codex"})
 	if err != nil {

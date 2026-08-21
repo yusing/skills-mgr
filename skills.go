@@ -53,6 +53,7 @@ type skillDiscovery struct {
 	skills    []discoveredSkill
 	seenPaths map[string]struct{}
 	seenNames map[string]struct{}
+	harnesses []listHarness
 }
 
 type skillRoot struct {
@@ -78,10 +79,11 @@ const (
 )
 
 // Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
-func (m *manager) skills(project string) ([]discoveredSkill, error) {
+func (m *manager) skills(project string, harnesses ...listHarness) ([]discoveredSkill, error) {
 	discovery := skillDiscovery{
 		seenPaths: make(map[string]struct{}),
 		seenNames: make(map[string]struct{}),
+		harnesses: harnesses,
 	}
 	roots := []skillRoot{
 		{path: filepath.Join(project, ".agents", "skills"), source: projectSkillSource, editable: true},
@@ -220,17 +222,20 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	if err != nil || !ok {
 		return err
 	}
+	skill.Path = resolvedSkill
+	skill.Root = resolvedRoot
+	skill.Source = root.source
+	skill.Editable = root.editable
+	skill.RemoteKey = root.remoteKey
+	if !skillAllowedForAgent(skill, d.harnesses, true) {
+		return nil
+	}
 	if _, exists := d.seenPaths[resolvedSkill]; exists {
 		return nil
 	}
 	if _, exists := d.seenNames[skill.Name]; exists {
 		return nil
 	}
-	skill.Path = resolvedSkill
-	skill.Root = resolvedRoot
-	skill.Source = root.source
-	skill.Editable = root.editable
-	skill.RemoteKey = root.remoteKey
 	d.seenPaths[resolvedSkill] = struct{}{}
 	d.seenNames[skill.Name] = struct{}{}
 	d.skills = append(d.skills, skill)
@@ -662,10 +667,6 @@ func harnessAgent(harness listHarness) string {
 	}
 }
 
-func skillVisibleToHarnesses(skill discoveredSkill, harnesses []listHarness) bool {
-	return skillAllowedForAgent(skill, harnesses, true)
-}
-
 func skillVisibleInTUI(skill discoveredSkill, harnesses []listHarness) bool {
 	agent := sourceAgent(skill.Source)
 	if len(harnesses) == 0 {
@@ -731,7 +732,7 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 	if err != nil {
 		return err
 	}
-	skills, err := m.skills(project)
+	skills, err := m.skills(project, harnesses...)
 	if err != nil {
 		return err
 	}
@@ -744,7 +745,6 @@ func (m *manager) list(project string, output io.Writer, harnesses ...listHarnes
 	for _, skill := range skills {
 		if !selected[skill.Name] ||
 			skill.DisableModelInvocation ||
-			!skillVisibleToHarnesses(skill, harnesses) ||
 			harnessVisible[skill.Name] {
 			continue
 		}
@@ -1005,12 +1005,12 @@ func (m *manager) openSkill(project, skill string, harnesses ...listHarness) (*o
 }
 
 func (m *manager) findSkill(project, name string, harnesses ...listHarness) (discoveredSkill, error) {
-	skills, err := m.skills(project)
+	skills, err := m.skills(project, harnesses...)
 	if err != nil {
 		return discoveredSkill{}, err
 	}
 	for _, skill := range skills {
-		if skill.Name == name && skillVisibleToHarnesses(skill, harnesses) {
+		if skill.Name == name {
 			return skill, nil
 		}
 	}
