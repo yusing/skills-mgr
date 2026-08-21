@@ -29,10 +29,20 @@ func (v enabledValue) MarshalJSON() ([]byte, error) {
 	case v.Boolean != nil && v.Expression == "":
 		return json.Marshal(*v.Boolean)
 	case v.Boolean == nil && strings.TrimSpace(v.Expression) != "":
-		return json.Marshal(v.Expression)
+		return marshalJSONUnescaped(v.Expression)
 	default:
 		return nil, fmt.Errorf("enabled must be a boolean or non-empty string")
 	}
+}
+
+func marshalJSONUnescaped(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
 }
 
 func (v *enabledValue) UnmarshalJSON(data []byte) error {
@@ -271,6 +281,7 @@ func saveLock(project string, value lock) error {
 	name := temp.Name()
 	defer os.Remove(name)
 	encoder := json.NewEncoder(temp)
+	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", "  ")
 	err = encoder.Encode(serialized)
 	if err == nil {

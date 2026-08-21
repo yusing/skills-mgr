@@ -1603,6 +1603,30 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 	}
 }
 
+func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	want := "has_dependency tauri '>=2' && printf '<script>&'"
+	if err := saveLock(project, lock{
+		Expressions: map[string]string{"alpha": want},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", "true")
+	_, draft, err := (model{manager: manager, project: project}).enabledEditor("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(draft) })
+	data, err := os.ReadFile(draft)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `"`+want+"\"\n" {
+		t.Fatalf("enabled editor draft = %q", data)
+	}
+}
+
 func TestEmptyEnabledEditorDraftRemovesProjectOverride(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

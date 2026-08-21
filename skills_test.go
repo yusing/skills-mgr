@@ -379,7 +379,7 @@ func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
 
 func TestLockRoundTripsEnabledExpression(t *testing.T) {
 	project := t.TempDir()
-	want := "[[ -f go.mod ]]"
+	want := "has_dependency tauri '>=2' && printf '<script>&'"
 	if err := saveLock(project, lock{
 		Expressions: map[string]string{"go-review": want},
 		Remote: map[string]remoteSkillRef{
@@ -402,6 +402,18 @@ func TestLockRoundTripsEnabledExpression(t *testing.T) {
 		got.Expressions["go-review"] != want ||
 		got.Remote["go-review"].Name != "go-review" {
 		t.Fatalf("round-tripped lock = %#v", got)
+	}
+	data, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, escaped := range []string{`\u003c`, `\u003e`, `\u0026`} {
+		if bytes.Contains(data, []byte(escaped)) {
+			t.Fatalf("selection escaped %q:\n%s", escaped, data)
+		}
+	}
+	if !bytes.Contains(data, []byte(want)) {
+		t.Fatalf("selection omitted readable expression:\n%s", data)
 	}
 }
 
