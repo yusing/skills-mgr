@@ -224,13 +224,16 @@ is an error. External commands in an expression are still started normally.
 Project values override inherited global values. Removing a project value
 resumes global inheritance.
 
-Expressions can use `has_dependency <name> '<operator><version>'` to test direct
-dependencies in `go.mod`, `Cargo.toml`, or `package.json` files anywhere in the
-project tree. The supported operators are `>=`, `==`, `<=`, and `<`. Comparisons use
-the precision supplied, so `==2` matches any declared version in major version
-`2`, while `==2.1` also compares the minor version. The builtin ignores indirect
-Go requirements and recognizes Cargo dependency versions plus package
-dependencies, development dependencies, and optional dependencies.
+Expressions can use `has_dependency <name>` to test for a direct dependency, or
+`has_dependency <name> '<operator><version>'` to also test its version, in
+`go.mod`, `Cargo.toml`, or `package.json` files anywhere in the project tree. The
+supported operators are `>=`, `==`, `<=`, and `<`. Comparisons use the precision
+supplied, so `==2` matches any declared version in major version `2`, while
+`==2.1` also compares the minor version. The builtin ignores indirect Go
+requirements and recognizes Cargo dependency versions plus package dependencies,
+development dependencies, and optional dependencies. A dependency without a
+declared version, such as a Cargo path dependency, matches only the name-only
+form.
 
 For example, this global override enables the `tauri-v2` skill only when the
 project directly depends on Tauri, its JavaScript API, or its CLI at a major

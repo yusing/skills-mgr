@@ -49,6 +49,19 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "cargo path dependency without constraint",
+			path:       "Cargo.toml",
+			manifest:   "[dependencies]\nlocal-lib = { path = \"../local-lib\" }\n",
+			expression: "has_dependency local-lib",
+			want:       true,
+		},
+		{
+			name:       "cargo path dependency with constraint",
+			path:       "Cargo.toml",
+			manifest:   "[dependencies]\nlocal-lib = { path = \"../local-lib\" }\n",
+			expression: "has_dependency local-lib '>=1'",
+		},
+		{
 			name:       "cargo version too old",
 			path:       "native/Cargo.toml",
 			manifest:   "[dependencies]\ntauri = \"1.6\"\n",
@@ -60,6 +73,19 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			manifest:   `{"dependencies":{"@tauri-apps/api":"^2.2.0"}}`,
 			expression: "has_dependency '@tauri-apps/api' '>=2'",
 			want:       true,
+		},
+		{
+			name:       "package dependency without constraint",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"react":"^19.1.0"}}`,
+			expression: "has_dependency react",
+			want:       true,
+		},
+		{
+			name:       "missing package without constraint",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"react":"^19.1.0"}}`,
+			expression: "has_dependency vue",
 		},
 		{
 			name:       "package dev dependency too old",
@@ -119,10 +145,23 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "go direct dependency without constraint",
+			path:       "go.mod",
+			manifest:   "module example.com/app\n\ngo 1.26\n\nrequire example.com/framework/v2 v2.3.1\n",
+			expression: "has_dependency example.com/framework/v2",
+			want:       true,
+		},
+		{
 			name:       "go indirect dependency",
 			path:       "go.mod",
 			manifest:   "module example.com/app\n\ngo 1.26\n\nrequire example.com/framework/v2 v2.3.1 // indirect\n",
 			expression: "has_dependency example.com/framework/v2 '>=2'",
+		},
+		{
+			name:       "go indirect dependency without constraint",
+			path:       "go.mod",
+			manifest:   "module example.com/app\n\ngo 1.26\n\nrequire example.com/framework/v2 v2.3.1 // indirect\n",
+			expression: "has_dependency example.com/framework/v2",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -152,9 +191,18 @@ func TestEnabledHasDependencyBuiltinComposesAndValidatesArguments(t *testing.T) 
 		t.Fatalf("composed dependency expression = %v, %v", enabled, err)
 	}
 
-	_, err = evaluateEnabled(t.Context(), project, "tauri-v2", "has_dependency tauri")
+	_, err = evaluateEnabled(t.Context(), project, "tauri-v2", "has_dependency")
 	if err == nil || !strings.Contains(err.Error(), "usage") {
 		t.Fatalf("invalid builtin arguments error = %v", err)
+	}
+	_, err = evaluateEnabled(
+		t.Context(),
+		project,
+		"tauri-v2",
+		"has_dependency tauri '>=2' extra",
+	)
+	if err == nil || !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("extra builtin arguments error = %v", err)
 	}
 	_, err = evaluateEnabled(
 		t.Context(),

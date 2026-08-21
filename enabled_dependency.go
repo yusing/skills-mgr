@@ -64,22 +64,30 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 		if args[0] != dependencyBuiltin {
 			return args, nil
 		}
-		if len(args) != 3 {
+		if len(args) < 2 || len(args) > 3 {
 			return nil, fmt.Errorf(
-				"%s: usage: %s <name> {>=|==|<=|<}<version>",
+				"%s: usage: %s <name> [<operator><version>]",
 				dependencyBuiltin,
 				dependencyBuiltin,
 			)
 		}
-		want, err := parseDependencyConstraint(args[2])
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", dependencyBuiltin, err)
+		var want dependencyConstraint
+		if len(args) == 3 {
+			var err error
+			want, err = parseDependencyConstraint(args[2])
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", dependencyBuiltin, err)
+			}
 		}
 		loadOnce.Do(func() {
 			index, indexErr = loadDependencyIndex(ctx, project)
 		})
 		if indexErr != nil {
 			return nil, fmt.Errorf("%s: %w", dependencyBuiltin, indexErr)
+		}
+		if len(args) == 2 {
+			_, found := index[args[1]]
+			return []string{strconv.FormatBool(found)}, nil
 		}
 		return []string{strconv.FormatBool(index.matches(args[1], want))}, nil
 	}
@@ -183,9 +191,8 @@ func (index dependencyIndex) addManifest(path string) error {
 		return fmt.Errorf("read dependency manifest %s: %w", path, err)
 	}
 	add := func(name, requirement string) {
-		if requirement != "" {
-			index[name] = append(index[name], requirement)
-		}
+		// An empty requirement records a versionless Cargo path or Git dependency.
+		index[name] = append(index[name], requirement)
 	}
 	switch filepath.Base(path) {
 	case "go.mod":
