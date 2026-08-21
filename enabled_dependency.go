@@ -56,7 +56,7 @@ type cargoManifest struct {
 	} `toml:"workspace"`
 }
 
-func enabledCallHandler(project string) interp.CallHandlerFunc {
+func dependencyCallHandler(project string) interp.CallHandlerFunc {
 	var index dependencyIndex
 	var indexErr error
 	var loadOnce sync.Once
@@ -138,7 +138,7 @@ func dependencyManifestPaths(ctx context.Context, project string) ([]string, err
 		paths := make([]string, 0, bytes.Count(output, []byte{0}))
 		for relative := range bytes.SplitSeq(output, []byte{0}) {
 			if len(relative) == 0 || !filepath.IsLocal(string(relative)) ||
-				ignoredDependencyManifestPath(string(relative)) {
+				ignoredProjectPath(string(relative)) {
 				continue
 			}
 			paths = append(paths, filepath.Join(project, string(relative)))
@@ -189,7 +189,7 @@ func scanDependencyManifestPaths(ctx context.Context, project string) ([]string,
 	return paths, nil
 }
 
-func ignoredDependencyManifestPath(path string) bool {
+func ignoredProjectPath(path string) bool {
 	for component := range strings.SplitSeq(filepath.ToSlash(path), "/") {
 		switch component {
 		case ".git", "node_modules", "target":
