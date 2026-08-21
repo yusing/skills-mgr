@@ -72,6 +72,19 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 			expression: "has_dependency '@tauri-apps/api' '<=2.1'",
 		},
 		{
+			name:       "package exclusive major upper bound",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"^2.2.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '<3'",
+			want:       true,
+		},
+		{
+			name:       "package reaches exclusive upper bound",
+			path:       "package.json",
+			manifest:   `{"dependencies":{"@tauri-apps/api":"3.0.0"}}`,
+			expression: "has_dependency '@tauri-apps/api' '<3'",
+		},
+		{
 			name:       "go direct dependency",
 			path:       "go.mod",
 			manifest:   "module example.com/app\n\ngo 1.26\n\nrequire example.com/framework/v2 v2.3.1\n",
@@ -122,7 +135,7 @@ func TestEnabledHasDependencyBuiltinComposesAndValidatesArguments(t *testing.T) 
 		"tauri-v2",
 		"has_dependency '@tauri-apps/cli' '^2'",
 	)
-	if err == nil || !strings.Contains(err.Error(), ">=, ==, or <=") {
+	if err == nil || !strings.Contains(err.Error(), ">=, ==, <=, or <") {
 		t.Fatalf("invalid builtin constraint error = %v", err)
 	}
 }

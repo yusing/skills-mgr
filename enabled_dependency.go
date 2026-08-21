@@ -21,7 +21,7 @@ import (
 const dependencyBuiltin = "has_dependency"
 
 var (
-	constraintPattern = regexp.MustCompile(`^(>=|==|<=)[[:space:]]*v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?$`)
+	constraintPattern = regexp.MustCompile(`^(>=|==|<=|<)[[:space:]]*v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?$`)
 	lowerBoundPattern = regexp.MustCompile(`(?:^|[[:space:],])([<>]=?|[~^=])?[[:space:]]*v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?`)
 )
 
@@ -58,7 +58,7 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 		}
 		if len(args) != 3 {
 			return nil, fmt.Errorf(
-				"%s: usage: %s <name> {>=|==|<=}<version>",
+				"%s: usage: %s <name> {>=|==|<=|<}<version>",
 				dependencyBuiltin,
 				dependencyBuiltin,
 			)
@@ -244,7 +244,7 @@ func parseDependencyConstraint(constraint string) (dependencyConstraint, error) 
 	match := constraintPattern.FindStringSubmatch(constraint)
 	if match == nil {
 		return dependencyConstraint{}, fmt.Errorf(
-			"version constraint must use >=, ==, or <= followed by a version",
+			"version constraint must use >=, ==, <=, or < followed by a version",
 		)
 	}
 	version, precision := versionFromMatch(match[2:])
@@ -310,6 +310,8 @@ func (c dependencyConstraint) matches(version dependencyVersion) bool {
 		return comparison == 0
 	case "<=":
 		return comparison <= 0
+	case "<":
+		return comparison < 0
 	default:
 		return false
 	}
