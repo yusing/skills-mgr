@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -139,6 +141,33 @@ func TestEnabledLangBuiltinIncludesGitIgnoredEvidence(t *testing.T) {
 	}
 }
 
+func TestEnabledLangBuiltinUsesOnlyDirectEvidenceAtHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeFile(t, home+"/projects/example/go.mod", "module example.com/app\n")
+
+	enabled, err := evaluateEnabled(t.Context(), home, "example", "lang go")
+	if err != nil || enabled {
+		t.Fatalf("nested home language expression = %v, %v; want false", enabled, err)
+	}
+
+	writeFile(t, home+"/go.mod", "module example.com/home\n")
+	enabled, err = evaluateEnabled(t.Context(), home, "example", "lang go")
+	if err != nil || !enabled {
+		t.Fatalf("direct home language expression = %v, %v; want true", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinHonorsCanceledContextDuringEvidenceLoad(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := evaluateEnabled(ctx, t.TempDir(), "example", "lang go")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled language expression error = %v, want context.Canceled", err)
+	}
+}
+
 func TestEnabledLangBuiltinCachesVisitedEvidence(t *testing.T) {
 	project := t.TempDir()
 	path := project + "/app.ts"
@@ -184,7 +213,7 @@ func TestEnabledLangBuiltinUsesOneProjectSnapshot(t *testing.T) {
 	}
 }
 
-func TestEnabledLangBuiltinResumesProjectWalk(t *testing.T) {
+func TestEnabledLangBuiltinKeepsOneCompletedProjectSnapshot(t *testing.T) {
 	project := t.TempDir()
 	writeFile(t, project+"/a/.keep", "")
 	writeFile(t, project+"/z/main.go", "package main\n")
@@ -196,8 +225,14 @@ func TestEnabledLangBuiltinResumesProjectWalk(t *testing.T) {
 
 	writeFile(t, project+"/a/lib.rs", "")
 	args, err = handler(t.Context(), []string{languageBuiltin, "rust"})
+	if err != nil || len(args) != 1 || args[0] != "false" {
+		t.Fatalf("cached language result = %v, %v", args, err)
+	}
+
+	fresh := enabledCallHandler(project)
+	args, err = fresh(t.Context(), []string{languageBuiltin, "rust"})
 	if err != nil || len(args) != 1 || args[0] != "true" {
-		t.Fatalf("resumed language result = %v, %v", args, err)
+		t.Fatalf("fresh language result = %v, %v", args, err)
 	}
 }
 

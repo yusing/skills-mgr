@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goccy/go-yaml"
 )
@@ -33,14 +34,24 @@ func selectionForTest(
 	if err != nil {
 		return nil, err
 	}
+	evaluator := newEnabledEvaluator(project)
 	for _, skill := range skills {
-		enabled, err := state.enabled(t.Context(), project, skill.Name)
+		enabled, err := state.enabled(t.Context(), evaluator, skill.Name)
 		if err != nil {
 			return nil, err
 		}
 		state.selected[skill.Name] = enabled
 	}
 	return state.selected, nil
+}
+
+func evaluateEnabled(
+	ctx context.Context,
+	project string,
+	skill string,
+	expression string,
+) (bool, error) {
+	return newEnabledEvaluator(project).evaluate(ctx, skill, expression)
 }
 
 func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
@@ -743,6 +754,114 @@ func TestEnabledExpressionControlsListGetAndRun(t *testing.T) {
 	}
 	if _, err := manager.scriptCommandContext(t.Context(), project, "go-review/check.sh", nil); err != nil {
 		t.Fatalf("run with true expression: %v", err)
+	}
+}
+
+func TestListSharesEnabledEvidenceAcrossSkills(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		writeFile(
+			t,
+			filepath.Join(project, ".agents", "skills", name, "SKILL.md"),
+			skillFile(name, name+" description.", "body\n"),
+		)
+	}
+	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
+	if err := saveLock(project, lock{Expressions: map[string]string{
+		"alpha": "lang go && rm go.mod",
+		"beta":  "lang go",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.listContext(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if !strings.Contains(output.String(), `name="`+name+`"`) {
+			t.Fatalf("shared evidence list omitted %s:\n%s", name, output.String())
+		}
+	}
+}
+
+func TestListEnabledFiltersCompleteWithinBudget(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	expressions := map[string]string{
+		"alpha":   "lang rust",
+		"beta":    "lang postgres",
+		"charlie": "lang typescript",
+		"delta":   "tooling npm",
+		"echo":    "tooling bazel",
+		"foxtrot": "tooling docker",
+	}
+	for name := range expressions {
+		writeFile(
+			t,
+			filepath.Join(project, ".agents", "skills", name, "SKILL.md"),
+			skillFile(name, name+" description.", "body\n"),
+		)
+	}
+	for directory := range 64 {
+		for file := range 16 {
+			writeFile(
+				t,
+				filepath.Join(project, "source", fmt.Sprintf("%03d", directory), fmt.Sprintf("%03d.txt", file)),
+				"fixture\n",
+			)
+		}
+	}
+	if err := saveLock(project, lock{Expressions: expressions}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	started := time.Now()
+	err := manager.listContext(t.Context(), project, &output)
+	duration := time.Since(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duration >= time.Second {
+		t.Fatalf("list with enabled filters took %s; want <1s", duration)
+	}
+	if want := "<skills></skills>\n"; output.String() != want {
+		t.Fatalf("list output = %q, want %q", output.String(), want)
+	}
+}
+
+func TestEnabledPathFiltersCompleteWithinBudget(t *testing.T) {
+	home := t.TempDir()
+	project := filepath.Join(home, "projects", "example")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	for _, test := range []struct {
+		name       string
+		project    string
+		expression string
+		want       bool
+	}{
+		{name: "home at home", project: home, expression: `[[ "$PWD" == ~ ]]`, want: true},
+		{name: "projects at home", project: home, expression: `[[ "$PWD" == ~/projects/* ]]`},
+		{name: "home in project", project: project, expression: `[[ "$PWD" == ~ ]]`},
+		{name: "projects in project", project: project, expression: `[[ "$PWD" == ~/projects/* ]]`, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			started := time.Now()
+			enabled, err := evaluateEnabled(t.Context(), test.project, "example", test.expression)
+			duration := time.Since(started)
+			if err != nil || enabled != test.want {
+				t.Fatalf("enabled path expression = %v, %v; want %v", enabled, err, test.want)
+			}
+			if duration >= 100*time.Millisecond {
+				t.Fatalf("enabled path expression took %s; want <100ms", duration)
+			}
+		})
 	}
 }
 

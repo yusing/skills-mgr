@@ -676,7 +676,7 @@ type selectionState struct {
 
 func (s selectionState) enabled(
 	ctx context.Context,
-	project string,
+	evaluator *enabledEvaluator,
 	name string,
 ) (bool, error) {
 	if !s.selected[name] {
@@ -686,7 +686,7 @@ func (s selectionState) enabled(
 	if !conditional {
 		return true, nil
 	}
-	return evaluateEnabled(ctx, project, name, expression)
+	return evaluator.evaluate(ctx, name, expression)
 }
 
 func (m *manager) selectionState(
@@ -1047,12 +1047,19 @@ func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
 	return skill.Source == projectSkillSource || skill.DisableModelInvocation
 }
 
-func evaluateEnabled(
-	ctx context.Context,
-	project string,
-	skill string,
-	expression string,
-) (bool, error) {
+type enabledEvaluator struct {
+	project     string
+	callHandler interp.CallHandlerFunc
+}
+
+func newEnabledEvaluator(project string) *enabledEvaluator {
+	return &enabledEvaluator{
+		project:     project,
+		callHandler: enabledCallHandler(project),
+	}
+}
+
+func (e *enabledEvaluator) evaluate(ctx context.Context, skill, expression string) (bool, error) {
 	program, err := syntax.NewParser(
 		syntax.Variant(syntax.LangBash),
 	).Parse(strings.NewReader(expression), "enabled")
@@ -1060,9 +1067,9 @@ func evaluateEnabled(
 		return false, fmt.Errorf("parse enabled expression for skill %q: %w", skill, err)
 	}
 	runner, err := interp.New(
-		interp.Dir(project),
+		interp.Dir(e.project),
 		interp.StdIO(nil, io.Discard, io.Discard),
-		interp.CallHandler(enabledCallHandler(project)),
+		interp.CallHandler(e.callHandler),
 	)
 	if err != nil {
 		return false, fmt.Errorf("prepare enabled expression for skill %q: %w", skill, err)
@@ -1184,6 +1191,7 @@ func (m *manager) listContext(
 	if err != nil {
 		return err
 	}
+	evaluator := newEnabledEvaluator(project)
 	harnessVisible, err := m.harnessVisibleSkillNames(project, harnesses)
 	if err != nil {
 		return err
@@ -1195,7 +1203,7 @@ func (m *manager) listContext(
 			harnessVisible[skill.Name] {
 			continue
 		}
-		enabled, err := selection.enabled(ctx, project, skill.Name)
+		enabled, err := selection.enabled(ctx, evaluator, skill.Name)
 		if err != nil {
 			return err
 		}
@@ -1459,7 +1467,7 @@ func (m *manager) openSkillContext(
 	if err != nil {
 		return nil, err
 	}
-	enabled, err := selection.enabled(ctx, project, skill)
+	enabled, err := selection.enabled(ctx, newEnabledEvaluator(project), skill)
 	if err != nil {
 		return nil, err
 	}

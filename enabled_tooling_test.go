@@ -137,7 +137,7 @@ func TestEnabledToolingBuiltinCachesExhaustedProjectWalk(t *testing.T) {
 	}
 }
 
-func TestEnabledToolingBuiltinResumesSharedProjectWalk(t *testing.T) {
+func TestEnabledToolingBuiltinKeepsOneCompletedProjectSnapshot(t *testing.T) {
 	project := t.TempDir()
 	writeFile(t, project+"/a/.keep", "")
 	writeFile(t, project+"/z/main.go", "package main\n")
@@ -149,8 +149,14 @@ func TestEnabledToolingBuiltinResumesSharedProjectWalk(t *testing.T) {
 
 	writeFile(t, project+"/a/package-lock.json", "{}")
 	args, err = handler(t.Context(), []string{toolingBuiltin, "npm"})
+	if err != nil || len(args) != 1 || args[0] != "false" {
+		t.Fatalf("cached tooling result = %v, %v", args, err)
+	}
+
+	fresh := enabledCallHandler(project)
+	args, err = fresh(t.Context(), []string{toolingBuiltin, "npm"})
 	if err != nil || len(args) != 1 || args[0] != "true" {
-		t.Fatalf("resumed tooling result = %v, %v", args, err)
+		t.Fatalf("fresh tooling result = %v, %v", args, err)
 	}
 }
 
