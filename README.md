@@ -233,15 +233,15 @@ Go requirements and recognizes Cargo dependency versions plus package
 dependencies, development dependencies, and optional dependencies.
 
 For example, this global override enables the `tauri-v2` skill only when the
-project directly depends on Tauri, its JavaScript API, or its CLI at major
-version `2` or newer:
+project directly depends on Tauri, its JavaScript API, or its CLI at a major
+version from `2` through `3`:
 
 ```json
 {
   "schema_revision": 3,
   "skills": {
     "tauri-v2": {
-      "enabled": "has_dependency tauri '>=2' || has_dependency '@tauri-apps/api' '>=2' || has_dependency '@tauri-apps/cli' '>=2'"
+      "enabled": "(has_dependency tauri '>=2' && has_dependency tauri '<=3') || (has_dependency '@tauri-apps/api' '>=2' && has_dependency '@tauri-apps/api' '<=3') || (has_dependency '@tauri-apps/cli' '>=2' && has_dependency '@tauri-apps/cli' '<=3')"
     }
   }
 }
