@@ -912,6 +912,56 @@ func TestEditDoneRefreshesMetadataByCanonicalPath(t *testing.T) {
 	}
 }
 
+func TestTUITogglesLocalModelInvocation(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"),
+		skillFile("alpha", "Alpha.", "body"),
+	)
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.width = 120
+	current.height = 10
+	if !strings.Contains(current.View(), "m model toggle") {
+		t.Fatalf("Installed help omitted model toggle:\n%s", current.View())
+	}
+
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	current = updated.(model)
+	if command == nil || !current.busy ||
+		current.status != "updating model invocation for alpha" {
+		t.Fatalf("model invocation toggle did not start: %#v", current)
+	}
+	updated, _ = current.Update(command())
+	current = updated.(model)
+	if current.busy || current.status != "disabled model invocation for alpha" ||
+		len(current.skills) != 1 || !current.skills[0].DisableModelInvocation ||
+		!strings.Contains(current.View(), "alpha [manual-only]") {
+		t.Fatalf("model invocation toggle did not refresh TUI: %#v\n%s", current, current.View())
+	}
+}
+
+func TestModelInvocationErrorPreservesTUIState(t *testing.T) {
+	current := model{
+		skills: []discoveredSkill{{Name: "alpha"}},
+		selected: map[string]bool{
+			"alpha": true,
+		},
+		expanded: "alpha",
+		busy:     true,
+	}
+	updated, _ := current.Update(modelInvocationDone{err: errors.New("write failed")})
+	got := updated.(model)
+	if got.busy || got.skills[0].DisableModelInvocation || got.expanded != "alpha" ||
+		!got.selected["alpha"] || got.status != "error: write failed" {
+		t.Fatalf("model invocation error changed TUI state: %#v", got)
+	}
+}
+
 func TestEditDoneRefreshErrorPreservesMetadata(t *testing.T) {
 	current := model{
 		skills: []discoveredSkill{{

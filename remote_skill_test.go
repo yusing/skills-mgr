@@ -559,6 +559,624 @@ func TestUninstallRemoteCancellationRestoresCurrentSelection(t *testing.T) {
 	}
 }
 
+func TestTUIWaitsForCanceledUninstallRollbackBeforeQuitting(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updated, uninstall := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	current = updated.(model)
+	if uninstall == nil || current.busyCancel == nil {
+		t.Fatalf("uninstall did not start with cancellation: %#v", current)
+	}
+	updated, quit := current.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	current = updated.(model)
+	if quit != nil || !current.busy || !current.quitAfterBusy ||
+		current.status != "canceling current operation" {
+		t.Fatalf("cancel quit before rollback: %#v, command = %v", current, quit)
+	}
+	updated, quit = current.Update(uninstall())
+	current = updated.(model)
+	if quit == nil || current.busy || current.busyCancel != nil {
+		t.Fatalf("canceled uninstall did not quit after completion: %#v", current)
+	}
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("canceled uninstall changed metadata: %#v", records)
+	}
+	selection, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+		t.Fatalf("canceled uninstall changed selection: %#v", selection)
+	}
+	for _, path := range []string{
+		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
+		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
+	} {
+		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+	}
+}
+
+func TestTUIRejectsProjectUninstallOfGlobalRemoteSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = true
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = false
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	current = updated.(model)
+	if command == nil {
+		t.Fatal("project uninstall did not reach ownership check")
+	}
+	updated, _ = current.Update(command())
+	current = updated.(model)
+	if !strings.Contains(current.status, "configured globally") {
+		t.Fatalf("project uninstall status = %q", current.status)
+	}
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("project uninstall removed global metadata: %#v", records)
+	}
+	global, err := loadLock(manager.paths.globalLockDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !global.Skills[ref.Name] || global.Remote[ref.Name] != ref {
+		t.Fatalf("project uninstall changed global selection: %#v", global)
+	}
+	assertFile(
+		t,
+		filepath.Join(manager.paths.globalLockDir, ".agents", "skills", ref.Name, "SKILL.md"),
+		"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+	)
+}
+
+func TestProjectUninstallRejectsLegacyGlobalRemoteSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(manager.paths.globalLockDir, lockName), `{
+  "schema_revision": 1,
+  "skills": {
+    "alpha": true
+  }
+}`)
+
+	_, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key())
+	if err == nil || !strings.Contains(err.Error(), "configured globally") {
+		t.Fatalf("legacy global uninstall error = %v", err)
+	}
+	records, recordsErr := manager.remoteStore.records()
+	if recordsErr != nil {
+		t.Fatal(recordsErr)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("legacy global uninstall changed metadata: %#v", records)
+	}
+}
+
+func TestProjectUninstallRechecksGlobalOwnershipBeforeMetadataRemoval(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+
+	globalLocked := make(chan struct{})
+	publishGlobal := make(chan struct{})
+	globalDone := make(chan error, 1)
+	go func() {
+		globalDone <- updateLock(
+			manager.paths.globalLockDir,
+			manager.paths.selectionLocks,
+			func(global *lock) (bool, error) {
+				close(globalLocked)
+				<-publishGlobal
+				global.Skills[ref.Name] = true
+				global.Remote[ref.Name] = ref
+				return true, nil
+			},
+		)
+	}()
+	<-globalLocked
+
+	uninstallDone := make(chan error, 1)
+	go func() {
+		_, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key())
+		uninstallDone <- err
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		selection, err := loadLock(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := selection.Remote[ref.Name]; !exists {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("uninstall did not reach its final global ownership check")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(publishGlobal)
+	if err := <-globalDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-uninstallDone; err == nil ||
+		!strings.Contains(err.Error(), "configured globally") {
+		t.Fatalf("concurrent global ownership error = %v", err)
+	}
+
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("concurrent global ownership changed metadata: %#v", records)
+	}
+	projectSelection, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !projectSelection.Skills[ref.Name] || projectSelection.Remote[ref.Name] != ref {
+		t.Fatalf("failed uninstall did not restore project selection: %#v", projectSelection)
+	}
+}
+
+func TestGlobalRemoteSelectionRequiresPersistedMetadata(t *testing.T) {
+	manager := newTestManager(t)
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.remove(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = true
+	if _, err := manager.setRemoteSelection(t.TempDir(), ref, true); err == nil ||
+		!strings.Contains(err.Error(), "metadata") {
+		t.Fatalf("missing metadata selection error = %v", err)
+	}
+	global, err := loadLock(manager.paths.globalLockDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := global.Skills[ref.Name]; exists {
+		t.Fatalf("missing metadata wrote global selection: %#v", global)
+	}
+	if _, exists := global.Remote[ref.Name]; exists {
+		t.Fatalf("missing metadata wrote global identity: %#v", global)
+	}
+}
+
+func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	recordBefore := loadRemoteRecord(t, manager.remoteStore, ref)
+	contentRoot, err := manager.remoteStore.contentRoot(recordBefore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(contentRoot, "SKILL.md")
+	contentBefore, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placeholderPaths := []string{
+		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
+		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
+	}
+	placeholdersBefore := make([][]byte, len(placeholderPaths))
+	for index, path := range placeholderPaths {
+		placeholdersBefore[index], err = os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.toggleModelInvocation(t.Context(), project, discovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Disabled || len(result.Skills) != 1 ||
+		!result.Skills[0].DisableModelInvocation {
+		t.Fatalf("remote model invocation result = %#v", result)
+	}
+	otherProjectSkill, err := manager.findSkill(t.TempDir(), ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !otherProjectSkill.DisableModelInvocation {
+		t.Fatalf("remote override was not installation-wide: %#v", otherProjectSkill)
+	}
+	recordAfter := loadRemoteRecord(t, manager.remoteStore, ref)
+	if recordAfter != recordBefore {
+		t.Fatalf("override changed remote record:\nbefore: %#v\nafter:  %#v", recordBefore, recordAfter)
+	}
+	contentAfter, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(contentAfter, contentBefore) {
+		t.Fatalf("override changed cached SKILL.md:\n%s", contentAfter)
+	}
+	for index, path := range placeholderPaths {
+		placeholder, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(placeholder, placeholdersBefore[index]) {
+			t.Fatalf("override changed placeholder %s:\n%s", path, placeholder)
+		}
+	}
+
+	overridePath := manager.remoteStore.overridePath(ref)
+	data, err := os.ReadFile(overridePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted remoteSkillOverride
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.SchemaRevision != remoteSkillOverrideSchemaRevision ||
+		persisted.DisableModelInvocation == nil || !*persisted.DisableModelInvocation {
+		t.Fatalf("persisted override = %#v", persisted)
+	}
+	info, err := os.Stat(overridePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("override mode = %o, want 600", info.Mode().Perm())
+	}
+	secondStore := newRemoteSkillStore(manager.remoteStore.root)
+	records, err := secondStore.recordsForDiscovery()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].disableModelInvocationOverride == nil ||
+		!*records[0].disableModelInvocationOverride {
+		t.Fatalf("reloaded override = %#v", records)
+	}
+
+	result, err = manager.toggleModelInvocation(t.Context(), project, result.Skills[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disabled || result.Skills[0].DisableModelInvocation {
+		t.Fatalf("second toggle result = %#v", result)
+	}
+	override, err := manager.remoteStore.loadOverrideLocked(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override == nil || *override {
+		t.Fatalf("explicit false override = %v", override)
+	}
+	if _, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(overridePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained override: %v", err)
+	}
+}
+
+func TestRemoteModelInvocationOverrideSurvivesRefresh(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	initial := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path: "SKILL.md",
+		Contents: []byte("---\nname: alpha\ndescription: Before.\n" +
+			"disable-model-invocation: true\n---\nbefore"),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, initial); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.toggleModelInvocation(t.Context(), project, discovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disabled {
+		t.Fatalf("toggle did not persist explicit false: %#v", result)
+	}
+	overrideBefore, err := os.ReadFile(manager.remoteStore.overridePath(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	aged := ageRemoteRecord(t, manager.remoteStore, ref)
+	updated := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path: "SKILL.md",
+		Contents: []byte("---\nname: alpha\ndescription: After.\n" +
+			"disable-model-invocation: true\n---\nafter"),
+	}}}
+	if err := manager.remoteStore.refresh(t.Context(), aged, updated); err != nil {
+		t.Fatal(err)
+	}
+	overrideAfter, err := os.ReadFile(manager.remoteStore.overridePath(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(overrideAfter, overrideBefore) {
+		t.Fatalf("refresh changed override:\nbefore: %s\nafter: %s", overrideBefore, overrideAfter)
+	}
+	discovered, err = manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovered.Description != "After." || discovered.DisableModelInvocation {
+		t.Fatalf("refreshed discovery = %#v", discovered)
+	}
+}
+
+func TestRemoteModelInvocationTogglesSerializeAcrossStores(t *testing.T) {
+	manager := newTestManager(t)
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	stores := []*remoteSkillStore{
+		newRemoteSkillStore(manager.remoteStore.root),
+		newRemoteSkillStore(manager.remoteStore.root),
+	}
+	type toggleResult struct {
+		disabled bool
+		err      error
+	}
+	results := make(chan toggleResult, len(stores))
+	var wg sync.WaitGroup
+	for _, store := range stores {
+		wg.Go(func() {
+			disabled, err := store.toggleModelInvocation(t.Context(), ref)
+			results <- toggleResult{disabled: disabled, err: err}
+		})
+	}
+	wg.Wait()
+	close(results)
+	states := make([]bool, 0, len(stores))
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		states = append(states, result.disabled)
+	}
+	if len(states) != 2 || !slices.Contains(states, false) || !slices.Contains(states, true) {
+		t.Fatalf("serialized toggle states = %v", states)
+	}
+	override, err := manager.remoteStore.loadOverrideLocked(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override == nil || *override {
+		t.Fatalf("two toggles did not restore explicit false: %v", override)
+	}
+}
+
+func TestMalformedRemoteModelInvocationOverrideDoesNotBlockUninstall(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, manager.remoteStore.overridePath(ref), `{"schemaRevision":1}`)
+	if _, err := manager.skills(project); err == nil ||
+		!strings.Contains(err.Error(), "missing disableModelInvocation") {
+		t.Fatalf("discovery error = %v", err)
+	}
+	if _, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manager.remoteStore.overridePath(ref)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained malformed override: %v", err)
+	}
+}
+
+func TestRemoteInstallClearsOrphanedModelInvocationOverride(t *testing.T) {
+	manager := newTestManager(t)
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	writeFile(
+		t,
+		manager.remoteStore.overridePath(ref),
+		`{"schemaRevision":1,"disableModelInvocation":true}`,
+	)
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manager.remoteStore.overridePath(ref)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh install retained orphan override: %v", err)
+	}
+	discovered, err := manager.findSkill(t.TempDir(), ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovered.DisableModelInvocation {
+		t.Fatalf("fresh install inherited orphan override: %#v", discovered)
+	}
+}
+
+func TestRemoteUninstallStagesCorruptOverrideWithoutStrandingReinstall(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	overridePath := manager.remoteStore.overridePath(ref)
+	if err := os.MkdirAll(filepath.Join(overridePath, "unexpected"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(overridePath, "unexpected", "data"), "corrupt")
+	if _, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(overridePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained authoritative override path: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(overridePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".remote-skill-override-remove-") {
+			t.Fatalf("uninstall retained staged override %q", entry.Name())
+		}
+	}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatalf("reinstall was stranded by corrupt override: %v", err)
+	}
+	if _, err := manager.findSkill(project, ref.Name); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	manager := newTestManager(t)
 	alpha := remoteSkillRef{
@@ -1957,6 +2575,58 @@ func TestTUIUninstallsSelectedRemoteSkill(t *testing.T) {
 	}
 	if current.remoteSelected[ref.key()] {
 		t.Fatalf("remote uninstall retained catalog selection: %#v", current.remoteSelected)
+	}
+}
+
+func TestTUITogglesRemoteModelInvocationWithoutChangingPlaceholder(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	placeholderPath := filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md")
+	placeholderBefore, err := os.ReadFile(placeholderPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.width = 120
+	current.height = 10
+
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	current = updated.(model)
+	if command == nil || !current.busy {
+		t.Fatalf("remote model invocation toggle did not start: %#v", current)
+	}
+	updated, _ = current.Update(command())
+	current = updated.(model)
+	if current.busy || current.status != "disabled model invocation for alpha" ||
+		len(current.skills) != 1 || !current.skills[0].DisableModelInvocation ||
+		!strings.Contains(current.View(), "alpha [manual-only]") {
+		t.Fatalf("remote model invocation toggle did not refresh TUI: %#v\n%s", current, current.View())
+	}
+	placeholderAfter, err := os.ReadFile(placeholderPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(placeholderAfter, placeholderBefore) {
+		t.Fatalf("TUI toggle changed placeholder:\n%s", placeholderAfter)
 	}
 }
 

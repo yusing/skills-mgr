@@ -38,6 +38,8 @@ type model struct {
 	height          int
 	expanded        string
 	busy            bool
+	busyCancel      context.CancelFunc
+	quitAfterBusy   bool
 	status          string
 	progressTitle   string
 	progressDetail  string
@@ -98,6 +100,11 @@ type remoteUninstallDone struct {
 	err    error
 }
 
+type modelInvocationDone struct {
+	result modelInvocationResult
+	err    error
+}
+
 type editDone struct {
 	skill      string
 	path       string
@@ -128,7 +135,7 @@ func newModel(manager *manager, project string) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
-	selected, globalSelected, projectSelected, err := manager.selectionLayers(project)
+	selected, globalSelected, projectSelected, err := manager.selectionLayers(project, nil)
 	if err != nil {
 		return model{}, err
 	}
@@ -252,6 +259,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport()
 	case remoteUninstallDone:
 		m.busy = false
+		if m.busyCancel != nil {
+			m.busyCancel()
+			m.busyCancel = nil
+		}
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
@@ -266,6 +277,42 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.expanded = ""
 		}
 		m.status = "uninstalled " + message.result.Skill
+		m.syncViewport()
+	case modelInvocationDone:
+		m.busy = false
+		if m.busyCancel != nil {
+			m.busyCancel()
+			m.busyCancel = nil
+		}
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		wasExpanded := m.expanded == message.result.Skill
+		m.allSkills = message.result.Skills
+		m.applyCatalog()
+		m.selected = message.result.Selected
+		m.globalSelected = message.result.GlobalSelected
+		m.projectSelected = message.result.ProjectSelected
+		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		m.expanded = ""
+		for index, skillIndex := range m.localSkillIndices() {
+			skill := m.skills[skillIndex]
+			if skill.Name != message.result.Skill ||
+				skill.RemoteKey != message.result.RemoteKey {
+				continue
+			}
+			m.cursor = index
+			if wasExpanded {
+				m.expanded = skill.Name
+			}
+			break
+		}
+		if message.result.Disabled {
+			m.status = "disabled model invocation for " + message.result.Skill
+		} else {
+			m.status = "enabled model invocation for " + message.result.Skill
+		}
 		m.syncViewport()
 	case editDone:
 		m.busy = false
@@ -334,6 +381,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return updateKey(m, message)
 	}
+	if m.quitAfterBusy && !m.busy {
+		return m, tea.Quit
+	}
 	return m, nil
 }
 
@@ -373,6 +423,12 @@ func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
 func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.busy {
 		if message.String() == "ctrl+c" {
+			if m.busyCancel != nil {
+				m.busyCancel()
+				m.quitAfterBusy = true
+				m.status = "canceling current operation"
+				return m, nil
+			}
 			return m, tea.Quit
 		}
 		return m, nil
@@ -429,6 +485,27 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.toggleCurrentExpanded(m.cursor)
 	case " ":
 		return toggleSelectedSkill(m)
+	case "m":
+		if !isLocalTab(m.tab) || m.manager == nil {
+			break
+		}
+		skillIndex, ok := m.localSkillIndex(m.cursor)
+		if !ok {
+			break
+		}
+		skill := m.skills[skillIndex]
+		m.busy = true
+		m.status = "updating model invocation for " + skill.Name
+		ctx, cancel := context.WithCancel(context.Background())
+		m.busyCancel = cancel
+		return m, func() tea.Msg {
+			result, err := m.manager.toggleModelInvocation(
+				ctx,
+				m.project,
+				skill,
+			)
+			return modelInvocationDone{result: result, err: err}
+		}
 	case "u":
 		if !isLocalTab(m.tab) || m.manager == nil {
 			break
@@ -443,9 +520,11 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.busy = true
 		m.status = "uninstalling " + skill.Name
+		ctx, cancel := context.WithCancel(context.Background())
+		m.busyCancel = cancel
 		return m, func() tea.Msg {
 			result, err := m.manager.uninstallRemote(
-				context.Background(),
+				ctx,
 				m.project,
 				skill.Name,
 				skill.RemoteKey,
@@ -481,6 +560,7 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if refreshErr == nil {
 				selected, globalSelected, projectSelected, refreshErr = m.manager.selectionLayers(
 					m.project,
+					nil,
 				)
 			}
 			return editDone{
@@ -1010,12 +1090,12 @@ func (m model) View() string {
 		}
 		remaining -= len(lines)
 	}
-	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
+	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e edit • q quit"
 	switch m.tab {
 	case localTab:
-		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • u uninstall • e edit • q quit"
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • u uninstall • e edit • q quit"
 	case codexTab:
-		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • e edit • q quit"
+		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e edit • q quit"
 	case remoteTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
 	case skillsMPTab:

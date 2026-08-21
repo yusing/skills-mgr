@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -21,14 +22,15 @@ import (
 )
 
 const (
-	remoteSkillSchemaRevision = 1
-	remoteSkillCacheTTL       = 3 * time.Hour
-	remoteSkillMaxFiles       = 1024
-	remoteSkillMaxBytes       = 16 << 20
-	remoteSkillMetadataLimit  = 64 << 10
-	remoteContentGracePeriod  = 2 * remoteSkillCacheTTL
-	skillsShProvider          = "skills.sh"
-	skillsMPProvider          = "SkillsMP"
+	remoteSkillSchemaRevision         = 1
+	remoteSkillOverrideSchemaRevision = 1
+	remoteSkillCacheTTL               = 3 * time.Hour
+	remoteSkillMaxFiles               = 1024
+	remoteSkillMaxBytes               = 16 << 20
+	remoteSkillMetadataLimit          = 64 << 10
+	remoteContentGracePeriod          = 2 * remoteSkillCacheTTL
+	skillsShProvider                  = "skills.sh"
+	skillsMPProvider                  = "SkillsMP"
 )
 
 type remoteSkillRef struct {
@@ -85,6 +87,13 @@ type remoteSkillRecord struct {
 	Locator        string    `json:"locator"`
 	FetchedAt      time.Time `json:"fetchedAt"`
 	Content        string    `json:"content"`
+	// Kept outside the fetched record so refreshes cannot overwrite local policy.
+	disableModelInvocationOverride *bool
+}
+
+type remoteSkillOverride struct {
+	SchemaRevision         int   `json:"schemaRevision"`
+	DisableModelInvocation *bool `json:"disableModelInvocation"`
 }
 
 func (r remoteSkillRecord) ref() remoteSkillRef {
@@ -195,6 +204,15 @@ func (s *remoteSkillStore) ensure(
 	if current.SchemaRevision != 0 && current.fresh(time.Now()) {
 		return current, nil
 	}
+	if current.SchemaRevision == 0 {
+		err := os.Remove(s.overridePath(ref))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return remoteSkillRecord{}, fmt.Errorf(
+				"remove stale remote skill override: %w",
+				err,
+			)
+		}
+	}
 	record := prepared.record(ref)
 	if err := s.saveRecordLocked(record); err != nil {
 		return remoteSkillRecord{}, err
@@ -246,11 +264,96 @@ func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error
 	if current.SchemaRevision == 0 {
 		return fmt.Errorf("persisted remote skill %q is missing", ref.Name)
 	}
-	path := filepath.Join(s.root, "entries", ref.key()+".json")
+	entries := filepath.Join(s.root, "entries")
+	overridePath := s.overridePath(ref)
+	stagedOverride := ""
+	if _, err := os.Lstat(overridePath); err == nil {
+		temporary, err := os.CreateTemp(entries, ".remote-skill-override-remove-")
+		if err != nil {
+			return fmt.Errorf("stage remote skill override removal: %w", err)
+		}
+		stagedOverride = temporary.Name()
+		if err := errors.Join(temporary.Close(), os.Remove(stagedOverride)); err != nil {
+			return fmt.Errorf("stage remote skill override removal: %w", err)
+		}
+		if err := os.Rename(overridePath, stagedOverride); err != nil {
+			return fmt.Errorf("stage remote skill override removal: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect remote skill override: %w", err)
+	}
+
+	path := filepath.Join(entries, ref.key()+".json")
 	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("remove remote skill metadata: %w", err)
+		rollbackErr := error(nil)
+		if stagedOverride != "" {
+			rollbackErr = os.Rename(stagedOverride, overridePath)
+		}
+		return errors.Join(
+			fmt.Errorf("remove remote skill metadata: %w", err),
+			rollbackErr,
+		)
+	}
+	if stagedOverride != "" {
+		_ = os.RemoveAll(stagedOverride)
 	}
 	return nil
+}
+
+func (s *remoteSkillStore) toggleModelInvocation(
+	ctx context.Context,
+	ref remoteSkillRef,
+) (bool, error) {
+	if err := ref.validate(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	storeLock, err := s.lockExclusive(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer closeRemoteStoreLock(storeLock)
+
+	record, err := s.loadRecordLocked(ref.key())
+	if err != nil {
+		return false, err
+	}
+	if record.ref() != ref {
+		return false, fmt.Errorf("persisted remote skill identity changed")
+	}
+	override, err := s.loadOverrideLocked(ref)
+	if err != nil {
+		return false, err
+	}
+	var disabled bool
+	if override != nil {
+		disabled = *override
+	} else {
+		root, err := s.contentRoot(record)
+		if err != nil {
+			return false, err
+		}
+		skill, ok, err := parseSkill(filepath.Join(root, "SKILL.md"))
+		if err != nil {
+			return false, err
+		}
+		if !ok || skill.Name != ref.Name {
+			return false, fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
+		}
+		disabled = skill.DisableModelInvocation
+	}
+	disabled = !disabled
+	value := remoteSkillOverride{
+		SchemaRevision:         remoteSkillOverrideSchemaRevision,
+		DisableModelInvocation: new(disabled),
+	}
+	entries := filepath.Join(s.root, "entries")
+	if err := saveRemoteMetadataFile(entries, s.overridePath(ref), value); err != nil {
+		return false, fmt.Errorf("write remote skill override: %w", err)
+	}
+	return disabled, nil
 }
 
 func (s *remoteSkillStore) refresh(
@@ -617,19 +720,26 @@ func validRemoteFilePath(value string) (string, error) {
 
 func (s *remoteSkillStore) saveRecordLocked(record remoteSkillRecord) error {
 	entries := filepath.Join(s.root, "entries")
-	if err := os.MkdirAll(entries, 0o700); err != nil {
-		return fmt.Errorf("create remote skill metadata directory: %w", err)
-	}
 	path := filepath.Join(entries, record.ref().key()+".json")
+	if err := saveRemoteMetadataFile(entries, path, record); err != nil {
+		return fmt.Errorf("write remote skill metadata: %w", err)
+	}
+	return nil
+}
+
+func saveRemoteMetadataFile(entries, path string, value any) error {
+	if err := os.MkdirAll(entries, 0o700); err != nil {
+		return fmt.Errorf("create metadata directory: %w", err)
+	}
 	temporary, err := os.CreateTemp(entries, ".remote-skill-")
 	if err != nil {
-		return fmt.Errorf("create remote skill metadata: %w", err)
+		return fmt.Errorf("create metadata: %w", err)
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
 	encoder := json.NewEncoder(temporary)
 	encoder.SetIndent("", "  ")
-	err = encoder.Encode(record)
+	err = encoder.Encode(value)
 	if err == nil {
 		err = temporary.Chmod(0o600)
 	}
@@ -640,16 +750,82 @@ func (s *remoteSkillStore) saveRecordLocked(record remoteSkillRecord) error {
 	if err == nil {
 		err = os.Rename(name, path)
 	}
-	if err != nil {
-		return fmt.Errorf("write remote skill metadata: %w", err)
+	return err
+}
+
+func (s *remoteSkillStore) overridePath(ref remoteSkillRef) string {
+	return filepath.Join(s.root, "entries", ref.key()+".override")
+}
+
+func (s *remoteSkillStore) loadOverrideLocked(ref remoteSkillRef) (*bool, error) {
+	path := s.overridePath(ref)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("inspect remote skill override: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("remote skill override is not a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open remote skill override: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, remoteSkillMetadataLimit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read remote skill override: %w", err)
+	}
+	if len(data) > remoteSkillMetadataLimit {
+		return nil, fmt.Errorf(
+			"remote skill override exceeds %d bytes",
+			remoteSkillMetadataLimit,
+		)
+	}
+	var value remoteSkillOverride
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, fmt.Errorf("decode remote skill override: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("decode remote skill override: unexpected data")
+	}
+	if value.SchemaRevision != remoteSkillOverrideSchemaRevision {
+		return nil, fmt.Errorf(
+			"unsupported remote skill override schema revision %d",
+			value.SchemaRevision,
+		)
+	}
+	if value.DisableModelInvocation == nil {
+		return nil, fmt.Errorf("remote skill override is missing disableModelInvocation")
+	}
+	return value.DisableModelInvocation, nil
 }
 
 func (s *remoteSkillStore) records() ([]remoteSkillRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.recordsLocked()
+}
+
+func (s *remoteSkillStore) recordsForDiscovery() ([]remoteSkillRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	records, err := s.recordsLocked()
+	if err != nil {
+		return nil, err
+	}
+	for index := range records {
+		override, err := s.loadOverrideLocked(records[index].ref())
+		if err != nil {
+			return nil, err
+		}
+		records[index].disableModelInvocationOverride = override
+	}
+	return records, nil
 }
 
 func (s *remoteSkillStore) recordsLocked() ([]remoteSkillRecord, error) {
@@ -703,7 +879,7 @@ func (s *remoteSkillStore) loadRecordLocked(key string) (remoteSkillRecord, erro
 		)
 	}
 	var record remoteSkillRecord
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return remoteSkillRecord{}, fmt.Errorf("decode remote skill metadata: %w", err)
@@ -1051,6 +1227,21 @@ func (m *manager) uninstallRemote(
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}
+	if !m.global {
+		global, err := loadLock(m.paths.globalLockDir)
+		if err != nil {
+			return remoteUninstallResult{}, err
+		}
+		_, globallyConfigured := global.Remote[name]
+		_, legacyGlobalSelection := global.Skills[name]
+		if globallyConfigured ||
+			(global.SchemaRevision == legacyLockSchemaRevision && legacyGlobalSelection) {
+			return remoteUninstallResult{}, fmt.Errorf(
+				"remote skill %q is configured globally; uninstall it from the global TUI",
+				name,
+			)
+		}
+	}
 	frontmatter, err := m.remoteSkillFrontmatter(ref)
 	if err != nil {
 		return remoteUninstallResult{}, err
@@ -1098,9 +1289,29 @@ func (m *manager) uninstallRemote(
 		}
 		return undoPlaceholders()
 	}
-	if err := m.remoteStore.remove(ctx, ref); err != nil {
+	removeErr := updateLock(
+		m.paths.globalLockDir,
+		m.paths.selectionLocks,
+		func(global *lock) (bool, error) {
+			_, globallySelected := global.Skills[name]
+			_, globallyConfigured := global.Remote[name]
+			legacyGlobalSelection := global.SchemaRevision == legacyLockSchemaRevision &&
+				globallySelected
+			if !m.global && (globallyConfigured || legacyGlobalSelection) {
+				return false, fmt.Errorf(
+					"remote skill %q is configured globally; uninstall it from the global TUI",
+					name,
+				)
+			}
+			if m.global && (globallySelected || globallyConfigured) {
+				return false, fmt.Errorf("remote selection changed during uninstall")
+			}
+			return false, m.remoteStore.remove(ctx, ref)
+		},
+	)
+	if removeErr != nil {
 		return remoteUninstallResult{}, errors.Join(
-			err,
+			removeErr,
 			rollbackSelection(),
 			rollbackPlaceholders(),
 		)
@@ -1110,7 +1321,7 @@ func (m *manager) uninstallRemote(
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}
-	selected, globalSelected, projectSelected, err := m.selectionLayers(project)
+	selected, globalSelected, projectSelected, err := m.selectionLayers(project, nil)
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}

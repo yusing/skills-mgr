@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/goccy/go-yaml"
 )
 
 func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
@@ -510,6 +513,296 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	output.Reset()
 	if err := manager.get(project, "manual", "", &output); err == nil {
 		t.Fatal("get read an explicitly disabled manual-only skill")
+	}
+}
+
+func TestToggleModelInvocationFrontmatterPreservesMetadataAndBody(t *testing.T) {
+	original := []byte("\xEF\xBB\xBF---\r\n" +
+		"# keep this comment\r\n" +
+		"name: alpha\r\n" +
+		"description: Alpha.\r\n" +
+		"metadata:\r\n" +
+		"  owner: team # keep inline\r\n" +
+		"\"disable-model-invocation\": false # keep policy comment\r\n" +
+		"---\r\n" +
+		"# Body\r\n\r\nDo not rewrite this body.\r\n")
+	updated, disabled, err := toggleModelInvocationFrontmatter(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !disabled {
+		t.Fatal("toggle did not disable model invocation")
+	}
+	for _, preserved := range [][]byte{
+		[]byte("\xEF\xBB\xBF---\r\n"),
+		[]byte("# keep this comment\r\n"),
+		[]byte("metadata:\r\n  owner: team # keep inline\r\n"),
+		[]byte("# keep policy comment\r\n"),
+		[]byte("---\r\n# Body\r\n\r\nDo not rewrite this body.\r\n"),
+	} {
+		if !bytes.Contains(updated, preserved) {
+			t.Fatalf("updated frontmatter lost %q:\n%s", preserved, updated)
+		}
+	}
+	if !bytes.Contains(updated, []byte("disable-model-invocation\": true")) {
+		t.Fatalf("updated frontmatter did not set true:\n%s", updated)
+	}
+}
+
+func TestToggleModelInvocationFrontmatterPreservesYAMLStyles(t *testing.T) {
+	tests := []struct {
+		name        string
+		frontmatter string
+		oldValue    string
+		newValue    string
+	}{
+		{
+			name: "anchor and alias",
+			frontmatter: "name: alpha\n" +
+				"description: Alpha.\n" +
+				"disable-model-invocation: &model_policy false\n" +
+				"metadata:\n  policy-copy: *model_policy\n",
+			oldValue: "&model_policy false",
+			newValue: "&model_policy true",
+		},
+		{
+			name: "tagged boolean",
+			frontmatter: "name: alpha\n" +
+				"description: Alpha.\n" +
+				"disable-model-invocation: !!bool false\n",
+			oldValue: "!!bool false",
+			newValue: "!!bool true",
+		},
+		{
+			name: "multiline quoted value",
+			frontmatter: "name: alpha\n" +
+				"description: \"Alpha has a long\\n  description.\"\n" +
+				"disable-model-invocation: false\n",
+		},
+		{
+			name: "block scalar with trailing blank lines",
+			frontmatter: "name: alpha\n" +
+				"description: Alpha.\n" +
+				"notes: |+\n  first line\n\n\n" +
+				"disable-model-invocation: false\n",
+		},
+		{
+			name: "compact flow values",
+			frontmatter: "name: alpha\n" +
+				"description: Alpha.\n" +
+				"allowed-tools: [Read,Write]\n" +
+				"metadata: {owner:team,tags:[one,two]}\n" +
+				"disable-model-invocation: false\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := []byte("---\n" + tt.frontmatter + "---\nbody\n")
+			updated, disabled, err := toggleModelInvocationFrontmatter(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !disabled {
+				t.Fatal("toggle did not disable model invocation")
+			}
+			oldValue := cmp.Or(tt.oldValue, "false")
+			newValue := cmp.Or(tt.newValue, "true")
+			want := bytes.Replace(
+				original,
+				[]byte("disable-model-invocation: "+oldValue),
+				[]byte("disable-model-invocation: "+newValue),
+				1,
+			)
+			if !bytes.Equal(updated, want) {
+				t.Fatalf("toggle changed unrelated YAML:\ngot:\n%s\nwant:\n%s", updated, want)
+			}
+			frontmatter, _, status, err := readFrontmatter(bytes.NewReader(updated))
+			if err != nil || status != frontmatterValid {
+				t.Fatalf("updated frontmatter status = %v, error = %v", status, err)
+			}
+			var decoded map[string]any
+			if err := yaml.Unmarshal([]byte(frontmatter), &decoded); err != nil {
+				t.Fatalf("updated frontmatter is invalid: %v", err)
+			}
+		})
+	}
+}
+
+func TestToggleModelInvocationFrontmatterRejectsAliasPolicy(t *testing.T) {
+	original := []byte("---\n" +
+		"name: alpha\n" +
+		"description: Alpha.\n" +
+		"metadata:\n  policy: &model_policy false\n" +
+		"disable-model-invocation: *model_policy\n" +
+		"---\nbody\n")
+	updated, _, err := toggleModelInvocationFrontmatter(original)
+	if err == nil || !strings.Contains(err.Error(), "must be a boolean value") {
+		t.Fatalf("alias policy error = %v", err)
+	}
+	if updated != nil {
+		t.Fatalf("alias policy returned modified content:\n%s", updated)
+	}
+}
+
+func TestToggleModelInvocationFrontmatterAddsPolicyToFlowMapping(t *testing.T) {
+	original := []byte("---\n{name: alpha,description: Alpha.,metadata: {tags:[one,two]}} # retain } literally\n---\nbody\n")
+	updated, disabled, err := toggleModelInvocationFrontmatter(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !disabled {
+		t.Fatal("toggle did not disable model invocation")
+	}
+	want := []byte("---\n{name: alpha,description: Alpha.,metadata: {tags:[one,two]}, disable-model-invocation: true} # retain } literally\n---\nbody\n")
+	if !bytes.Equal(updated, want) {
+		t.Fatalf("flow-style toggle:\ngot:\n%s\nwant:\n%s", updated, want)
+	}
+}
+
+func TestToggleModelInvocationFrontmatterSupportsTaggedBooleanSpellings(t *testing.T) {
+	tests := []struct {
+		name     string
+		original string
+		want     string
+		disabled bool
+	}{
+		{name: "lowercase yes", original: "yes", want: "no", disabled: false},
+		{name: "uppercase no", original: "NO", want: "YES", disabled: true},
+		{name: "mixed case yes", original: "yEs", want: "no", disabled: false},
+		{name: "numeric true", original: "1", want: "0", disabled: false},
+		{name: "numeric false", original: "0", want: "1", disabled: true},
+		{name: "uppercase short true", original: "T", want: "F", disabled: false},
+		{name: "lowercase short false", original: "f", want: "t", disabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			original := []byte("---\nname: alpha\ndescription: Alpha.\n" +
+				"disable-model-invocation: !!bool " + tt.original + "\n---\nbody\n")
+			updated, disabled, err := toggleModelInvocationFrontmatter(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if disabled != tt.disabled {
+				t.Fatalf("disabled = %v, want %v", disabled, tt.disabled)
+			}
+			want := bytes.Replace(
+				original,
+				[]byte("!!bool "+tt.original),
+				[]byte("!!bool "+tt.want),
+				1,
+			)
+			if !bytes.Equal(updated, want) {
+				t.Fatalf("toggle changed unrelated YAML:\ngot:\n%s\nwant:\n%s", updated, want)
+			}
+		})
+	}
+}
+
+func TestToggleModelInvocationUpdatesEditableSkillAndSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Alpha.", "body\n"))
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := manager.findSkill(project, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := manager.toggleModelInvocation(t.Context(), project, discovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Disabled || !result.Selected["alpha"] ||
+		len(result.Skills) != 1 || !result.Skills[0].DisableModelInvocation {
+		t.Fatalf("disabled result = %#v", result)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("skill mode = %o, want 755", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasSuffix(data, []byte("---\nbody\n")) {
+		t.Fatalf("toggle changed skill body:\n%s", data)
+	}
+
+	result, err = manager.toggleModelInvocation(t.Context(), project, result.Skills[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disabled || result.Selected["alpha"] ||
+		result.Skills[0].DisableModelInvocation {
+		t.Fatalf("enabled result = %#v", result)
+	}
+}
+
+func TestToggleModelInvocationSerializesLocalUpdates(t *testing.T) {
+	manager := newTestManager(t)
+	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Alpha.", "body\n"))
+	type toggleResult struct {
+		disabled bool
+		err      error
+	}
+	results := make(chan toggleResult, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			<-start
+			disabled, err := toggleModelInvocationFile(
+				t.Context(),
+				manager.paths.selectionLocks,
+				path,
+			)
+			results <- toggleResult{disabled: disabled, err: err}
+		})
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	states := make([]bool, 0, 2)
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		states = append(states, result.disabled)
+	}
+	if len(states) != 2 || !slices.Contains(states, false) || !slices.Contains(states, true) {
+		t.Fatalf("serialized local toggle states = %v", states)
+	}
+	discovered, ok, err := parseSkill(path)
+	if err != nil || !ok {
+		t.Fatalf("parse final skill = %#v, %v, %v", discovered, ok, err)
+	}
+	if discovered.DisableModelInvocation {
+		t.Fatalf("two local toggles did not restore the original state: %#v", discovered)
+	}
+}
+
+func TestToggleModelInvocationRejectsReadOnlySkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.adminSkills, "alpha", "SKILL.md"),
+		skillFile("alpha", "Alpha.", "body"),
+	)
+	discovered, err := manager.findSkill(project, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = manager.toggleModelInvocation(t.Context(), project, discovered)
+	if err == nil || !strings.Contains(err.Error(), "not editable") {
+		t.Fatalf("toggle error = %v, want non-editable source", err)
 	}
 }
 
