@@ -863,12 +863,12 @@ func escapeXMLText(value string) (string, error) {
 	return strings.ReplaceAll(escaped, "&#39;", "'"), nil
 }
 
-func (m *manager) get(project, target, lineRange string, output io.Writer, harnesses ...listHarness) error {
+func (m *manager) get(project, target, lineRange string, output io.Writer) error {
 	skill, relative, err := splitTarget(target)
 	if err != nil {
 		return err
 	}
-	root, err := m.openSkill(project, skill, harnesses...)
+	root, err := m.openSkill(project, skill)
 	if err != nil {
 		return err
 	}
@@ -917,7 +917,7 @@ func (m *manager) get(project, target, lineRange string, output io.Writer, harne
 	return writeLineRange(output, input, start, end)
 }
 
-func (m *manager) scriptCommand(project, target string, args []string, harnesses ...listHarness) (*exec.Cmd, error) {
+func (m *manager) scriptCommand(project, target string, args []string) (*exec.Cmd, error) {
 	if !strings.Contains(target, "/") {
 		return nil, fmt.Errorf("invalid script target %q; want <skill-name>/<relative/script>", target)
 	}
@@ -925,7 +925,7 @@ func (m *manager) scriptCommand(project, target string, args []string, harnesses
 	if err != nil {
 		return nil, err
 	}
-	root, err := m.openSkill(project, skill, harnesses...)
+	root, err := m.openSkill(project, skill)
 	if err != nil {
 		return nil, err
 	}
@@ -985,12 +985,12 @@ func (m *manager) cachedJavaScriptRuntime() (string, error) {
 	return m.javascriptRuntime, m.javascriptRuntimeErr
 }
 
-func (m *manager) openSkill(project, skill string, harnesses ...listHarness) (*os.Root, error) {
+func (m *manager) openSkill(project, skill string) (*os.Root, error) {
 	selected, err := m.selection(project)
 	if err != nil {
 		return nil, err
 	}
-	discovered, err := m.findSkill(project, skill, harnesses...)
+	discovered, err := m.findSkill(project, skill)
 	if err != nil {
 		return nil, err
 	}
@@ -1004,8 +1004,8 @@ func (m *manager) openSkill(project, skill string, harnesses ...listHarness) (*o
 	return root, nil
 }
 
-func (m *manager) findSkill(project, name string, harnesses ...listHarness) (discoveredSkill, error) {
-	skills, err := m.skills(project, harnesses...)
+func (m *manager) findSkill(project, name string) (discoveredSkill, error) {
+	skills, err := m.skills(project)
 	if err != nil {
 		return discoveredSkill{}, err
 	}

@@ -71,7 +71,7 @@ func run(args []string) error {
 		defer stop()
 		return manager.sync(ctx, project, os.Stdout)
 	case args[0] == "get":
-		harnesses, rest, err := parseHarnessArgs(args[1:])
+		_, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {
 			return err
 		}
@@ -86,9 +86,9 @@ func run(args []string) error {
 		if len(rest) == 2 {
 			lineRange = rest[1]
 		}
-		return manager.get(project, rest[0], lineRange, os.Stdout, resolveHarnesses(harnesses)...)
+		return manager.get(project, rest[0], lineRange, os.Stdout)
 	case args[0] == "run":
-		harnesses, rest, err := parseHarnessArgs(args[1:])
+		_, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {
 			return err
 		}
@@ -99,7 +99,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		command, err := manager.scriptCommand(project, rest[0], rest[1:], resolveHarnesses(harnesses)...)
+		command, err := manager.scriptCommand(project, rest[0], rest[1:])
 		if err != nil {
 			return err
 		}

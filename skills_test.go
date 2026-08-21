@@ -743,20 +743,15 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 	}
 }
 
-func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
+func TestGetAndRunResolveSkillsFromAnyAgentSource(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	writeFile(
-		t,
-		filepath.Join(manager.paths.userSkills, "common", "SKILL.md"),
-		skillFile("common", "Shared agents skill.", "common body\n"),
-	)
 	writeFile(
 		t,
 		filepath.Join(manager.paths.codexHome, "skills", "codex-only", "SKILL.md"),
 		skillFile("codex-only", "Codex-only skill.", "codex body\n"),
 	)
-	writeFile(
+	writeExecutable(
 		t,
 		filepath.Join(manager.paths.codexHome, "skills", "codex-only", "scripts", "echo.sh"),
 		"#!/bin/sh\nprintf codex\n",
@@ -767,7 +762,6 @@ func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
 		skillFile("project-claude", "Project Claude skill.", "claude body\n"),
 	)
 	if err := saveLock(project, lock{Skills: map[string]bool{
-		"common":         true,
 		"codex-only":     true,
 		"project-claude": true,
 	}}); err != nil {
@@ -779,48 +773,31 @@ func TestGetAndRunRejectOtherAgentSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 	if output.String() != "codex body\n" {
-		t.Fatalf("unscoped get output = %q", output.String())
+		t.Fatalf("Codex skill output = %q", output.String())
 	}
 
-	for _, harnesses := range [][]listHarness{
-		{listHarnessClaude},
-		{listHarnessGrok},
-		{listHarnessClaude, listHarnessGrok},
-	} {
-		output.Reset()
-		if err := manager.get(project, "codex-only", "", &output, harnesses...); err == nil {
-			t.Fatalf("get retrieved Codex skill with harnesses %v", harnesses)
-		}
-		if output.Len() != 0 {
-			t.Fatalf("get wrote Codex skill with harnesses %v: %q", harnesses, output.String())
-		}
-		if _, err := manager.scriptCommand(project, "codex-only/scripts/echo.sh", nil, harnesses...); err == nil {
-			t.Fatalf("run retrieved Codex skill with harnesses %v", harnesses)
-		}
-	}
-
-	output.Reset()
-	if err := manager.get(project, "common", "", &output, listHarnessGrok); err != nil {
+	command, err := manager.scriptCommand(project, "codex-only/scripts/echo.sh", nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if output.String() != "common body\n" {
-		t.Fatalf("grok get of common skill = %q", output.String())
+	scriptOutput, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(scriptOutput) != "codex" {
+		t.Fatalf("Codex script output = %q", scriptOutput)
 	}
 
 	output.Reset()
-	if err := manager.get(project, "project-claude", "", &output, listHarnessClaude); err != nil {
+	if err := manager.get(project, "project-claude", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "claude body\n" {
-		t.Fatalf("claude get of project Claude skill = %q", output.String())
-	}
-	output.Reset()
-	if err := manager.get(project, "project-claude", "", &output, listHarnessGrok); err == nil {
-		t.Fatal("get retrieved a Claude skill with --grok")
+		t.Fatalf("Claude skill output = %q", output.String())
 	}
 }
 
-func TestHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
+func TestListHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	const name = "writing-for-agents"
@@ -832,17 +809,10 @@ func TestHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
 			Name:     name,
 			Locator:  "owner/repo/" + name,
 		},
-		&staticRemoteProvider{files: []remoteSkillFile{
-			{
-				Path:     "SKILL.md",
-				Contents: []byte(skillFile(name, "Remote skill.", "remote body\n")),
-			},
-			{
-				Path:     "scripts/echo.sh",
-				Contents: []byte("#!/bin/sh\nprintf remote\n"),
-				Mode:     0o755,
-			},
-		}},
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile(name, "Remote skill.", "remote body\n")),
+		}}},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -864,26 +834,6 @@ func TestHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `name="`+name+`"`) {
 		t.Fatalf("Claude list omitted remote skill shadowed by a Codex skill:\n%s", output.String())
-	}
-
-	output.Reset()
-	if err := manager.get(project, name, "", &output, listHarnessClaude); err != nil {
-		t.Fatal(err)
-	}
-	if output.String() != "remote body\n" {
-		t.Fatalf("Claude get output = %q, want remote skill body", output.String())
-	}
-
-	command, err := manager.scriptCommand(project, name+"/scripts/echo.sh", nil, listHarnessClaude)
-	if err != nil {
-		t.Fatal(err)
-	}
-	scriptOutput, err := command.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(scriptOutput) != "remote" {
-		t.Fatalf("Claude run output = %q, want remote", scriptOutput)
 	}
 }
 
@@ -1395,6 +1345,53 @@ func TestRunCommandInvokesSkillScript(t *testing.T) {
 	if !ok || exitError.ExitCode() != 23 {
 		t.Fatalf("script exit error = %v, want exit code 23", err)
 	}
+}
+
+func TestGetAndRunCommandsIgnoreHarnessScope(t *testing.T) {
+	project := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Chdir(project)
+	root := filepath.Join(home, ".codex", "skills", "codex-only")
+	writeFile(
+		t,
+		filepath.Join(root, "SKILL.md"),
+		skillFile("codex-only", "Codex-only skill.", "codex body\n"),
+	)
+	writeExecutable(
+		t,
+		filepath.Join(root, "scripts", "record.sh"),
+		"#!/bin/sh\nprintf codex > result\n",
+	)
+	if err := saveLock(project, lock{Skills: map[string]bool{"codex-only": true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = stdout
+	t.Cleanup(func() {
+		os.Stdout = originalStdout
+		_ = stdout.Close()
+	})
+	getErr := run([]string{"get", "--claude", "codex-only"})
+	os.Stdout = originalStdout
+	if closeErr := stdout.Close(); getErr == nil {
+		getErr = closeErr
+	}
+	if getErr != nil {
+		t.Fatal(getErr)
+	}
+	assertFile(t, stdout.Name(), "codex body\n")
+
+	if err := run([]string{"run", "--claude", "codex-only/scripts/record.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "result"), "codex")
 }
 
 func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
