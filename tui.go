@@ -1788,9 +1788,11 @@ func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr er
 		return nil, "", fmt.Errorf("secure enabled editor draft: %w", err)
 	}
 	if configured {
-		data, err := marshalJSONUnescaped(current)
-		if err != nil {
-			return nil, "", fmt.Errorf("encode enabled editor draft: %w", err)
+		var data []byte
+		if current.Boolean != nil {
+			data = fmt.Appendf(data, "%t", *current.Boolean)
+		} else {
+			data = append(data, current.Expression...)
 		}
 		data = append(data, '\n')
 		if _, err := temp.Write(data); err != nil {

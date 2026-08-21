@@ -1606,7 +1606,7 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	want := "has_dependency tauri '>=2' && printf '<script>&'"
+	want := `(command -vq herdr || false) && [ "$PWD" == "$HOME" ]`
 	if err := saveLock(project, lock{
 		Expressions: map[string]string{"alpha": want},
 	}); err != nil {
@@ -1622,8 +1622,22 @@ func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != `"`+want+"\"\n" {
+	if string(data) != want+"\n" {
 		t.Fatalf("enabled editor draft = %q", data)
+	}
+	if _, err := manager.applyEnabledDraft(
+		project,
+		discoveredSkill{Name: "alpha"},
+		draft,
+	); err != nil {
+		t.Fatal(err)
+	}
+	value, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value.Expressions["alpha"] != want {
+		t.Fatalf("saved enabled expression = %q", value.Expressions["alpha"])
 	}
 }
 
