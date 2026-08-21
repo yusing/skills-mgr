@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -129,45 +128,32 @@ func TestEnabledLangBuiltinComposesAndValidatesArguments(t *testing.T) {
 	}
 }
 
-func TestEnabledLangBuiltinUsesGitIgnoreRules(t *testing.T) {
+func TestEnabledLangBuiltinIncludesGitIgnoredEvidence(t *testing.T) {
 	project := t.TempDir()
-	command := exec.CommandContext(t.Context(), "git", "init", "-q", project)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
 	writeFile(t, project+"/.gitignore", "generated/\n")
-	writeFile(t, project+"/main.go", "package main\n")
 	writeFile(t, project+"/generated/app.ts", "")
 
-	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go && ! lang ts")
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang ts")
 	if err != nil || !enabled {
-		t.Fatalf("Git-filtered language expression = %v, %v", enabled, err)
+		t.Fatalf("Git-ignored language expression = %v, %v", enabled, err)
 	}
 }
 
-func TestEnabledLangBuiltinIgnoresDeletedTrackedFiles(t *testing.T) {
+func TestEnabledLangBuiltinCachesVisitedEvidence(t *testing.T) {
 	project := t.TempDir()
-	command := exec.CommandContext(t.Context(), "git", "init", "-q", project)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v: %s", err, output)
-	}
-	path := project + "/main.go"
-	writeFile(t, path, "package main\n")
-	command = exec.CommandContext(t.Context(), "git", "-C", project, "add", "main.go")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v: %s", err, output)
-	}
-
-	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
-	if err != nil || !enabled {
-		t.Fatalf("present tracked language = %v, %v", enabled, err)
+	path := project + "/app.ts"
+	writeFile(t, path, "")
+	handler := enabledCallHandler(project)
+	args, err := handler(t.Context(), []string{languageBuiltin, "typescript"})
+	if err != nil || len(args) != 1 || args[0] != "true" {
+		t.Fatalf("initial language result = %v, %v", args, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	enabled, err = evaluateEnabled(t.Context(), project, "example", "lang go")
-	if err != nil || enabled {
-		t.Fatalf("deleted tracked language = %v, %v", enabled, err)
+	args, err = handler(t.Context(), []string{languageBuiltin, "typescript"})
+	if err != nil || len(args) != 1 || args[0] != "true" {
+		t.Fatalf("cached language result = %v, %v", args, err)
 	}
 }
 
@@ -195,6 +181,23 @@ func TestEnabledLangBuiltinUsesOneProjectSnapshot(t *testing.T) {
 	args, err = handler(t.Context(), []string{languageBuiltin, "go"})
 	if err != nil || len(args) != 1 || args[0] != "false" {
 		t.Fatalf("cached language result = %v, %v", args, err)
+	}
+}
+
+func TestEnabledLangBuiltinResumesProjectWalk(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/a/.keep", "")
+	writeFile(t, project+"/z/main.go", "package main\n")
+	handler := enabledCallHandler(project)
+	args, err := handler(t.Context(), []string{languageBuiltin, "go"})
+	if err != nil || len(args) != 1 || args[0] != "true" {
+		t.Fatalf("first language result = %v, %v", args, err)
+	}
+
+	writeFile(t, project+"/a/lib.rs", "")
+	args, err = handler(t.Context(), []string{languageBuiltin, "rust"})
+	if err != nil || len(args) != 1 || args[0] != "true" {
+		t.Fatalf("resumed language result = %v, %v", args, err)
 	}
 }
 

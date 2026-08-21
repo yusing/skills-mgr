@@ -289,8 +289,10 @@ Detection uses this evidence:
 
 An evidence file can detect more than one language. For example, `Cargo.toml`
 detects both `rust` and `toml`, and `package.json` detects both `node` and
-`json`. Git projects use tracked and unignored files plus untracked, unignored
-files. Non-Git projects are scanned recursively. Both paths ignore `.git`,
+`json`. Each enabled expression uses one cached, resumable project walk. A
+predicate stops the walk as soon as its evidence is found; a later predicate in
+the same expression reuses evidence already seen and resumes the remaining
+directories. The walk includes Git-ignored files and skips `.git`,
 `node_modules`, and `target` directories.
 
 For example, this expression enables a skill in a project containing Go or

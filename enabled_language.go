@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,10 +15,18 @@ import (
 
 const languageBuiltin = "lang"
 
+type languageIndex struct {
+	mu          sync.Mutex
+	languages   map[string]bool
+	directories []string
+	err         error
+}
+
 func languageCallHandler(project string) interp.CallHandlerFunc {
-	var index map[string]bool
-	var indexErr error
-	var once sync.Once
+	index := &languageIndex{
+		languages:   make(map[string]bool),
+		directories: []string{project},
+	}
 	return func(ctx context.Context, args []string) ([]string, error) {
 		if args[0] != languageBuiltin {
 			return args, nil
@@ -32,13 +38,11 @@ func languageCallHandler(project string) interp.CallHandlerFunc {
 		if !ok {
 			return nil, fmt.Errorf("%s: unsupported language %q", languageBuiltin, args[1])
 		}
-		once.Do(func() {
-			index, indexErr = loadLanguageIndex(ctx, project)
-		})
-		if indexErr != nil {
-			return nil, fmt.Errorf("%s: %w", languageBuiltin, indexErr)
+		found, err := index.has(ctx, language)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", languageBuiltin, err)
 		}
-		return []string{strconv.FormatBool(index[language])}, nil
+		return []string{strconv.FormatBool(found)}, nil
 	}
 }
 
@@ -61,66 +65,28 @@ func canonicalLanguage(language string) (string, bool) {
 	}
 }
 
-func loadLanguageIndex(ctx context.Context, project string) (map[string]bool, error) {
-	output, err := exec.CommandContext(
-		ctx,
-		"git",
-		"-C",
-		project,
-		"ls-files",
-		"-coz",
-		"--exclude-standard",
-	).Output()
-	if err == nil {
-		deletedOutput, deletedErr := exec.CommandContext(
-			ctx,
-			"git",
-			"-C",
-			project,
-			"ls-files",
-			"-dz",
-		).Output()
-		if deletedErr != nil {
-			err = deletedErr
-		} else {
-			deleted := make(map[string]bool)
-			for relative := range bytes.SplitSeq(deletedOutput, []byte{0}) {
-				if len(relative) != 0 {
-					deleted[string(relative)] = true
-				}
-			}
-			index := make(map[string]bool)
-			for relative := range bytes.SplitSeq(output, []byte{0}) {
-				path := string(relative)
-				if path == "" || deleted[path] || !filepath.IsLocal(path) || ignoredProjectPath(path) {
-					continue
-				}
-				recordLanguageFile(index, filepath.Base(path))
-			}
-			return index, nil
-		}
+func (index *languageIndex) has(ctx context.Context, language string) (bool, error) {
+	index.mu.Lock()
+	defer index.mu.Unlock()
+	if index.languages[language] {
+		return true, nil
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
+	if index.err != nil {
+		return false, index.err
 	}
-	return scanLanguageIndex(ctx, project)
-}
-
-func scanLanguageIndex(ctx context.Context, project string) (map[string]bool, error) {
-	index := make(map[string]bool)
-	directories := []string{project}
-	for len(directories) > 0 {
+	for len(index.directories) > 0 {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return false, err
 		}
-		directory := directories[len(directories)-1]
-		directories = directories[:len(directories)-1]
+		directory := index.directories[len(index.directories)-1]
+		index.directories = index.directories[:len(index.directories)-1]
 		entries, err := os.ReadDir(directory)
 		if errors.Is(err, os.ErrPermission) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read language directory %s: %w", directory, err)
+			index.err = fmt.Errorf("read language directory %s: %w", directory, err)
+			return false, index.err
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -128,13 +94,22 @@ func scanLanguageIndex(ctx context.Context, project string) (map[string]bool, er
 				case ".git", "node_modules", "target":
 					continue
 				}
-				directories = append(directories, filepath.Join(directory, entry.Name()))
+				index.directories = append(
+					index.directories,
+					filepath.Join(directory, entry.Name()),
+				)
 				continue
 			}
-			recordLanguageFile(index, entry.Name())
+			recordLanguageFile(index.languages, entry.Name())
+		}
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		if index.languages[language] {
+			return true, nil
 		}
 	}
-	return index, nil
+	return false, nil
 }
 
 func recordLanguageFile(index map[string]bool, name string) {
