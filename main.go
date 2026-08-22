@@ -58,6 +58,7 @@ func run(args []string) error {
   skills-mgr
   skills-mgr -g
   skills-mgr help
+  skills-mgr adopt
   skills-mgr list [--claude] [--grok] [--codex]
   skills-mgr sync
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
@@ -65,6 +66,15 @@ func run(args []string) error {
   skills-mgr daemon [refresh|sync]
 `)
 		return err
+	case args[0] == "adopt":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr adopt")
+		}
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		return manager.adoptSharedSkills(project, os.Stdout)
 	case args[0] == "list":
 		harnesses, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {

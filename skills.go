@@ -851,6 +851,58 @@ func (m *manager) adoptSkill(project string, skill discoveredSkill) (func() erro
 	}, nil
 }
 
+// adoptSharedSkills moves every real skill in the shared user root as one
+// transaction. Direct discovery keeps a same-named project skill from hiding
+// shared content that the command was asked to adopt.
+func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr error) {
+	discovery := skillDiscovery{
+		seenPaths: make(map[string]struct{}),
+		seenNames: make(map[string]struct{}),
+	}
+	if err := discovery.discoverRoot(skillRoot{
+		path:     m.paths.userSkills,
+		source:   "user",
+		editable: true,
+	}); err != nil {
+		return err
+	}
+	slices.SortFunc(discovery.skills, func(a, b discoveredSkill) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	var undos []func() error
+	rollback := func() error {
+		rollbackErr := error(nil)
+		for _, undo := range slices.Backward(undos) {
+			rollbackErr = errors.Join(rollbackErr, undo())
+		}
+		return rollbackErr
+	}
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, rollback())
+		}
+	}()
+
+	var report strings.Builder
+	for _, skill := range discovery.skills {
+		undo, err := m.adoptSkill(project, skill)
+		if err != nil {
+			return fmt.Errorf("adopt skill %q: %w", skill.Name, err)
+		}
+		undos = append(undos, undo)
+		report.WriteString(skill.Name)
+		report.WriteByte('\n')
+	}
+	if report.Len() == 0 {
+		return nil
+	}
+	if _, err := io.WriteString(output, report.String()); err != nil {
+		return fmt.Errorf("report adopted skills: %w", err)
+	}
+	return nil
+}
+
 // releaseSkill moves a managed skill back under $HOME/.agents/skills, where
 // every harness loads it again regardless of the selection. Placeholders come
 // off first: in global mode the destination is itself a placeholder path, so a

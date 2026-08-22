@@ -2082,6 +2082,7 @@ func TestHelpCommand(t *testing.T) {
   skills-mgr
   skills-mgr -g
   skills-mgr help
+  skills-mgr adopt
   skills-mgr list [--claude] [--grok] [--codex]
   skills-mgr sync
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
@@ -2108,6 +2109,143 @@ func TestHelpCommand(t *testing.T) {
 	os.Stdout = originalStdout
 	if writeErr == nil {
 		t.Fatal("help succeeded when stdout was closed")
+	}
+}
+
+func TestAdoptCommandAdoptsSharedSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	project := t.TempDir()
+	t.Chdir(project)
+	content := skillFile("alpha", "Shared alpha.", "body\n")
+	writeFile(t, filepath.Join(home, ".agents", "skills", "alpha", "SKILL.md"), content)
+
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = stdout
+	t.Cleanup(func() {
+		os.Stdout = originalStdout
+		_ = stdout.Close()
+	})
+
+	adoptErr := run([]string{"adopt"})
+	os.Stdout = originalStdout
+	if closeErr := stdout.Close(); adoptErr == nil {
+		adoptErr = closeErr
+	}
+	if adoptErr != nil {
+		t.Fatal(adoptErr)
+	}
+	assertFile(t, stdout.Name(), "alpha\n")
+	assertFile(t, filepath.Join(home, ".skills-mgr", "skills", "alpha", "SKILL.md"), content)
+	if _, err := os.Stat(filepath.Join(home, ".agents", "skills", "alpha")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("adopted content stayed in the shared root: %v", err)
+	}
+	if err := run([]string{"adopt", "alpha"}); err == nil || err.Error() != "usage: skills-mgr adopt" {
+		t.Fatalf("adopt with operand error = %v, want usage error", err)
+	}
+}
+
+func TestAdoptSharedSkillsMovesAllInNameOrderAndIsIdempotent(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	alpha := skillFile("alpha", "Shared alpha.", "alpha body\n")
+	zeta := skillFile("zeta", "Shared zeta.", "zeta body\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "zeta", "SKILL.md"), zeta)
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), alpha)
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
+		skillFile("alpha", "Project alpha.", "project body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "claude-only", "SKILL.md"),
+		skillFile("claude-only", "Claude only.", "body\n"),
+	)
+
+	var output bytes.Buffer
+	if err := manager.adoptSharedSkills(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "alpha\nzeta\n" {
+		t.Fatalf("adopt output = %q, want name order", got)
+	}
+	assertFile(t, filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md"), alpha)
+	assertFile(t, filepath.Join(manager.paths.managedSkills, "zeta", "SKILL.md"), zeta)
+	assertFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
+		skillFile("alpha", "Project alpha.", "project body\n"),
+	)
+	assertFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "claude-only", "SKILL.md"),
+		skillFile("claude-only", "Claude only.", "body\n"),
+	)
+
+	output.Reset()
+	if err := manager.adoptSharedSkills(project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("second adopt output = %q, want silence", output.String())
+	}
+}
+
+func TestAdoptSharedSkillsRollsBackBatchFailure(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	alpha := skillFile("alpha", "Shared alpha.", "alpha body\n")
+	zeta := skillFile("zeta", "Shared zeta.", "zeta body\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), alpha)
+	writeFile(t, filepath.Join(manager.paths.userSkills, "zeta", "SKILL.md"), zeta)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.managedSkills, "zeta", "SKILL.md"),
+		skillFile("zeta", "Existing managed zeta.", "managed body\n"),
+	)
+
+	var output bytes.Buffer
+	err := manager.adoptSharedSkills(project, &output)
+	if err == nil || !strings.Contains(err.Error(), `adopt skill "zeta"`) {
+		t.Fatalf("batch adoption error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("failed batch output = %q, want silence", output.String())
+	}
+	assertFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), alpha)
+	assertFile(t, filepath.Join(manager.paths.userSkills, "zeta", "SKILL.md"), zeta)
+	if _, err := os.Stat(filepath.Join(manager.paths.managedSkills, "alpha")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed batch left alpha adopted: %v", err)
+	}
+}
+
+func TestAdoptSharedSkillsRollsBackOutputFailure(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("alpha", "Shared alpha.", "body\n")
+	source := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
+	writeFile(t, source, content)
+
+	closedOutput, err := os.Create(filepath.Join(t.TempDir(), "closed-output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closedOutput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = manager.adoptSharedSkills(project, closedOutput)
+	if err == nil || !strings.Contains(err.Error(), "report adopted skills") {
+		t.Fatalf("output failure error = %v", err)
+	}
+	assertFile(t, source, content)
+	if _, err := os.Stat(filepath.Join(manager.paths.managedSkills, "alpha")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("output failure left alpha adopted: %v", err)
 	}
 }
 
