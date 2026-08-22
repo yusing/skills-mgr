@@ -59,6 +59,11 @@ type discoveredSkill struct {
 	Editable               bool
 	RemoteKey              string
 	DisableModelInvocation bool
+	Plugin                 string
+	Vendor                 string
+	UserInvocable          bool
+	CompatibilityStatus    string
+	ExternalEnabled        bool
 }
 
 type skillDiscovery struct {
@@ -1451,9 +1456,9 @@ func sourceAgent(source string) string {
 	switch source {
 	case "codex", "admin", "bundled", "plugin":
 		return "codex"
-	case "claude":
+	case "claude", "claude-plugin":
 		return "claude"
-	case "grok":
+	case "grok", "grok-plugin", "grok-bundled":
 		return "grok"
 	default:
 		return ""

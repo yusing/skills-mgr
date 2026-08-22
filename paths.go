@@ -10,7 +10,11 @@ type paths struct {
 	userSkills     string
 	managedSkills  string
 	claudeSkills   string
+	claudeSettings string
+	claudePlugins  string
 	grokSkills     string
+	grokConfig     string
+	grokCommand    string
 	codexHome      string
 	adminSkills    string
 	managerHome    string
@@ -43,13 +47,17 @@ func defaultPaths() (paths, error) {
 	}
 	managerHome := filepath.Join(home, ".skills-mgr")
 	return paths{
-		userSkills:    filepath.Join(home, ".agents", "skills"),
-		managedSkills: filepath.Join(managerHome, "skills"),
-		claudeSkills:  filepath.Join(home, ".claude", "skills"),
-		grokSkills:    filepath.Join(home, ".grok", "skills"),
-		codexHome:     codexHome,
-		adminSkills:   "/etc/codex/skills",
-		managerHome:   managerHome,
+		userSkills:     filepath.Join(home, ".agents", "skills"),
+		managedSkills:  filepath.Join(managerHome, "skills"),
+		claudeSkills:   filepath.Join(home, ".claude", "skills"),
+		claudeSettings: filepath.Join(home, ".claude", "settings.json"),
+		claudePlugins:  filepath.Join(home, ".claude", "plugins"),
+		grokSkills:     filepath.Join(home, ".grok", "skills"),
+		grokConfig:     filepath.Join(home, ".grok", "config.toml"),
+		grokCommand:    "grok",
+		codexHome:      codexHome,
+		adminSkills:    "/etc/codex/skills",
+		managerHome:    managerHome,
 		// The global selection file lives in the manager home, while global
 		// placeholders stay under $HOME because that is where the harnesses
 		// look for .agents/skills and .claude/skills.

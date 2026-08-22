@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -52,23 +53,46 @@ type model struct {
 	filtering          bool
 	filterQuery        string
 	allSkills          []discoveredSkill
-	codexSubtab        int
+	sourceSubtabs      [claudeTab + 1]int
 }
 
 const (
-	tuiHeaderHeight    = 5
-	tuiFooterHeight    = 2
-	localTab           = 0
-	codexTab           = 1
-	grokTab            = 2
-	claudeTab          = 3
-	remoteTab          = 4
-	skillsMPTab        = 5
-	codexUserSubtab    = 0
-	codexPluginSubtab  = 1
-	codexBuiltinSubtab = 2
-	codexSystemSubtab  = 3
-	registryDebounce   = 300 * time.Millisecond
+	tuiHeaderHeight     = 5
+	tuiFooterHeight     = 2
+	localTab            = 0
+	codexTab            = 1
+	grokTab             = 2
+	claudeTab           = 3
+	remoteTab           = 4
+	skillsMPTab         = 5
+	userSourceSubtab    = 0
+	pluginSourceSubtab  = 1
+	bundledSourceSubtab = 2
+	systemSourceSubtab  = 3
+	registryDebounce    = 300 * time.Millisecond
+)
+
+type sourceSubtab struct {
+	label  string
+	source string
+}
+
+var (
+	codexSourceSubtabs = []sourceSubtab{
+		{label: "User", source: "codex"},
+		{label: "Plugin", source: "plugin"},
+		{label: "Builtin", source: "bundled"},
+		{label: "System", source: "admin"},
+	}
+	grokSourceSubtabs = []sourceSubtab{
+		{label: "User", source: "grok"},
+		{label: "Plugin", source: grokPluginSource},
+		{label: "Bundled", source: grokBundledSource},
+	}
+	claudeSourceSubtabs = []sourceSubtab{
+		{label: "User", source: "claude"},
+		{label: "Plugin", source: claudePluginSource},
+	}
 )
 
 var (
@@ -91,6 +115,12 @@ var (
 )
 
 type toggleDone struct {
+	skill   string
+	enabled bool
+	err     error
+}
+
+type grokToggleDone struct {
 	skill   string
 	enabled bool
 	err     error
@@ -151,6 +181,12 @@ func newModel(manager *manager, project string) (model, error) {
 	if err != nil {
 		return model{}, err
 	}
+	native, err := manager.nativeSkills(project)
+	if err != nil {
+		return model{}, err
+	}
+	discovered = append(discovered, native...)
+	slices.SortFunc(discovered, compareDiscoveredSkills)
 	selection, err := manager.selectionState(project, nil)
 	if err != nil {
 		return model{}, err
@@ -195,14 +231,14 @@ func (m model) catalogHarnesses() []listHarness {
 
 func (m *model) applyCatalog() {
 	skills := catalogSkills(m.allSkills, m.catalogHarnesses())
-	if m.tab == codexTab {
-		skills = filterCodexSource(skills, m.codexSubtab)
+	if subtabs := sourceSubtabsFor(m.tab); len(subtabs) > 0 {
+		skills = filterAgentSource(skills, subtabs[m.sourceSubtabs[m.tab]].source)
 	}
 	m.skills = skills
 }
 
 func (m model) headerHeight() int {
-	if m.tab == codexTab {
+	if len(sourceSubtabsFor(m.tab)) > 0 {
 		return tuiHeaderHeight + 1
 	}
 	return tuiHeaderHeight
@@ -212,16 +248,7 @@ func (m model) chromeHeight() int {
 	return m.headerHeight() + tuiFooterHeight
 }
 
-func filterCodexSource(skills []discoveredSkill, subtab int) []discoveredSkill {
-	want := "codex"
-	switch subtab {
-	case codexPluginSubtab:
-		want = "plugin"
-	case codexBuiltinSubtab:
-		want = "bundled"
-	case codexSystemSubtab:
-		want = "admin"
-	}
+func filterAgentSource(skills []discoveredSkill, want string) []discoveredSkill {
 	filtered := make([]discoveredSkill, 0, len(skills))
 	for _, skill := range skills {
 		if skill.Source == want {
@@ -229,6 +256,26 @@ func filterCodexSource(skills []discoveredSkill, subtab int) []discoveredSkill {
 		}
 	}
 	return filtered
+}
+
+func sourceSubtabsFor(tab int) []sourceSubtab {
+	switch tab {
+	case codexTab:
+		return codexSourceSubtabs
+	case grokTab:
+		return grokSourceSubtabs
+	case claudeTab:
+		return claudeSourceSubtabs
+	default:
+		return nil
+	}
+}
+
+func compareDiscoveredSkills(a, b discoveredSkill) int {
+	if byName := strings.Compare(a.Name, b.Name); byName != 0 {
+		return byName
+	}
+	return strings.Compare(a.Source, b.Source)
 }
 
 func (model) Init() tea.Cmd { return nil }
@@ -258,6 +305,24 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "disabled " + message.skill
 			}
 		}
+	case grokToggleDone:
+		m.busy = false
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		for index := range m.allSkills {
+			skill := &m.allSkills[index]
+			if skill.Name == message.skill && isGrokNativeSkill(*skill) {
+				skill.ExternalEnabled = message.enabled
+			}
+		}
+		m.applyCatalog()
+		if message.enabled {
+			m.status = "enabled " + message.skill + " in Grok"
+		} else {
+			m.status = "disabled " + message.skill + " in Grok"
+		}
 	case remoteToggleDone:
 		m.busy = false
 		m.progressTitle = ""
@@ -266,7 +331,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.allSkills = message.result.Skills
+		m.replaceManagedSkills(message.result.Skills)
 		m.applyCatalog()
 		m.selected = message.result.Selected
 		if m.projectSelected != nil {
@@ -292,7 +357,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.allSkills = message.result.Skills
+		m.replaceManagedSkills(message.result.Skills)
 		m.applyCatalog()
 		m.selected = message.result.Selected
 		m.globalSelected = message.result.GlobalSelected
@@ -314,7 +379,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.allSkills = message.result.Skills
+		m.replaceManagedSkills(message.result.Skills)
 		m.applyCatalog()
 		m.selected = message.result.Selected
 		m.globalSelected = message.result.GlobalSelected
@@ -337,7 +402,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		wasExpanded := m.expanded == message.result.Skill
-		m.allSkills = message.result.Skills
+		m.replaceManagedSkills(message.result.Skills)
 		m.applyCatalog()
 		m.selected = message.result.Selected
 		m.globalSelected = message.result.GlobalSelected
@@ -420,7 +485,7 @@ func (m *model) applySourceEditDone(message editDone) {
 		return
 	}
 	wasExpanded := m.expanded == message.skill
-	m.allSkills = message.skills
+	m.replaceManagedSkills(message.skills)
 	m.applyCatalog()
 	m.applySelectionState(message.selection)
 	m.expanded = ""
@@ -469,6 +534,16 @@ func (m *model) applySelectionState(selection selectionState) {
 	m.projectConditional = selection.projectExpressions
 }
 
+func (m *model) replaceManagedSkills(skills []discoveredSkill) {
+	for _, skill := range m.allSkills {
+		if isNativeSkill(skill) {
+			skills = append(skills, skill)
+		}
+	}
+	slices.SortFunc(skills, compareDiscoveredSkills)
+	m.allSkills = skills
+}
+
 func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
@@ -481,9 +556,9 @@ func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	header := m.headerHeight()
-	if m.tab == codexTab && mouse.Y == header-2 {
-		if subtab, ok := m.codexSubtabAt(mouse.X); ok {
-			return m, m.selectCodexSubtab(subtab)
+	if len(sourceSubtabsFor(m.tab)) > 0 && mouse.Y == header-2 {
+		if subtab, ok := m.sourceSubtabAt(mouse.X); ok {
+			return m, m.selectSourceSubtab(subtab)
 		}
 		return m, nil
 	}
@@ -546,12 +621,12 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right":
 		return m, m.selectTab(min(skillsMPTab, m.tab+1))
 	case "[":
-		if m.tab == codexTab {
-			return m, m.selectCodexSubtab(wrapCodexSubtab(m.codexSubtab - 1))
+		if len(sourceSubtabsFor(m.tab)) > 0 {
+			return m, m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] - 1))
 		}
 	case "]":
-		if m.tab == codexTab {
-			return m, m.selectCodexSubtab(wrapCodexSubtab(m.codexSubtab + 1))
+		if len(sourceSubtabsFor(m.tab)) > 0 {
+			return m, m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] + 1))
 		}
 	case "up", "k":
 		if m.cursor > 0 {
@@ -576,6 +651,10 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		skill := m.skills[skillIndex]
+		if isNativeSkill(skill) {
+			m.status = externalSkillControlStatus(skill)
+			break
+		}
 		m.busy = true
 		m.status = "updating model invocation for " + skill.Name
 		ctx, cancel := context.WithCancel(context.Background())
@@ -624,6 +703,10 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		skill := m.skills[skillIndex]
+		if isNativeSkill(skill) {
+			m.status = externalSkillControlStatus(skill)
+			break
+		}
 		command, draft, err := m.enabledEditor(skill.Name)
 		if err != nil {
 			m.status = "error: " + err.Error()
@@ -656,6 +739,10 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		skill := m.skills[skillIndex]
+		if isNativeSkill(skill) {
+			m.status = externalSkillControlStatus(skill)
+			break
+		}
 		command, err := m.editor(skill.Name)
 		if err != nil {
 			m.status = "error: " + err.Error()
@@ -752,6 +839,18 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	skill := m.skills[skillIndex]
+	if skill.Source == claudePluginSource {
+		m.status = "Claude plugin status is display only"
+		return m, nil
+	}
+	if isGrokNativeSkill(skill) {
+		m.busy = true
+		m.status = "updating " + skill.Name + " in Grok"
+		return m, func() tea.Msg {
+			enabled, err := m.manager.toggleGrokSkill(skill.Name)
+			return grokToggleDone{skill: skill.Name, enabled: enabled, err: err}
+		}
+	}
 	m.busy = true
 	m.status = "updating " + skill.Name
 	return m, func() tea.Msg {
@@ -761,17 +860,32 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 	}
 }
 
-func wrapCodexSubtab(subtab int) int {
-	const count = codexSystemSubtab - codexUserSubtab + 1
+func isGrokNativeSkill(skill discoveredSkill) bool {
+	return skill.Source == grokPluginSource || skill.Source == grokBundledSource
+}
+
+func isNativeSkill(skill discoveredSkill) bool {
+	return skill.Source == claudePluginSource || isGrokNativeSkill(skill)
+}
+
+func externalSkillControlStatus(skill discoveredSkill) string {
+	if skill.Source == claudePluginSource {
+		return "Claude plugin skills are display only"
+	}
+	return "Grok owns this skill; use Space to change its global status"
+}
+
+func (m model) wrapSourceSubtab(subtab int) int {
+	count := len(sourceSubtabsFor(m.tab))
 	return (subtab%count + count) % count
 }
 
-func (m *model) selectCodexSubtab(subtab int) tea.Cmd {
-	if m.tab != codexTab || subtab < codexUserSubtab || subtab > codexSystemSubtab ||
-		subtab == m.codexSubtab {
+func (m *model) selectSourceSubtab(subtab int) tea.Cmd {
+	subtabs := sourceSubtabsFor(m.tab)
+	if subtab < 0 || subtab >= len(subtabs) || subtab == m.sourceSubtabs[m.tab] {
 		return nil
 	}
-	m.codexSubtab = subtab
+	m.sourceSubtabs[m.tab] = subtab
 	m.cursor = 0
 	m.offset = 0
 	m.expanded = ""
@@ -1360,8 +1474,8 @@ func (m model) View() string {
 		boundLine(mutedStyle.Render(terminalSafeText(m.project)), m.width),
 		m.tabBar(),
 	)
-	if m.tab == codexTab {
-		fmt.Fprintln(&view, m.codexSubtabBar())
+	if len(sourceSubtabsFor(m.tab)) > 0 {
+		fmt.Fprintln(&view, m.sourceSubtabBar())
 	}
 	fmt.Fprintln(&view, m.filterLine())
 	remaining := m.height - m.chromeHeight()
@@ -1381,6 +1495,18 @@ func (m model) View() string {
 		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • a adopt/release • u uninstall • e source • i enabled • q quit"
 	case codexTab:
 		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
+	case grokTab:
+		if m.sourceSubtabs[grokTab] == userSourceSubtab {
+			help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
+		} else {
+			help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space global toggle • q quit"
+		}
+	case claudeTab:
+		if m.sourceSubtabs[claudeTab] == userSourceSubtab {
+			help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
+		} else {
+			help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • plugin status display only • q quit"
+		}
 	case remoteTab:
 		help = "←/→ tabs • f search • ↑/k ↓/j move • enter/click details/topics • space toggle • q quit"
 	case skillsMPTab:
@@ -1460,22 +1586,19 @@ func (m model) tabBar() string {
 	return boundLine(strings.Join(parts, " "), m.width)
 }
 
-func (m model) codexSubtabBar() string {
-	parts := make([]string, 0, 4)
-	for id, label := range m.codexSubtabLabels() {
-		parts = append(parts, styledTab(label, m.codexSubtab == id))
+func (m model) sourceSubtabBar() string {
+	subtabs := sourceSubtabsFor(m.tab)
+	parts := make([]string, 0, len(subtabs))
+	for id, subtab := range subtabs {
+		parts = append(parts, styledTab(subtab.label, m.sourceSubtabs[m.tab] == id))
 	}
 	return boundLine(strings.Join(parts, " "), m.width)
 }
 
-func (m model) codexSubtabLabels() []string {
-	return []string{"User", "Plugin", "Builtin", "System"}
-}
-
-func (m model) codexSubtabAt(x int) (int, bool) {
+func (m model) sourceSubtabAt(x int) (int, bool) {
 	col := 0
-	for id, label := range m.codexSubtabLabels() {
-		part := styledTab(label, m.codexSubtab == id)
+	for id, subtab := range sourceSubtabsFor(m.tab) {
+		part := styledTab(subtab.label, m.sourceSubtabs[m.tab] == id)
 		width := lipgloss.Width(part)
 		if id > 0 {
 			col++
@@ -1713,7 +1836,7 @@ func (m model) skillLines(indices []int, index int) []string {
 	}
 	expanded := m.expanded == skill.Name
 	disclosure := disclosureIndicator(expanded)
-	source := skill.Source
+	source := skillSourceLabel(skill.Source)
 	if source == "" {
 		source = "unknown"
 	}
@@ -1722,7 +1845,7 @@ func (m model) skillLines(indices []int, index int) []string {
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render(cursor + " ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).Render(skill.Name)
-	if m.inherited(skill.Name) {
+	if !isNativeSkill(skill) && m.inherited(skill.Name) {
 		name += selectedStyle(inheritedStyle, selected).Render(" [inherited]")
 	}
 	if skill.DisableModelInvocation {
@@ -1731,6 +1854,11 @@ func (m model) skillLines(indices []int, index int) []string {
 	_, projectConditional := m.projectConditional[skill.Name]
 	_, globalConditional := m.globalConditional[skill.Name]
 	_, projectConfigured := m.projectSelected[skill.Name]
+	if isNativeSkill(skill) {
+		projectConditional = false
+		globalConditional = false
+		projectConfigured = true
+	}
 	effectiveGlobalConditional := globalConditional && !projectConfigured
 	if projectConditional || effectiveGlobalConditional {
 		label := " [conditional]"
@@ -1741,17 +1869,43 @@ func (m model) skillLines(indices []int, index int) []string {
 		}
 		name += selectedStyle(manualOnlyStyle, selected).Render(label)
 	}
-	if !m.selected[skill.Name] {
+	if isNativeSkill(skill) && skill.ExternalEnabled {
+		name += selectedStyle(lipgloss.NewStyle().Bold(true).Foreground(successColor), selected).
+			Render(" [enabled]")
+	} else if !m.skillEnabled(skill) {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")
 	}
 	header := labeledListLine(name, label, skillSourceStyle(skill), selected, m.width)
 	return collapsibleLines(header, expanded, func() []string {
 		details := descriptionLines(skill.Description, m.width)
+		if skill.Plugin != "" {
+			details = append(details, styledMetadataLines("plugin", terminalSafeText(skill.Plugin), m.width)...)
+		}
+		if skill.Vendor != "" {
+			details = append(details, styledMetadataLines("vendor", terminalSafeText(skill.Vendor), m.width)...)
+		}
+		if isGrokNativeSkill(skill) {
+			details = append(details, styledMetadataLines("user invocable", fmt.Sprintf("%t", skill.UserInvocable), m.width)...)
+		}
+		if skill.CompatibilityStatus != "" {
+			details = append(details, styledMetadataLines("compatibility", terminalSafeText(skill.CompatibilityStatus), m.width)...)
+		}
 		return append(
 			details,
 			styledPathLines(terminalSafeText(skill.Path), m.width)...,
 		)
 	})
+}
+
+func skillSourceLabel(source string) string {
+	switch source {
+	case claudePluginSource, grokPluginSource:
+		return "plugin"
+	case grokBundledSource:
+		return "bundled"
+	default:
+		return source
+	}
 }
 
 func skillSourceStyle(skill discoveredSkill) lipgloss.Style {
@@ -1765,9 +1919,9 @@ func skillSourceStyle(skill discoveredSkill) lipgloss.Style {
 		color = lipgloss.AdaptiveColor{Light: "#005F87", Dark: "#7DD3FC"}
 	case skill.Source == managedSkillSource:
 		color = lipgloss.AdaptiveColor{Light: "#237A3B", Dark: "#75D18B"}
-	case skill.Source == "plugin":
+	case skill.Source == "plugin", skill.Source == claudePluginSource, skill.Source == grokPluginSource:
 		color = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#E5C07B"}
-	case skill.Source == "bundled":
+	case skill.Source == "bundled", skill.Source == grokBundledSource:
 		color = lipgloss.AdaptiveColor{Light: "#A63D73", Dark: "#F49AC2"}
 	}
 	return lipgloss.NewStyle().Foreground(color)
@@ -1778,7 +1932,7 @@ func (m model) localSkillIndices() []int {
 	query := strings.ToLower(m.filterQuery)
 	for group := range 4 {
 		for index, skill := range m.skills {
-			if m.localSkillGroup(skill.Name) != group {
+			if m.localSkillGroup(skill) != group {
 				continue
 			}
 			if matchesNormalizedFilter(
@@ -1787,6 +1941,9 @@ func (m model) localSkillIndices() []int {
 				skill.Description,
 				skill.Path,
 				skill.Source,
+				skill.Plugin,
+				skill.Vendor,
+				skill.CompatibilityStatus,
 			) {
 				indices = append(indices, index)
 			}
@@ -1795,15 +1952,22 @@ func (m model) localSkillIndices() []int {
 	return indices
 }
 
-func (m model) localSkillGroup(skill string) int {
-	if m.projectSelected == nil {
-		if m.selected[skill] {
+func (m model) localSkillGroup(skill discoveredSkill) int {
+	if isNativeSkill(skill) {
+		if skill.ExternalEnabled {
 			return 0
 		}
 		return 3
 	}
-	projectEnabled, projectExists := m.projectSelected[skill]
-	globalEnabled := m.globalSelected[skill]
+	name := skill.Name
+	if m.projectSelected == nil {
+		if m.selected[name] {
+			return 0
+		}
+		return 3
+	}
+	projectEnabled, projectExists := m.projectSelected[name]
+	globalEnabled := m.globalSelected[name]
 	switch {
 	case projectExists && projectEnabled:
 		return 0
@@ -1814,6 +1978,13 @@ func (m model) localSkillGroup(skill string) int {
 	default:
 		return 3
 	}
+}
+
+func (m model) skillEnabled(skill discoveredSkill) bool {
+	if isNativeSkill(skill) {
+		return skill.ExternalEnabled
+	}
+	return m.selected[skill.Name]
 }
 
 func (m model) inherited(skill string) bool {

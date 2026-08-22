@@ -2028,28 +2028,28 @@ func TestTUICatalogFiltersAgentPrivateSkills(t *testing.T) {
 		{
 			name:        "codex user subtab",
 			tab:         codexTab,
-			codexSubtab: codexUserSubtab,
+			codexSubtab: userSourceSubtab,
 			want:        []string{"codex-only", "project-codex"},
 			omit:        []string{"admin-only", "builtin", "common", "local", "plugin-only", "project-claude", "project-grok"},
 		},
 		{
 			name:        "codex plugin subtab",
 			tab:         codexTab,
-			codexSubtab: codexPluginSubtab,
+			codexSubtab: pluginSourceSubtab,
 			want:        []string{"plugin-only"},
 			omit:        []string{"admin-only", "builtin", "codex-only", "common", "local", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:        "codex builtin subtab",
 			tab:         codexTab,
-			codexSubtab: codexBuiltinSubtab,
+			codexSubtab: bundledSourceSubtab,
 			want:        []string{"builtin"},
 			omit:        []string{"admin-only", "codex-only", "common", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
 		{
 			name:        "codex system subtab",
 			tab:         codexTab,
-			codexSubtab: codexSystemSubtab,
+			codexSubtab: systemSourceSubtab,
 			want:        []string{"admin-only"},
 			omit:        []string{"builtin", "codex-only", "common", "local", "plugin-only", "project-claude", "project-codex", "project-grok"},
 		},
@@ -2070,7 +2070,7 @@ func TestTUICatalogFiltersAgentPrivateSkills(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := current
 			got.tab = tt.tab
-			got.codexSubtab = tt.codexSubtab
+			got.sourceSubtabs[codexTab] = tt.codexSubtab
 			got.applyCatalog()
 			names := make([]string, 0, len(got.skills))
 			for _, skill := range got.skills {
@@ -2118,8 +2118,8 @@ func TestCodexSubtabsCycleWithBrackets(t *testing.T) {
 
 	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	current = updated.(model)
-	if current.codexSubtab != codexPluginSubtab {
-		t.Fatalf("subtab = %d, want Plugin", current.codexSubtab)
+	if current.sourceSubtabs[codexTab] != pluginSourceSubtab {
+		t.Fatalf("subtab = %d, want Plugin", current.sourceSubtabs[codexTab])
 	}
 	view = current.View()
 	if !strings.Contains(view, "[Plugin]") || !strings.Contains(view, "plugin-skill") ||
@@ -2129,18 +2129,18 @@ func TestCodexSubtabsCycleWithBrackets(t *testing.T) {
 
 	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
 	current = updated.(model)
-	if current.codexSubtab != codexUserSubtab {
-		t.Fatalf("subtab = %d, want User", current.codexSubtab)
+	if current.sourceSubtabs[codexTab] != userSourceSubtab {
+		t.Fatalf("subtab = %d, want User", current.sourceSubtabs[codexTab])
 	}
 
 	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'['}})
 	current = updated.(model)
-	if current.codexSubtab != codexSystemSubtab {
-		t.Fatalf("wrap back = %d, want System", current.codexSubtab)
+	if current.sourceSubtabs[codexTab] != systemSourceSubtab {
+		t.Fatalf("wrap back = %d, want System", current.sourceSubtabs[codexTab])
 	}
 	updated, _ = current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{']'}})
 	current = updated.(model)
-	if current.codexSubtab != codexUserSubtab {
-		t.Fatalf("wrap forward = %d, want User", current.codexSubtab)
+	if current.sourceSubtabs[codexTab] != userSourceSubtab {
+		t.Fatalf("wrap forward = %d, want User", current.sourceSubtabs[codexTab])
 	}
 }

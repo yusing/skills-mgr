@@ -135,15 +135,15 @@ Six tabs, selected with `←` and `→`:
 | --- | --- | --- |
 | Installed | Shared `.agents/skills` roots, the manager home, and installed remote skills | None |
 | Codex | Codex-native skills. `[` and `]` cycle the User, Plugin, Builtin, and System sources | None |
-| Grok | Grok-native skills | None |
-| Claude | Claude-native skills | None |
+| Grok | Grok-native skills. `[` and `]` cycle the User, Plugin, and Bundled sources | None |
+| Claude | Claude-native skills. `[` and `]` cycle the User and Plugin sources | None |
 | skills.sh | Browse topics, search, and install | skills.sh, then its skill-detail API |
 | SkillsMP | Browse, search, and install | SkillsMP, then `git clone --depth 1` of the skill's repository |
 
 | Key | Action |
 | --- | --- |
 | `←` / `→` | Change tab |
-| `[` / `]` | Cycle Codex source subtabs |
+| `[` / `]` | Cycle source subtabs in the Codex, Grok, or Claude tab |
 | `j` / `k`, `↓` / `↑` | Move through results |
 | `f` | Filter local skills, or search the active registry |
 | Enter or click | Expand or collapse details |
@@ -386,6 +386,19 @@ A `.system` subdirectory inside either Codex root is scanned as well and
 reported as `bundled`. Missing, unreadable, or invalid entries are skipped
 silently, as are the placeholder directories `skills-mgr` maintains for
 autocomplete.
+
+Grok Plugin and Bundled rows use metadata from `grok inspect --json`. Space on
+one of those rows changes the global `skills.disabled` list in
+`$HOME/.grok/config.toml`; Grok does not support a project-local override for
+these skills. The other status and source-editing keys do not apply to those
+rows. Claude Plugin rows read their status from `enabledPlugins` in
+`$HOME/.claude/settings.json` and are display-only.
+
+The interactive interface also reads installed Claude plugin skill directories
+from `$HOME/.claude/plugins/installed_plugins.json` and Grok Plugin and Bundled
+skills from `grok inspect --json`. These harness-owned catalogs are displayed
+only in their nested TUI tabs. They are never emitted by `skills-mgr list`,
+regardless of their displayed status.
 
 Roots 4 through 9 belong to a specific harness. Under a `--claude`, `--grok`,
 or `--codex` scope, roots owned by a different harness are dropped from the
