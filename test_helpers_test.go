@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,24 +26,42 @@ func newTestManager(t *testing.T) *manager {
 		}
 	})
 	cache := filepath.Join(root, "cache", "skills-mgr")
+	home := filepath.Join(root, "home")
+	managerHome := filepath.Join(home, ".skills-mgr")
 	manager := &manager{paths: paths{
-		userSkills:     filepath.Join(root, "home", ".agents", "skills"),
-		claudeSkills:   filepath.Join(root, "home", ".claude", "skills"),
-		grokSkills:     filepath.Join(root, "home", ".grok", "skills"),
-		codexHome:      filepath.Join(root, "home", ".codex"),
+		userSkills:     filepath.Join(home, ".agents", "skills"),
+		managedSkills:  filepath.Join(managerHome, "skills"),
+		claudeSkills:   filepath.Join(home, ".claude", "skills"),
+		grokSkills:     filepath.Join(home, ".grok", "skills"),
+		codexHome:      filepath.Join(home, ".codex"),
 		adminSkills:    filepath.Join(root, "etc", "codex", "skills"),
-		globalLockDir:  filepath.Join(root, "home"),
+		managerHome:    managerHome,
+		globalLockDir:  managerHome,
+		legacyLockDir:  home,
+		placeholderDir: home,
 		selectionLocks: filepath.Join(cache, "selection-locks"),
 		remoteRegistry: filepath.Join(cache, "skills-sh.json"),
 		skillsMP:       filepath.Join(cache, "skillsmp.json"),
 		remoteSkills:   filepath.Join(cache, "remote-skills"),
 		daemonSocket:   filepath.Join(socketDir, "skills-mgr.sock"),
 	}}
-	if err := os.MkdirAll(manager.paths.globalLockDir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{manager.paths.globalLockDir, manager.paths.placeholderDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	manager.remoteStore = newRemoteSkillStore(manager.paths.remoteSkills)
 	return manager
+}
+
+// wantPlaceholder renders the stub content placeholders carry, so a change to
+// placeholder frontmatter updates one place rather than every assertion.
+func wantPlaceholder(name, description string) string {
+	return fmt.Sprintf(
+		"---\nname: %s\ndescription: %s\ndisable-model-invocation: true\n---\n",
+		name,
+		description,
+	)
 }
 
 func writeFile(t *testing.T, path, content string) {

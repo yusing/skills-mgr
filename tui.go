@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -106,6 +108,11 @@ type remoteUninstallDone struct {
 
 type modelInvocationDone struct {
 	result modelInvocationResult
+	err    error
+}
+
+type skillLocationDone struct {
+	result skillLocationResult
 	err    error
 }
 
@@ -301,6 +308,24 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "uninstalled " + message.result.Skill
 		m.syncViewport()
+	case skillLocationDone:
+		m.busy = false
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		m.allSkills = message.result.Skills
+		m.applyCatalog()
+		m.selected = message.result.Selected
+		m.globalSelected = message.result.GlobalSelected
+		m.projectSelected = message.result.ProjectSelected
+		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		m.expanded = ""
+		where := "released to .agents/skills"
+		if message.result.Managed {
+			where = "adopted into the manager home"
+		}
+		m.status = message.result.Skill + " " + where
 	case modelInvocationDone:
 		m.busy = false
 		if m.busyCancel != nil {
@@ -563,6 +588,8 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 			return modelInvocationDone{result: result, err: err}
 		}
+	case "a":
+		return relocateSelectedSkill(m)
 	case "u":
 		if !isLocalTab(m.tab) || m.manager == nil {
 			break
@@ -653,6 +680,35 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	}
 	return m, nil
+}
+
+// relocateSelectedSkill moves the highlighted skill between $HOME/.agents/skills
+// and the manager home. Only those two roots take part: content in a
+// harness-owned root belongs to that harness, and a project skill is committed
+// where every harness can see it on purpose.
+func relocateSelectedSkill(m model) (tea.Model, tea.Cmd) {
+	if m.tab != localTab || m.manager == nil {
+		return m, nil
+	}
+	skillIndex, ok := m.localSkillIndex(m.cursor)
+	if !ok {
+		return m, nil
+	}
+	skill := m.skills[skillIndex]
+	if skill.Source != "user" && skill.Source != managedSkillSource {
+		m.status = "only a user or managed skill can be adopted or released"
+		return m, nil
+	}
+	action := "adopting "
+	if skill.Source == managedSkillSource {
+		action = "releasing "
+	}
+	m.busy = true
+	m.status = action + skill.Name
+	return m, func() tea.Msg {
+		result, err := m.manager.relocateSkill(m.project, skill)
+		return skillLocationDone{result: result, err: err}
+	}
 }
 
 func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
@@ -967,85 +1023,197 @@ func (m *manager) refreshEditedSkill(
 	if err != nil {
 		return nil, selectionState{}, err
 	}
-	newName := ""
+	var edited discoveredSkill
 	for _, skill := range skills {
 		if skill.Path == path {
-			newName = skill.Name
+			edited = skill
 			break
 		}
 	}
-	if newName == "" || newName == oldName {
-		selection, err := m.selectionState(project, skills)
-		return skills, selection, err
-	}
-	mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
-		if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
-			return enabledValue{}, fmt.Errorf(
-				"cannot merge enabled values while renaming skill %q to %q when either value is an expression",
-				oldName,
-				newName,
-			)
+	newName := edited.Name
+	var undoSelection func() error
+	if newName != "" && newName != oldName {
+		cloneLock := func(value lock) lock {
+			value.Skills = maps.Clone(value.Skills)
+			value.Expressions = maps.Clone(value.Expressions)
+			value.Remote = maps.Clone(value.Remote)
+			return value
 		}
-		merged := *newEnabled.Boolean || *oldEnabled.Boolean
-		return enabledValue{Boolean: new(merged)}, nil
-	}
+		sameLock := func(left, right lock) bool {
+			return maps.Equal(left.Skills, right.Skills) &&
+				maps.Equal(left.Expressions, right.Expressions) &&
+				maps.Equal(left.Remote, right.Remote)
+		}
+		mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
+			if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
+				return enabledValue{}, fmt.Errorf(
+					"cannot merge enabled values while renaming skill %q to %q when either value is an expression",
+					oldName,
+					newName,
+				)
+			}
+			merged := *newEnabled.Boolean || *oldEnabled.Boolean
+			return enabledValue{Boolean: new(merged)}, nil
+		}
 
-	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		oldEnabled, exists := value.enabled(oldName)
-		if m.global {
-			if !exists {
+		var previousLock, renamedLock lock
+		renamedSelection := false
+		err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+			previousLock = cloneLock(*value)
+			oldEnabled, exists := value.enabled(oldName)
+			if m.global {
+				if !exists {
+					return false, nil
+				}
+				newEnabled, newExists := value.enabled(newName)
+				switch {
+				case !newExists:
+					value.setEnabled(newName, oldEnabled)
+				default:
+					merged, err := mergeEnabled(oldEnabled, newEnabled)
+					if err != nil {
+						return false, err
+					}
+					value.setEnabled(newName, merged)
+				}
+				value.deleteEnabled(oldName)
+				renamedLock = cloneLock(*value)
+				renamedSelection = true
+				return true, nil
+			}
+
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return false, err
+			}
+			effective := oldEnabled
+			effectiveExists := exists
+			if !effectiveExists {
+				effective, effectiveExists = global.enabled(oldName)
+			}
+			if !effectiveExists ||
+				(!exists && effective.Boolean != nil && !*effective.Boolean) {
 				return false, nil
 			}
 			newEnabled, newExists := value.enabled(newName)
 			switch {
 			case !newExists:
-				value.setEnabled(newName, oldEnabled)
+				value.setEnabled(newName, effective)
 			default:
-				merged, err := mergeEnabled(oldEnabled, newEnabled)
+				merged, err := mergeEnabled(effective, newEnabled)
 				if err != nil {
 					return false, err
 				}
 				value.setEnabled(newName, merged)
 			}
-			value.deleteEnabled(oldName)
-			return true, nil
-		}
-
-		global, err := loadLock(m.paths.globalLockDir)
-		if err != nil {
-			return false, err
-		}
-		effective := oldEnabled
-		effectiveExists := exists
-		if !effectiveExists {
-			effective, effectiveExists = global.enabled(oldName)
-		}
-		if !effectiveExists ||
-			(!exists && effective.Boolean != nil && !*effective.Boolean) {
-			return false, nil
-		}
-		newEnabled, newExists := value.enabled(newName)
-		switch {
-		case !newExists:
-			value.setEnabled(newName, effective)
-		default:
-			merged, err := mergeEnabled(effective, newEnabled)
-			if err != nil {
-				return false, err
+			if _, inherited := global.enabled(oldName); inherited {
+				value.setEnabled(oldName, enabledValue{Boolean: new(false)})
+			} else {
+				value.deleteEnabled(oldName)
 			}
-			value.setEnabled(newName, merged)
+			renamedLock = cloneLock(*value)
+			renamedSelection = true
+			return true, nil
+		})
+		if err != nil {
+			return nil, selectionState{}, err
 		}
-		if _, inherited := global.enabled(oldName); inherited {
-			value.setEnabled(oldName, enabledValue{Boolean: new(false)})
-		} else {
-			value.deleteEnabled(oldName)
+		if renamedSelection {
+			undoSelection = func() error {
+				return m.updateSelectionLock(project, func(value *lock) (bool, error) {
+					if !sameLock(*value, renamedLock) {
+						return false, fmt.Errorf("selection changed during managed edit rollback")
+					}
+					*value = cloneLock(previousLock)
+					return true, nil
+				})
+			}
 		}
-		return true, nil
-	})
-	if err != nil {
-		return nil, selectionState{}, err
+	}
+	rollbackSelection := func(cause error) error {
+		if undoSelection == nil {
+			return cause
+		}
+		return errors.Join(cause, undoSelection())
 	}
 	selection, err := m.selectionState(project, skills)
+	if err != nil || edited.Source != managedSkillSource {
+		if err != nil {
+			err = rollbackSelection(err)
+		}
+		return skills, selection, err
+	}
+	frontmatter, err := m.placeholderFrontmatter(edited, nil)
+	if err != nil {
+		return skills, selection, rollbackSelection(err)
+	}
+	var changes []placeholderChange
+	if m.global {
+		global, err := loadLock(m.paths.globalLockDir)
+		if err != nil {
+			return skills, selection, rollbackSelection(err)
+		}
+		if oldName != newName {
+			changes = append(changes, placeholderChange{base: m.paths.placeholderDir, name: oldName})
+		}
+		changes = append(changes, placeholderChange{
+			base:    m.paths.placeholderDir,
+			name:    newName,
+			enabled: lockWantsPlaceholder(global, newName),
+		})
+	} else {
+		projectLock, err := loadLock(project)
+		if err != nil {
+			return skills, selection, rollbackSelection(err)
+		}
+		sameRoot := filepath.Clean(project) == filepath.Clean(m.paths.placeholderDir)
+		if sameRoot || oldName == newName {
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return skills, selection, rollbackSelection(err)
+			}
+			if sameRoot && oldName != newName {
+				changes = append(changes,
+					placeholderChange{
+						base: project,
+						name: oldName,
+						enabled: lockWantsPlaceholder(global, oldName) ||
+							lockWantsPlaceholder(projectLock, oldName),
+					},
+					placeholderChange{
+						base: project,
+						name: newName,
+						enabled: lockWantsPlaceholder(global, newName) ||
+							lockWantsPlaceholder(projectLock, newName),
+					},
+				)
+			} else {
+				enabled := lockWantsPlaceholder(global, newName)
+				if sameRoot {
+					enabled = enabled || lockWantsPlaceholder(projectLock, newName)
+				}
+				changes = append(changes, placeholderChange{
+					base:    m.paths.placeholderDir,
+					name:    newName,
+					enabled: enabled,
+				})
+			}
+		}
+		if !sameRoot {
+			if oldName != newName {
+				changes = append(changes, placeholderChange{base: project, name: oldName})
+			}
+			changes = append(changes, placeholderChange{
+				base:    project,
+				name:    newName,
+				enabled: lockWantsPlaceholder(projectLock, newName),
+			})
+		}
+	}
+	_, err = m.changeRemotePlaceholdersAcross(changes, frontmatter)
+	if err != nil {
+		err = rollbackSelection(err)
+	}
 	return skills, selection, err
 }
 
@@ -1210,7 +1378,7 @@ func (m model) View() string {
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	switch m.tab {
 	case localTab:
-		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • u uninstall • e source • i enabled • q quit"
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • a adopt/release • u uninstall • e source • i enabled • q quit"
 	case codexTab:
 		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	case remoteTab:
@@ -1834,12 +2002,16 @@ func (m *manager) applyEnabledDraft(
 	}
 
 	var undoPlaceholder func() error
-	if skill.RemoteKey != "" {
-		ref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)
-		if err != nil {
-			return selectionState{}, err
+	if placeholderManaged(skill) {
+		var ref *remoteSkillRef
+		if skill.RemoteKey != "" {
+			resolved, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)
+			if err != nil {
+				return selectionState{}, err
+			}
+			ref = &resolved
 		}
-		frontmatter, err := m.remoteSkillFrontmatter(ref)
+		frontmatter, err := m.placeholderFrontmatter(skill, ref)
 		if err != nil {
 			return selectionState{}, err
 		}
@@ -1851,9 +2023,11 @@ func (m *manager) applyEnabledDraft(
 			}
 			effective, effectiveExists = global.enabled(skill.Name)
 		}
+		// A conditional entry still gets a placeholder. The stub is invisible to
+		// the model, so it cannot bypass a false condition; only list, get, and
+		// run answer for the model, and all three evaluate the expression.
 		create := effectiveExists &&
-			effective.Boolean != nil &&
-			*effective.Boolean
+			(effective.Boolean == nil || *effective.Boolean)
 		undoPlaceholder, err = m.changeRemotePlaceholders(
 			project,
 			skill.Name,
