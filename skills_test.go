@@ -832,6 +832,41 @@ func TestListEnabledFiltersCompleteWithinBudget(t *testing.T) {
 	}
 }
 
+func TestSelectionRecognizesLiteralProjectEvidenceCalls(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		expression string
+		want       bool
+	}{
+		{name: "dependency", expression: "has_dependency react", want: true},
+		{name: "language", expression: "lang go", want: true},
+		{name: "tooling in branch", expression: "if true; then tooling npm; fi", want: true},
+		{name: "argument only", expression: "echo lang"},
+		{name: "dynamic command", expression: `builtin=lang; "$builtin" go`},
+		{name: "malformed", expression: "[["},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selection := selectionState{
+				selected:    map[string]bool{"example": true},
+				expressions: map[string]string{"example": test.expression},
+			}
+			if got := selection.usesProjectEvidence(); got != test.want {
+				t.Fatalf("usesProjectEvidence() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestSelectionSkipsProjectEvidenceForDisabledSkills(t *testing.T) {
+	selection := selectionState{
+		selected:    map[string]bool{"example": false},
+		expressions: map[string]string{"example": "lang go"},
+	}
+	if selection.usesProjectEvidence() {
+		t.Fatal("disabled expression requested project evidence")
+	}
+}
+
 func TestEnabledPathFiltersCompleteWithinBudget(t *testing.T) {
 	home := t.TempDir()
 	project := filepath.Join(home, "projects", "example")

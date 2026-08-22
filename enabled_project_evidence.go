@@ -7,20 +7,22 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 )
 
 type projectEvidence struct {
 	languages map[string]bool
 	tooling   map[string]bool
+	manifests []string
 }
 
 type projectEvidenceIndex struct {
-	mu          sync.Mutex
-	evidence    projectEvidence
-	directories []string
-	recursive   bool
-	err         error
+	loadOnce  sync.Once
+	evidence  projectEvidence
+	root      string
+	recursive bool
+	loadErr   error
 }
 
 func newProjectEvidenceIndex(project string) *projectEvidenceIndex {
@@ -31,9 +33,9 @@ func newProjectEvidenceIndex(project string) *projectEvidenceIndex {
 		recursive = filepath.Clean(project) != filepath.Clean(home)
 	}
 	return &projectEvidenceIndex{
-		evidence:    newProjectEvidence(),
-		directories: []string{project},
-		recursive:   recursive,
+		evidence:  newProjectEvidence(),
+		root:      project,
+		recursive: recursive,
 	}
 }
 
@@ -42,33 +44,60 @@ func (index *projectEvidenceIndex) has(
 	matches map[string]bool,
 	name string,
 ) (bool, error) {
-	index.mu.Lock()
-	defer index.mu.Unlock()
-	if matches[name] {
-		return true, nil
-	}
-	if index.err != nil {
-		return false, index.err
-	}
-	if len(index.directories) > 0 {
-		index.err = index.load(ctx)
-		if index.err != nil {
-			return false, index.err
-		}
+	if err := index.prepare(ctx); err != nil {
+		return false, err
 	}
 	return matches[name], nil
 }
 
+func (index *projectEvidenceIndex) prepare(ctx context.Context) error {
+	index.loadOnce.Do(func() {
+		index.loadErr = index.load(ctx)
+	})
+	return index.loadErr
+}
+
+func (index *projectEvidenceIndex) manifestPaths(ctx context.Context) ([]string, error) {
+	if err := index.prepare(ctx); err != nil {
+		return nil, err
+	}
+	paths := slices.Clone(index.evidence.manifests)
+	slices.Sort(paths)
+	return paths, nil
+}
+
 func (index *projectEvidenceIndex) load(ctx context.Context) error {
-	type readResult struct {
+	type readRequest struct {
 		directory string
-		entries   []os.DirEntry
-		err       error
+		relative  []string
+		matcher   projectIgnoreMatcher
+	}
+	type readResult struct {
+		request readRequest
+		entries []os.DirEntry
+		err     error
+	}
+	ignore, err := loadProjectIgnoreState(ctx, index.root)
+	if err != nil {
+		return err
+	}
+	root, err := filepath.Abs(index.root)
+	if err != nil {
+		return err
+	}
+	rootRelative, err := filepath.Rel(ignore.root, root)
+	if err != nil {
+		return err
+	}
+	rootPath := projectIgnorePath(rootRelative)
+	rootKey := filepath.ToSlash(filepath.Join(rootPath...))
+	if len(rootPath) > 0 && ignore.matcher.match(rootPath, true) && !ignore.trackedDirs[rootKey] {
+		return nil
 	}
 
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	jobs := make(chan string)
+	jobs := make(chan readRequest)
 	results := make(chan readResult)
 	var workers sync.WaitGroup
 	// Directory reads dominate exhaustive negative checks. Bound parallelism
@@ -79,13 +108,13 @@ func (index *projectEvidenceIndex) load(ctx context.Context) error {
 				select {
 				case <-workerCtx.Done():
 					return
-				case directory, ok := <-jobs:
+				case request, ok := <-jobs:
 					if !ok {
 						return
 					}
-					entries, err := os.ReadDir(directory)
+					entries, err := os.ReadDir(request.directory)
 					select {
-					case results <- readResult{directory: directory, entries: entries, err: err}:
+					case results <- readResult{request: request, entries: entries, err: err}:
 					case <-workerCtx.Done():
 						return
 					}
@@ -99,12 +128,15 @@ func (index *projectEvidenceIndex) load(ctx context.Context) error {
 		workers.Wait()
 	}
 
-	directories := index.directories
-	index.directories = nil
+	directories := []readRequest{{
+		directory: root,
+		relative:  rootPath,
+		matcher:   ignore.matcher,
+	}}
 	active := 0
 	for len(directories) > 0 || active > 0 {
-		var next string
-		var send chan string
+		var next readRequest
+		var send chan readRequest
 		if len(directories) > 0 {
 			next = directories[0]
 			send = jobs
@@ -125,11 +157,30 @@ func (index *projectEvidenceIndex) load(ctx context.Context) error {
 				stopWorkers()
 				return fmt.Errorf(
 					"read project evidence directory %s: %w",
-					result.directory,
+					result.request.directory,
 					result.err,
 				)
 			}
+			matcher := result.request.matcher
 			for _, entry := range result.entries {
+				if entry.Name() != ".gitignore" {
+					continue
+				}
+				data, err := os.ReadFile(filepath.Join(result.request.directory, entry.Name()))
+				if err != nil {
+					stopWorkers()
+					return fmt.Errorf(
+						"read project ignore file %s: %w",
+						result.request.directory,
+						err,
+					)
+				}
+				matcher = matcher.append(string(data), result.request.relative)
+				break
+			}
+			for _, entry := range result.entries {
+				relative := slices.Concat(result.request.relative, []string{entry.Name()})
+				key := filepath.ToSlash(filepath.Join(relative...))
 				if entry.IsDir() {
 					if !index.recursive {
 						continue
@@ -138,13 +189,26 @@ func (index *projectEvidenceIndex) load(ctx context.Context) error {
 					case ".git", "node_modules", "target":
 						continue
 					}
+					if matcher.match(relative, true) && !ignore.trackedDirs[key] {
+						continue
+					}
 					directories = append(
 						directories,
-						filepath.Join(result.directory, entry.Name()),
+						readRequest{
+							directory: filepath.Join(result.request.directory, entry.Name()),
+							relative:  relative,
+							matcher:   matcher,
+						},
 					)
 					continue
 				}
-				index.evidence.record(entry.Name())
+				if !ignore.tracked[key] && matcher.match(relative, false) {
+					continue
+				}
+				index.evidence.record(
+					filepath.Join(result.request.directory, entry.Name()),
+					entry.Name(),
+				)
 			}
 		}
 	}
@@ -161,7 +225,11 @@ func newProjectEvidence() projectEvidence {
 	}
 }
 
-func (evidence projectEvidence) record(name string) {
+func (evidence *projectEvidence) record(path, name string) {
 	recordLanguageFile(evidence.languages, name)
 	recordToolingFile(evidence.tooling, name)
+	switch name {
+	case "go.mod", "Cargo.toml", "package.json":
+		evidence.manifests = append(evidence.manifests, path)
+	}
 }

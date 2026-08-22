@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	git "github.com/go-git/go-git/v6"
 )
 
 func TestEnabledLangBuiltinDetectsSupportedLanguages(t *testing.T) {
@@ -130,14 +133,176 @@ func TestEnabledLangBuiltinComposesAndValidatesArguments(t *testing.T) {
 	}
 }
 
-func TestEnabledLangBuiltinIncludesGitIgnoredEvidence(t *testing.T) {
+func TestEnabledLangBuiltinExcludesGitIgnoredEvidence(t *testing.T) {
 	project := t.TempDir()
 	writeFile(t, project+"/.gitignore", "generated/\n")
 	writeFile(t, project+"/generated/app.ts", "")
 
 	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang ts")
+	if err != nil || enabled {
+		t.Fatalf("Git-ignored language expression = %v, %v; want false", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinHonorsNestedAndNegatedGitIgnoreRules(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/.gitignore", "*\n!.gitignore\n!allowed/\n!allowed/keep.ts\n")
+	writeFile(t, project+"/allowed/keep.ts", "")
+	writeFile(t, project+"/ignored/app.rs", "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang ts")
 	if err != nil || !enabled {
-		t.Fatalf("Git-ignored language expression = %v, %v", enabled, err)
+		t.Fatalf("re-included language expression = %v, %v; want true", enabled, err)
+	}
+	enabled, err = evaluateEnabled(t.Context(), project, "example", "lang rust")
+	if err != nil || enabled {
+		t.Fatalf("ignored language expression = %v, %v; want false", enabled, err)
+	}
+
+	nested := t.TempDir()
+	writeFile(t, nested+"/a/.gitignore", "*.go\n")
+	writeFile(t, nested+"/a/main.go", "")
+	enabled, err = evaluateEnabled(t.Context(), nested, "example", "lang go")
+	if err != nil || enabled {
+		t.Fatalf("nested Git-ignore expression = %v, %v; want false", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinAllowsNegationBelowTrailingDoubleStar(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/.gitignore", "foo/**\n!foo/keep.ts\n")
+	writeFile(t, project+"/foo/keep.ts", "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang ts")
+	if err != nil || !enabled {
+		t.Fatalf("re-included language expression = %v, %v; want true", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinMalformedGitIgnoreDoesNotHideProject(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project+"/.gitignore", "[\n")
+	writeFile(t, project+"/main.go", "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
+	if err != nil || !enabled {
+		t.Fatalf("language with malformed Git-ignore rule = %v, %v; want true", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinDoesNotInheritParentGitIgnore(t *testing.T) {
+	parent := t.TempDir()
+	project := filepath.Join(parent, "projects", "standalone")
+	writeFile(t, filepath.Join(parent, ".gitignore"), "*\n")
+	writeFile(t, filepath.Join(project, "main.go"), "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
+	if err != nil || !enabled {
+		t.Fatalf("standalone language expression = %v, %v; want true", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinInheritsContainingWorktreeGitIgnore(t *testing.T) {
+	worktree := t.TempDir()
+	if _, err := git.PlainInit(worktree, false); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(worktree, "apps", "example")
+	writeFile(t, filepath.Join(worktree, ".gitignore"), "apps/example/generated/\n")
+	writeFile(t, filepath.Join(project, "generated", "main.go"), "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
+	if err != nil || enabled {
+		t.Fatalf("worktree-ignored language expression = %v, %v; want false", enabled, err)
+	}
+}
+
+func TestEnabledBuiltinsHonorRepositoryExclude(t *testing.T) {
+	project := t.TempDir()
+	if _, err := git.PlainInit(project, false); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project, ".git", "info", "exclude"), "generated/\n")
+	writeFile(
+		t,
+		filepath.Join(project, "generated", "package.json"),
+		`{"dependencies":{"react":"19"}}`,
+	)
+	writeFile(t, filepath.Join(project, "generated", "package-lock.json"), "{}")
+
+	for _, expression := range []string{"lang node", "tooling npm", "has_dependency react"} {
+		enabled, err := evaluateEnabled(t.Context(), project, "example", expression)
+		if err != nil || enabled {
+			t.Fatalf("repository-excluded %q = %v, %v; want false", expression, enabled, err)
+		}
+	}
+}
+
+func TestEnabledBuiltinsKeepTrackedIgnoredEvidence(t *testing.T) {
+	project := t.TempDir()
+	repository, err := git.PlainInit(project, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(
+		t,
+		filepath.Join(project, "generated", "package.json"),
+		`{"dependencies":{"react":"19"}}`,
+	)
+	writeFile(t, filepath.Join(project, "generated", "package-lock.json"), "{}")
+	worktree, err := repository.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"generated/package.json", "generated/package-lock.json"} {
+		if _, err := worktree.Add(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile(t, filepath.Join(project, ".gitignore"), "generated/\n")
+
+	enabled, err := evaluateEnabled(
+		t.Context(),
+		project,
+		"example",
+		"lang node && tooling npm && has_dependency react",
+	)
+	if err != nil || !enabled {
+		t.Fatalf("tracked ignored evidence expression = %v, %v; want true", enabled, err)
+	}
+}
+
+func TestEnabledLangBuiltinDoesNotExecuteGit(t *testing.T) {
+	project := t.TempDir()
+	if _, err := git.PlainInit(project, false); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "git-executed")
+	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\ntouch '"+marker+"'\nexit 99\n")
+	t.Setenv("PATH", bin)
+	writeFile(t, project+"/.gitignore", "generated/\n")
+	writeFile(t, project+"/main.go", "")
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
+	if err != nil || !enabled {
+		t.Fatalf("language expression = %v, %v; want true", enabled, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Git executable marker: %v; want not created", err)
+	}
+}
+
+func TestEnabledLangBuiltinFallsBackFromInvalidGitMetadata(t *testing.T) {
+	for _, content := range []string{"not a gitdir\n", "gitdir: missing-worktree\n"} {
+		project := t.TempDir()
+		writeFile(t, filepath.Join(project, ".git"), content)
+		writeFile(t, filepath.Join(project, "main.go"), "")
+
+		enabled, err := evaluateEnabled(t.Context(), project, "example", "lang go")
+		if err != nil || !enabled {
+			t.Fatalf("invalid Git metadata fallback = %v, %v; want true", enabled, err)
+		}
 	}
 }
 

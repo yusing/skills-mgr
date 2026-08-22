@@ -6,10 +6,11 @@ import (
 	"mvdan.cc/sh/v3/interp"
 )
 
-func enabledCallHandler(project string) interp.CallHandlerFunc {
-	evidence := newProjectEvidenceIndex(project)
+func enabledCallHandlerWithEvidence(
+	evidence *projectEvidenceIndex,
+) interp.CallHandlerFunc {
 	handlers := [...]interp.CallHandlerFunc{
-		dependencyCallHandler(project),
+		dependencyCallHandler(evidence),
 		languageCallHandler(evidence),
 		toolingCallHandler(evidence),
 	}

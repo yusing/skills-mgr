@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -299,12 +301,50 @@ func TestEnabledHasDependencyBuiltinRequiresOneMatchingDeclaration(t *testing.T)
 	}
 }
 
-func TestScanDependencyManifestPathsStopsWhenCanceled(t *testing.T) {
+func TestDependencyManifestEvidenceStopsWhenCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	_, err := scanDependencyManifestPaths(ctx, t.TempDir())
+	_, err := newProjectEvidenceIndex(t.TempDir()).manifestPaths(ctx)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("scan error = %v, want context.Canceled", err)
+	}
+}
+
+func TestEnabledHasDependencyBuiltinDoesNotExecuteGit(t *testing.T) {
+	project := t.TempDir()
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "git-executed")
+	writeExecutable(t, filepath.Join(bin, "git"), "#!/bin/sh\ntouch '"+marker+"'\nexit 99\n")
+	t.Setenv("PATH", bin)
+	writeFile(t, filepath.Join(project, "package.json"), `{"dependencies":{"react":"19"}}`)
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "has_dependency react")
+	if err != nil || !enabled {
+		t.Fatalf("dependency expression = %v, %v; want true", enabled, err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Git executable marker: %v; want not created", err)
+	}
+}
+
+func TestEnabledHasDependencyBuiltinRespectsGitIgnore(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, filepath.Join(project, ".gitignore"), "generated/\n")
+	writeFile(
+		t,
+		filepath.Join(project, "generated", "package.json"),
+		`{"dependencies":{"react":"19"}}`,
+	)
+
+	enabled, err := evaluateEnabled(t.Context(), project, "example", "has_dependency react")
+	if err != nil || enabled {
+		t.Fatalf("ignored dependency expression = %v, %v; want false", enabled, err)
+	}
+
+	writeFile(t, filepath.Join(project, "package.json"), `{"dependencies":{"react":"19"}}`)
+	enabled, err = evaluateEnabled(t.Context(), project, "example", "has_dependency react")
+	if err != nil || !enabled {
+		t.Fatalf("visible dependency expression = %v, %v; want true", enabled, err)
 	}
 }
 

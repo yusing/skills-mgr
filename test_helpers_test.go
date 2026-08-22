@@ -4,7 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"mvdan.cc/sh/v3/interp"
 )
+
+func enabledCallHandler(project string) interp.CallHandlerFunc {
+	return enabledCallHandlerWithEvidence(newProjectEvidenceIndex(project))
+}
 
 func newTestManager(t *testing.T) *manager {
 	t.Helper()

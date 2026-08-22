@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -56,7 +53,7 @@ type cargoManifest struct {
 	} `toml:"workspace"`
 }
 
-func dependencyCallHandler(project string) interp.CallHandlerFunc {
+func dependencyCallHandler(evidence *projectEvidenceIndex) interp.CallHandlerFunc {
 	var index dependencyIndex
 	var indexErr error
 	var loadOnce sync.Once
@@ -80,7 +77,7 @@ func dependencyCallHandler(project string) interp.CallHandlerFunc {
 			}
 		}
 		loadOnce.Do(func() {
-			index, indexErr = loadDependencyIndex(ctx, project)
+			index, indexErr = loadDependencyIndex(ctx, evidence)
 		})
 		if indexErr != nil {
 			return nil, fmt.Errorf("%s: %w", dependencyBuiltin, indexErr)
@@ -98,8 +95,11 @@ func dependencyCallHandler(project string) interp.CallHandlerFunc {
 	}
 }
 
-func loadDependencyIndex(ctx context.Context, project string) (dependencyIndex, error) {
-	paths, err := dependencyManifestPaths(ctx, project)
+func loadDependencyIndex(
+	ctx context.Context,
+	evidence *projectEvidenceIndex,
+) (dependencyIndex, error) {
+	paths, err := evidence.manifestPaths(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -113,90 +113,6 @@ func loadDependencyIndex(ctx context.Context, project string) (dependencyIndex, 
 		}
 	}
 	return index, nil
-}
-
-func dependencyManifestPaths(ctx context.Context, project string) ([]string, error) {
-	// Git can enumerate tracked and unignored manifests without visiting every file.
-	// The directory scan preserves the same behavior for projects outside worktrees.
-	output, err := exec.CommandContext(
-		ctx,
-		"git",
-		"-C",
-		project,
-		"ls-files",
-		"-coz",
-		"--exclude-standard",
-		"--",
-		"go.mod",
-		"Cargo.toml",
-		"package.json",
-		":(glob)**/go.mod",
-		":(glob)**/Cargo.toml",
-		":(glob)**/package.json",
-	).Output()
-	if err == nil {
-		paths := make([]string, 0, bytes.Count(output, []byte{0}))
-		for relative := range bytes.SplitSeq(output, []byte{0}) {
-			if len(relative) == 0 || !filepath.IsLocal(string(relative)) ||
-				ignoredProjectPath(string(relative)) {
-				continue
-			}
-			paths = append(paths, filepath.Join(project, string(relative)))
-		}
-		return paths, nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	return scanDependencyManifestPaths(ctx, project)
-}
-
-func scanDependencyManifestPaths(ctx context.Context, project string) ([]string, error) {
-	paths := make([]string, 0)
-	directories := []string{project}
-	for len(directories) > 0 {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		directory := directories[len(directories)-1]
-		directories = directories[:len(directories)-1]
-		entries, err := os.ReadDir(directory)
-		if errors.Is(err, os.ErrPermission) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read dependency directory %s: %w", directory, err)
-		}
-		for _, entry := range entries {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			path := filepath.Join(directory, entry.Name())
-			if entry.IsDir() {
-				switch entry.Name() {
-				case ".git", "node_modules", "target":
-					continue
-				}
-				directories = append(directories, path)
-				continue
-			}
-			switch entry.Name() {
-			case "go.mod", "Cargo.toml", "package.json":
-				paths = append(paths, path)
-			}
-		}
-	}
-	return paths, nil
-}
-
-func ignoredProjectPath(path string) bool {
-	for component := range strings.SplitSeq(filepath.ToSlash(path), "/") {
-		switch component {
-		case ".git", "node_modules", "target":
-			return true
-		}
-	}
-	return false
 }
 
 func (index dependencyIndex) addManifest(path string) error {

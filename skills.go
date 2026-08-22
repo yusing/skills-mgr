@@ -1050,12 +1050,15 @@ func skillEnabled(selected map[string]bool, skill discoveredSkill) bool {
 type enabledEvaluator struct {
 	project     string
 	callHandler interp.CallHandlerFunc
+	evidence    *projectEvidenceIndex
 }
 
 func newEnabledEvaluator(project string) *enabledEvaluator {
+	evidence := newProjectEvidenceIndex(project)
 	return &enabledEvaluator{
 		project:     project,
-		callHandler: enabledCallHandler(project),
+		callHandler: enabledCallHandlerWithEvidence(evidence),
+		evidence:    evidence,
 	}
 }
 
@@ -1089,6 +1092,36 @@ func (e *enabledEvaluator) evaluate(ctx context.Context, skill, expression strin
 		)
 	}
 	return false, fmt.Errorf("evaluate enabled expression for skill %q: %w", skill, err)
+}
+
+func (s selectionState) usesProjectEvidence() bool {
+	for name, expression := range s.expressions {
+		if !s.selected[name] {
+			continue
+		}
+		program, err := syntax.NewParser(
+			syntax.Variant(syntax.LangBash),
+		).Parse(strings.NewReader(expression), "enabled")
+		if err != nil {
+			continue
+		}
+		found := false
+		syntax.Walk(program, func(node syntax.Node) bool {
+			call, ok := node.(*syntax.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return !found
+			}
+			switch call.Args[0].Lit() {
+			case dependencyBuiltin, languageBuiltin, toolingBuiltin:
+				found = true
+			}
+			return !found
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
 
 func sourceAgent(source string) string {
@@ -1192,6 +1225,14 @@ func (m *manager) listContext(
 		return err
 	}
 	evaluator := newEnabledEvaluator(project)
+	if selection.usesProjectEvidence() {
+		// Preparation is speculative because shell control flow may skip every
+		// literal builtin. The builtin surfaces any load error if it is reached.
+		_ = evaluator.evidence.prepare(ctx)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	harnessVisible, err := m.harnessVisibleSkillNames(project, harnesses)
 	if err != nil {
 		return err
