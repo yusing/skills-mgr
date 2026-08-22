@@ -3,11 +3,12 @@ profile = "go"
 [recipes.install-systemd]
 help = "Install and start the skills-mgr user service."
 sandboxed = false
+# @install puts the binary where GOBIN says, which is the path skills-mgr.service
+# names. Building it here instead would let the two paths drift apart.
+pre = ["@install"]
 cmd = '''
 set -eu
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-install -d "$HOME/.local/bin"
-go build -trimpath -ldflags="-s -w" -o "$HOME/.local/bin/skills-mgr" .
 install -D -m 0644 skills-mgr.service "$unit_dir/skills-mgr.service"
 systemctl --user daemon-reload
 systemctl --user enable skills-mgr.service
