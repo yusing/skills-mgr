@@ -2428,6 +2428,203 @@ func TestReleaseSkillRemovesPlaceholderBeforeMovingBack(t *testing.T) {
 	}
 }
 
+func TestAdoptSkillUsesGlobalPlaceholdersForGlobalSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"), content)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.globalLockDir, lockName),
+		`{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`,
+	)
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(manager.paths.placeholderDir, root, "skills", "drafting", "SKILL.md"),
+			wantPlaceholder("drafting", "Draft specs."),
+		)
+		if _, err := os.Stat(filepath.Join(project, root, "skills", "drafting", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inherited global selection created project placeholder in %s: %v", root, err)
+		}
+	}
+}
+
+func TestReleaseSkillRemovesGlobalPlaceholderFromProjectMode(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.globalLockDir, lockName),
+		`{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`,
+	)
+	manager.global = true
+	if err := manager.setRemotePlaceholders(
+		project,
+		"drafting",
+		"name: drafting\ndescription: Draft specs.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = false
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"), content)
+	if _, err := os.Stat(filepath.Join(manager.paths.claudeSkills, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("global Claude placeholder survived release: %v", err)
+	}
+}
+
+func TestAdoptSkillRollsBackMoveWhenPlaceholderCreationFails(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	source := filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md")
+	writeFile(t, source, content)
+	writeFile(t, filepath.Join(project, lockName), `{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`)
+	conflict := filepath.Join(project, ".claude", "skills", "drafting", "SKILL.md")
+	writeFile(t, conflict, skillFile("drafting", "Project conflict.", "body\n"))
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err == nil {
+		t.Fatal("adoption succeeded despite placeholder collision")
+	}
+	assertFile(t, source, content)
+	assertFile(t, conflict, skillFile("drafting", "Project conflict.", "body\n"))
+	if _, err := os.Stat(filepath.Join(manager.paths.managedSkills, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed adoption left managed content behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".agents", "skills", "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed adoption left project placeholder behind: %v", err)
+	}
+}
+
+func TestRelocateSkillRejectsSymlinkBackedContent(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	external := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(external, "SKILL.md"), content)
+	if err := os.MkdirAll(manager.paths.userSkills, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(manager.paths.userSkills, "drafting")
+	if err := os.Symlink(external, entry); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err == nil ||
+		!strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("symlink-backed relocation error = %v", err)
+	}
+	assertFile(t, filepath.Join(external, "SKILL.md"), content)
+	info, err := os.Lstat(entry)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("source symlink was changed: info=%v err=%v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(manager.paths.managedSkills, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlink-backed relocation created managed content: %v", err)
+	}
+}
+
+func TestReleaseSkillRestoresExactPlaceholderWhenMoveFails(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "New.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+	skillDir := filepath.Join(manager.paths.userSkills, "drafting")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	writeFile(t, skillPath, wantPlaceholder("drafting", "Old."))
+	writeFile(t, markerPath, remotePlaceholderMarker)
+	writeFile(t, filepath.Join(skillDir, "keep"), "keep\n")
+	if err := os.Chmod(skillDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(skillPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(markerPath, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err == nil {
+		t.Fatal("release succeeded despite occupied destination directory")
+	}
+	assertFile(t, skillPath, wantPlaceholder("drafting", "Old."))
+	assertFile(t, markerPath, remotePlaceholderMarker)
+	for path, want := range map[string]os.FileMode{
+		skillDir:   0o700,
+		skillPath:  0o600,
+		markerPath: 0o640,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("%s mode = %o, want %o", path, got, want)
+		}
+	}
+	assertFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+}
+
+func TestRelocateSkillRejectsSymlinkedDestinationParent(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	source := filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md")
+	writeFile(t, source, content)
+	if err := os.MkdirAll(manager.paths.managerHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	if err := os.Symlink(external, manager.paths.managedSkills); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err == nil ||
+		!strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("symlinked destination error = %v", err)
+	}
+	assertFile(t, source, content)
+	if _, err := os.Stat(filepath.Join(external, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("symlinked destination received managed content: %v", err)
+	}
+}
+
 func TestGrokVisibilityCoversClaudeRootsByDefault(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

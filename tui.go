@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -1021,85 +1023,197 @@ func (m *manager) refreshEditedSkill(
 	if err != nil {
 		return nil, selectionState{}, err
 	}
-	newName := ""
+	var edited discoveredSkill
 	for _, skill := range skills {
 		if skill.Path == path {
-			newName = skill.Name
+			edited = skill
 			break
 		}
 	}
-	if newName == "" || newName == oldName {
-		selection, err := m.selectionState(project, skills)
-		return skills, selection, err
-	}
-	mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
-		if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
-			return enabledValue{}, fmt.Errorf(
-				"cannot merge enabled values while renaming skill %q to %q when either value is an expression",
-				oldName,
-				newName,
-			)
+	newName := edited.Name
+	var undoSelection func() error
+	if newName != "" && newName != oldName {
+		cloneLock := func(value lock) lock {
+			value.Skills = maps.Clone(value.Skills)
+			value.Expressions = maps.Clone(value.Expressions)
+			value.Remote = maps.Clone(value.Remote)
+			return value
 		}
-		merged := *newEnabled.Boolean || *oldEnabled.Boolean
-		return enabledValue{Boolean: new(merged)}, nil
-	}
+		sameLock := func(left, right lock) bool {
+			return maps.Equal(left.Skills, right.Skills) &&
+				maps.Equal(left.Expressions, right.Expressions) &&
+				maps.Equal(left.Remote, right.Remote)
+		}
+		mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
+			if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
+				return enabledValue{}, fmt.Errorf(
+					"cannot merge enabled values while renaming skill %q to %q when either value is an expression",
+					oldName,
+					newName,
+				)
+			}
+			merged := *newEnabled.Boolean || *oldEnabled.Boolean
+			return enabledValue{Boolean: new(merged)}, nil
+		}
 
-	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
-		oldEnabled, exists := value.enabled(oldName)
-		if m.global {
-			if !exists {
+		var previousLock, renamedLock lock
+		renamedSelection := false
+		err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+			previousLock = cloneLock(*value)
+			oldEnabled, exists := value.enabled(oldName)
+			if m.global {
+				if !exists {
+					return false, nil
+				}
+				newEnabled, newExists := value.enabled(newName)
+				switch {
+				case !newExists:
+					value.setEnabled(newName, oldEnabled)
+				default:
+					merged, err := mergeEnabled(oldEnabled, newEnabled)
+					if err != nil {
+						return false, err
+					}
+					value.setEnabled(newName, merged)
+				}
+				value.deleteEnabled(oldName)
+				renamedLock = cloneLock(*value)
+				renamedSelection = true
+				return true, nil
+			}
+
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return false, err
+			}
+			effective := oldEnabled
+			effectiveExists := exists
+			if !effectiveExists {
+				effective, effectiveExists = global.enabled(oldName)
+			}
+			if !effectiveExists ||
+				(!exists && effective.Boolean != nil && !*effective.Boolean) {
 				return false, nil
 			}
 			newEnabled, newExists := value.enabled(newName)
 			switch {
 			case !newExists:
-				value.setEnabled(newName, oldEnabled)
+				value.setEnabled(newName, effective)
 			default:
-				merged, err := mergeEnabled(oldEnabled, newEnabled)
+				merged, err := mergeEnabled(effective, newEnabled)
 				if err != nil {
 					return false, err
 				}
 				value.setEnabled(newName, merged)
 			}
-			value.deleteEnabled(oldName)
-			return true, nil
-		}
-
-		global, err := loadLock(m.paths.globalLockDir)
-		if err != nil {
-			return false, err
-		}
-		effective := oldEnabled
-		effectiveExists := exists
-		if !effectiveExists {
-			effective, effectiveExists = global.enabled(oldName)
-		}
-		if !effectiveExists ||
-			(!exists && effective.Boolean != nil && !*effective.Boolean) {
-			return false, nil
-		}
-		newEnabled, newExists := value.enabled(newName)
-		switch {
-		case !newExists:
-			value.setEnabled(newName, effective)
-		default:
-			merged, err := mergeEnabled(effective, newEnabled)
-			if err != nil {
-				return false, err
+			if _, inherited := global.enabled(oldName); inherited {
+				value.setEnabled(oldName, enabledValue{Boolean: new(false)})
+			} else {
+				value.deleteEnabled(oldName)
 			}
-			value.setEnabled(newName, merged)
+			renamedLock = cloneLock(*value)
+			renamedSelection = true
+			return true, nil
+		})
+		if err != nil {
+			return nil, selectionState{}, err
 		}
-		if _, inherited := global.enabled(oldName); inherited {
-			value.setEnabled(oldName, enabledValue{Boolean: new(false)})
-		} else {
-			value.deleteEnabled(oldName)
+		if renamedSelection {
+			undoSelection = func() error {
+				return m.updateSelectionLock(project, func(value *lock) (bool, error) {
+					if !sameLock(*value, renamedLock) {
+						return false, fmt.Errorf("selection changed during managed edit rollback")
+					}
+					*value = cloneLock(previousLock)
+					return true, nil
+				})
+			}
 		}
-		return true, nil
-	})
-	if err != nil {
-		return nil, selectionState{}, err
+	}
+	rollbackSelection := func(cause error) error {
+		if undoSelection == nil {
+			return cause
+		}
+		return errors.Join(cause, undoSelection())
 	}
 	selection, err := m.selectionState(project, skills)
+	if err != nil || edited.Source != managedSkillSource {
+		if err != nil {
+			err = rollbackSelection(err)
+		}
+		return skills, selection, err
+	}
+	frontmatter, err := m.placeholderFrontmatter(edited, nil)
+	if err != nil {
+		return skills, selection, rollbackSelection(err)
+	}
+	var changes []placeholderChange
+	if m.global {
+		global, err := loadLock(m.paths.globalLockDir)
+		if err != nil {
+			return skills, selection, rollbackSelection(err)
+		}
+		if oldName != newName {
+			changes = append(changes, placeholderChange{base: m.paths.placeholderDir, name: oldName})
+		}
+		changes = append(changes, placeholderChange{
+			base:    m.paths.placeholderDir,
+			name:    newName,
+			enabled: lockWantsPlaceholder(global, newName),
+		})
+	} else {
+		projectLock, err := loadLock(project)
+		if err != nil {
+			return skills, selection, rollbackSelection(err)
+		}
+		sameRoot := filepath.Clean(project) == filepath.Clean(m.paths.placeholderDir)
+		if sameRoot || oldName == newName {
+			global, err := loadLock(m.paths.globalLockDir)
+			if err != nil {
+				return skills, selection, rollbackSelection(err)
+			}
+			if sameRoot && oldName != newName {
+				changes = append(changes,
+					placeholderChange{
+						base: project,
+						name: oldName,
+						enabled: lockWantsPlaceholder(global, oldName) ||
+							lockWantsPlaceholder(projectLock, oldName),
+					},
+					placeholderChange{
+						base: project,
+						name: newName,
+						enabled: lockWantsPlaceholder(global, newName) ||
+							lockWantsPlaceholder(projectLock, newName),
+					},
+				)
+			} else {
+				enabled := lockWantsPlaceholder(global, newName)
+				if sameRoot {
+					enabled = enabled || lockWantsPlaceholder(projectLock, newName)
+				}
+				changes = append(changes, placeholderChange{
+					base:    m.paths.placeholderDir,
+					name:    newName,
+					enabled: enabled,
+				})
+			}
+		}
+		if !sameRoot {
+			if oldName != newName {
+				changes = append(changes, placeholderChange{base: project, name: oldName})
+			}
+			changes = append(changes, placeholderChange{
+				base:    project,
+				name:    newName,
+				enabled: lockWantsPlaceholder(projectLock, newName),
+			})
+		}
+	}
+	_, err = m.changeRemotePlaceholdersAcross(changes, frontmatter)
+	if err != nil {
+		err = rollbackSelection(err)
+	}
 	return skills, selection, err
 }
 

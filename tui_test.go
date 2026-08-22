@@ -1057,6 +1057,209 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	}
 }
 
+func TestRefreshEditedManagedSkillUpdatesPlaceholderDescription(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
+			wantPlaceholder("alpha", "New."),
+		)
+	}
+}
+
+func TestRefreshEditedManagedSkillReplacesRenamedPlaceholders(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		if _, err := os.Stat(filepath.Join(project, root, "skills", "alpha")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("old placeholder survived rename in %s: %v", root, err)
+		}
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
+			wantPlaceholder("renamed", "New."),
+		)
+	}
+}
+
+func TestRefreshEditedManagedSkillKeepsGlobalAndHomeProjectPlaceholders(t *testing.T) {
+	manager := newTestManager(t)
+	project := manager.paths.placeholderDir
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(manager.paths.globalLockDir, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = true
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	manager.global = false
+	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
+			wantPlaceholder("alpha", "New."),
+		)
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
+			wantPlaceholder("renamed", "New."),
+		)
+	}
+}
+
+func TestRefreshEditedManagedSkillKeepsHomeProjectOnlyPlaceholder(t *testing.T) {
+	manager := newTestManager(t)
+	project := manager.paths.placeholderDir
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
+			wantPlaceholder("alpha", "New."),
+		)
+	}
+}
+
+func TestRefreshEditedManagedSkillRestoresUpdatedPlaceholderOnCollision(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
+		wantPlaceholder("alpha", "Old."),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", ".skills-mgr-placeholder"),
+		remotePlaceholderMarker,
+	)
+	conflict := filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md")
+	writeFile(t, conflict, skillFile("alpha", "Conflict.", "body\n"))
+	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err == nil {
+		t.Fatal("managed placeholder refresh succeeded despite collision")
+	}
+	assertFile(
+		t,
+		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
+		wantPlaceholder("alpha", "Old."),
+	)
+	assertFile(t, conflict, skillFile("alpha", "Conflict.", "body\n"))
+}
+
+func TestRefreshEditedManagedSkillRollsBackRenameSelectionOnCollision(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	conflict := filepath.Join(project, ".claude", "skills", "renamed", "SKILL.md")
+	writeFile(t, conflict, skillFile("renamed", "Conflict.", "body\n"))
+	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err == nil {
+		t.Fatal("managed rename refresh succeeded despite collision")
+	}
+	assertLock(t, project, map[string]bool{"alpha": true})
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
+			wantPlaceholder("alpha", "Old."),
+		)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".agents", "skills", "renamed")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed rename left new placeholder behind: %v", err)
+	}
+	assertFile(t, conflict, skillFile("renamed", "Conflict.", "body\n"))
+}
+
 func TestRefreshEditedSkillMigratesRenamedEnabledExpression(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

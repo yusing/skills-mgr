@@ -54,6 +54,7 @@ type discoveredSkill struct {
 	Description            string
 	Path                   string
 	Root                   string
+	EntryPath              string
 	Source                 string
 	Editable               bool
 	RemoteKey              string
@@ -257,6 +258,7 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	}
 	skill.Path = resolvedSkill
 	skill.Root = resolvedRoot
+	skill.EntryPath = candidateRoot
 	skill.Source = root.source
 	skill.Editable = root.editable
 	skill.RemoteKey = root.remoteKey
@@ -785,77 +787,109 @@ func (m *manager) placeholderFrontmatter(
 	return frontmatter, nil
 }
 
-// effectiveEnabled reads the selection entry that governs a skill here: the
-// current layer's own value, or the global value the project layer inherits.
-func (m *manager) effectiveEnabled(project, name string) (enabledValue, bool, error) {
-	current, err := loadLock(m.lockDir(project))
-	if err != nil {
-		return enabledValue{}, false, err
-	}
-	value, exists := current.enabled(name)
-	if exists || m.global {
-		return value, exists, nil
-	}
-	global, err := loadLock(m.paths.globalLockDir)
-	if err != nil {
-		return enabledValue{}, false, err
-	}
-	value, exists = global.enabled(name)
-	return value, exists, nil
-}
-
-// placeholderWanted reports whether a skill's current selection should carry
-// placeholders. A conditional entry counts, because the stub is invisible to the
-// model and so cannot bypass a false condition.
-func (m *manager) placeholderWanted(project, name string) (bool, error) {
-	value, exists, err := m.effectiveEnabled(project, name)
-	if err != nil {
-		return false, err
-	}
-	return exists && (value.Boolean == nil || *value.Boolean), nil
+func lockWantsPlaceholder(value lock, name string) bool {
+	enabled, exists := value.enabled(name)
+	return exists && (enabled.Boolean == nil || *enabled.Boolean)
 }
 
 // adoptSkill moves a user skill into the manager home, where no harness scans
 // it, and leaves a placeholder behind when the skill is enabled here. Adoption
 // is what turns an always-loaded skill into one the selection governs.
-func (m *manager) adoptSkill(project string, skill discoveredSkill) error {
+func (m *manager) adoptSkill(project string, skill discoveredSkill) (func() error, error) {
 	if skill.Source != "user" {
-		return fmt.Errorf("only a skill under %s can be adopted", m.paths.userSkills)
+		return nil, fmt.Errorf("only a skill under %s can be adopted", m.paths.userSkills)
 	}
+	if err := validateRelocationEntry(skill); err != nil {
+		return nil, err
+	}
+	frontmatter, err := m.placeholderFrontmatter(skill, nil)
+	if err != nil {
+		return nil, err
+	}
+	global, err := loadLock(m.paths.globalLockDir)
+	if err != nil {
+		return nil, err
+	}
+	changes := []placeholderChange{{
+		base:    m.paths.placeholderDir,
+		name:    skill.Name,
+		enabled: lockWantsPlaceholder(global, skill.Name),
+	}}
+	if !m.global {
+		projectLock, err := loadLock(project)
+		if err != nil {
+			return nil, err
+		}
+		projectWantsPlaceholder := lockWantsPlaceholder(projectLock, skill.Name)
+		if filepath.Clean(project) == filepath.Clean(m.paths.placeholderDir) {
+			changes[0].enabled = changes[0].enabled || projectWantsPlaceholder
+		} else {
+			changes = append(changes, placeholderChange{
+				base:    project,
+				name:    skill.Name,
+				enabled: projectWantsPlaceholder,
+			})
+		}
+	}
+
 	destination := filepath.Join(m.paths.managedSkills, skill.Name)
-	if err := moveSkillDirectory(skill.Root, destination); err != nil {
-		return err
+	if err := moveSkillDirectory(skill.EntryPath, destination); err != nil {
+		return nil, err
 	}
-	frontmatter, err := m.placeholderFrontmatter(
-		discoveredSkill{Path: filepath.Join(destination, "SKILL.md")},
-		nil,
-	)
+	undoPlaceholders, err := m.changeRemotePlaceholdersAcross(changes, frontmatter)
 	if err != nil {
-		return err
+		moveErr := moveSkillDirectory(destination, skill.EntryPath)
+		return nil, errors.Join(err, moveErr)
 	}
-	wanted, err := m.placeholderWanted(project, skill.Name)
-	if err != nil {
-		return err
-	}
-	return m.setRemotePlaceholders(project, skill.Name, frontmatter, wanted)
+	return func() error {
+		placeholderErr := error(nil)
+		if undoPlaceholders != nil {
+			placeholderErr = undoPlaceholders()
+		}
+		moveErr := moveSkillDirectory(destination, skill.EntryPath)
+		return errors.Join(placeholderErr, moveErr)
+	}, nil
 }
 
 // releaseSkill moves a managed skill back under $HOME/.agents/skills, where
 // every harness loads it again regardless of the selection. Placeholders come
 // off first: in global mode the destination is itself a placeholder path, so a
 // surviving stub would block the move.
-func (m *manager) releaseSkill(project string, skill discoveredSkill) error {
+func (m *manager) releaseSkill(project string, skill discoveredSkill) (func() error, error) {
 	if skill.Source != managedSkillSource {
-		return fmt.Errorf("only a skill in the manager home can be released")
+		return nil, fmt.Errorf("only a skill in the manager home can be released")
+	}
+	if err := validateRelocationEntry(skill); err != nil {
+		return nil, err
 	}
 	frontmatter, err := m.placeholderFrontmatter(skill, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := m.setRemotePlaceholders(project, skill.Name, frontmatter, false); err != nil {
-		return err
+	changes := []placeholderChange{{base: m.paths.placeholderDir, name: skill.Name}}
+	if filepath.Clean(project) != filepath.Clean(m.paths.placeholderDir) {
+		changes = append(changes, placeholderChange{base: project, name: skill.Name})
 	}
-	return moveSkillDirectory(skill.Root, filepath.Join(m.paths.userSkills, skill.Name))
+	undoPlaceholders, err := m.changeRemotePlaceholdersAcross(changes, frontmatter)
+	if err != nil {
+		return nil, err
+	}
+	destination := filepath.Join(m.paths.userSkills, skill.Name)
+	if err := moveSkillDirectory(skill.EntryPath, destination); err != nil {
+		if undoPlaceholders != nil {
+			err = errors.Join(err, undoPlaceholders())
+		}
+		return nil, err
+	}
+	return func() error {
+		if err := moveSkillDirectory(destination, skill.EntryPath); err != nil {
+			return err
+		}
+		if undoPlaceholders == nil {
+			return nil
+		}
+		return undoPlaceholders()
+	}, nil
 }
 
 // relocateSkill moves the selected skill between $HOME/.agents/skills and the
@@ -866,20 +900,23 @@ func (m *manager) relocateSkill(
 	skill discoveredSkill,
 ) (skillLocationResult, error) {
 	adopt := skill.Source != managedSkillSource
+	var undo func() error
+	var err error
 	if adopt {
-		if err := m.adoptSkill(project, skill); err != nil {
-			return skillLocationResult{}, err
-		}
-	} else if err := m.releaseSkill(project, skill); err != nil {
+		undo, err = m.adoptSkill(project, skill)
+	} else {
+		undo, err = m.releaseSkill(project, skill)
+	}
+	if err != nil {
 		return skillLocationResult{}, err
 	}
 	skills, err := m.skills(project)
 	if err != nil {
-		return skillLocationResult{}, err
+		return skillLocationResult{}, errors.Join(err, undo())
 	}
 	selection, err := m.selectionState(project, skills)
 	if err != nil {
-		return skillLocationResult{}, err
+		return skillLocationResult{}, errors.Join(err, undo())
 	}
 	return skillLocationResult{
 		Skill:           skill.Name,
@@ -891,17 +928,71 @@ func (m *manager) relocateSkill(
 	}, nil
 }
 
+func validateRelocationEntry(skill discoveredSkill) error {
+	if skill.EntryPath == "" {
+		return fmt.Errorf("skill %q has no relocatable directory entry", skill.Name)
+	}
+	resolved, err := filepath.EvalSymlinks(skill.EntryPath)
+	if err != nil {
+		return fmt.Errorf("resolve skill directory %s: %w", skill.EntryPath, err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(skill.Root) {
+		return fmt.Errorf("skill directory %s changed before relocation", skill.EntryPath)
+	}
+	if filepath.Clean(skill.EntryPath) != filepath.Clean(resolved) {
+		return fmt.Errorf("skill directory %s contains a symbolic link", skill.EntryPath)
+	}
+	return nil
+}
+
 func moveSkillDirectory(source, destination string) error {
+	parent := filepath.Dir(destination)
+	if err := validateRelocationParent(parent); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(destination); err == nil {
 		return fmt.Errorf("%s already exists", destination)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect %s: %w", destination, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(destination), err)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", parent, err)
+	}
+	if err := validateRelocationParent(parent); err != nil {
+		return err
 	}
 	if err := os.Rename(source, destination); err != nil {
 		return fmt.Errorf("move %s to %s: %w", source, destination, err)
+	}
+	return nil
+}
+
+func validateRelocationParent(path string) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve relocation destination parent %s: %w", path, err)
+	}
+	volume := filepath.VolumeName(absolute)
+	current := volume + string(filepath.Separator)
+	relative := strings.TrimPrefix(absolute, current)
+	for component := range strings.SplitSeq(filepath.ToSlash(relative), "/") {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, filepath.FromSlash(component))
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("inspect relocation destination parent %s: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("relocation destination parent %s contains a symbolic link", current)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("relocation destination parent %s is not a directory", current)
+		}
 	}
 	return nil
 }
