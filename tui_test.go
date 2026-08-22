@@ -800,6 +800,40 @@ func TestTUIStylesUseColorWithoutReplacingTextState(t *testing.T) {
 		t.Fatal("path value should be underlined independently of its label and indentation")
 	}
 
+	sourceCases := []struct {
+		name  string
+		skill discoveredSkill
+	}{
+		{name: "user", skill: discoveredSkill{Source: "user"}},
+		{name: "managed", skill: discoveredSkill{Source: managedSkillSource}},
+		{name: "remote", skill: discoveredSkill{Source: skillsShProvider, RemoteKey: "remote"}},
+		{name: "plugin", skill: discoveredSkill{Source: "plugin"}},
+		{name: "bundled", skill: discoveredSkill{Source: "bundled"}},
+		{name: "system", skill: discoveredSkill{Source: "system"}},
+	}
+	type namedColor struct {
+		name  string
+		color lipgloss.TerminalColor
+	}
+	colors := make([]namedColor, 0, len(sourceCases))
+	for _, sourceCase := range sourceCases {
+		color := skillSourceStyle(sourceCase.skill).GetForeground()
+		for _, previous := range colors {
+			if color == previous.color {
+				t.Errorf(
+					"%s and %s source labels use the same color",
+					sourceCase.name,
+					previous.name,
+				)
+			}
+		}
+		colors = append(colors, namedColor{name: sourceCase.name, color: color})
+	}
+	if got, want := skillSourceStyle(discoveredSkill{Source: skillsMPProvider}).GetForeground(),
+		skillSourceStyle(sourceCases[2].skill).GetForeground(); got != want {
+		t.Fatal("SkillsMP and skills.sh labels should use the same remote source color")
+	}
+
 	current := model{
 		skills:   []discoveredSkill{{Name: "alpha", Source: "user"}},
 		selected: map[string]bool{},

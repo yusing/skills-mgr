@@ -1551,7 +1551,7 @@ func (m model) registrySkillLines(skill registrySearchSkill, selected bool) []st
 	name += selectedStyle(lipgloss.NewStyle(), selected).
 		Render(terminalSafeText(displayName))
 	label := terminalSafeText(skill.Label)
-	header := labeledListLine(name, label, selected, m.width)
+	header := labeledListLine(name, label, mutedStyle, selected, m.width)
 	return collapsibleLines(header, expanded, func() []string {
 		return remoteDetailLines(
 			skill.Description,
@@ -1587,7 +1587,7 @@ func (m model) remoteLines(row remoteRow, selected bool) []string {
 	installs := fmt.Sprintf("%d installs", skill.Installs)
 	source := terminalSafeText(skill.Source)
 	label := source + " • " + installs
-	header := labeledListLine(name, label, selected, m.width)
+	header := labeledListLine(name, label, mutedStyle, selected, m.width)
 	return collapsibleLines(header, expanded, func() []string {
 		return remoteDetailLines(
 			skill.Description,
@@ -1617,11 +1617,16 @@ func collapsibleLines(
 	return lines
 }
 
-func labeledListLine(name, label string, selected bool, width int) string {
+func labeledListLine(
+	name, label string,
+	labelStyle lipgloss.Style,
+	selected bool,
+	width int,
+) string {
 	gap := max(width-lipgloss.Width(name)-lipgloss.Width(label), 1)
 	line := name + selectedStyle(lipgloss.NewStyle(), selected).
 		Render(strings.Repeat(" ", gap))
-	line += selectedStyle(mutedStyle, selected).Render(label)
+	line += selectedStyle(labelStyle, selected).Render(label)
 	return boundLine(line, width)
 }
 
@@ -1739,7 +1744,7 @@ func (m model) skillLines(indices []int, index int) []string {
 	if !m.selected[skill.Name] {
 		name += selectedStyle(disabledStyle, selected).Render(" [disabled]")
 	}
-	header := labeledListLine(name, label, selected, m.width)
+	header := labeledListLine(name, label, skillSourceStyle(skill), selected, m.width)
 	return collapsibleLines(header, expanded, func() []string {
 		details := descriptionLines(skill.Description, m.width)
 		return append(
@@ -1747,6 +1752,25 @@ func (m model) skillLines(indices []int, index int) []string {
 			styledPathLines(terminalSafeText(skill.Path), m.width)...,
 		)
 	})
+}
+
+func skillSourceStyle(skill discoveredSkill) lipgloss.Style {
+	color := mutedColor
+	switch {
+	case skill.RemoteKey != "",
+		skill.Source == skillsShProvider,
+		skill.Source == skillsMPProvider:
+		color = lipgloss.AdaptiveColor{Light: "#6F42C1", Dark: "#C4A7E7"}
+	case skill.Source == "user":
+		color = lipgloss.AdaptiveColor{Light: "#005F87", Dark: "#7DD3FC"}
+	case skill.Source == managedSkillSource:
+		color = lipgloss.AdaptiveColor{Light: "#237A3B", Dark: "#75D18B"}
+	case skill.Source == "plugin":
+		color = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#E5C07B"}
+	case skill.Source == "bundled":
+		color = lipgloss.AdaptiveColor{Light: "#A63D73", Dark: "#F49AC2"}
+	}
+	return lipgloss.NewStyle().Foreground(color)
 }
 
 func (m model) localSkillIndices() []int {
