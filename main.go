@@ -50,6 +50,21 @@ func run(args []string) error {
 			return err
 		}
 		return runTUI(manager, project)
+	case args[0] == "help":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr help")
+		}
+		_, err = fmt.Fprint(os.Stdout, `Usage:
+  skills-mgr
+  skills-mgr -g
+  skills-mgr help
+  skills-mgr list [--claude] [--grok] [--codex]
+  skills-mgr sync
+  skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
+  skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
+  skills-mgr daemon [refresh|sync]
+`)
+		return err
 	case args[0] == "list":
 		harnesses, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {

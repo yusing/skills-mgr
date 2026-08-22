@@ -2055,6 +2055,62 @@ func TestRunJavaScriptRejectsMissingRuntimeAndUnrelatedNames(t *testing.T) {
 	}
 }
 
+func TestHelpCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout := os.Stdout
+	os.Stdout = stdout
+	t.Cleanup(func() {
+		os.Stdout = originalStdout
+		_ = stdout.Close()
+	})
+
+	helpErr := run([]string{"help"})
+	os.Stdout = originalStdout
+	if closeErr := stdout.Close(); helpErr == nil {
+		helpErr = closeErr
+	}
+	if helpErr != nil {
+		t.Fatal(helpErr)
+	}
+	assertFile(t, stdout.Name(), `Usage:
+  skills-mgr
+  skills-mgr -g
+  skills-mgr help
+  skills-mgr list [--claude] [--grok] [--codex]
+  skills-mgr sync
+  skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
+  skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
+  skills-mgr daemon [refresh|sync]
+`)
+
+	if err := run([]string{"help", "get"}); err == nil || err.Error() != "usage: skills-mgr help" {
+		t.Fatalf("help with operand error = %v, want usage error", err)
+	}
+	if err := run([]string{"--help"}); err == nil || err.Error() != `unknown command "--help"` {
+		t.Fatalf("--help error = %v, want unknown command error", err)
+	}
+
+	closedStdout, err := os.Create(filepath.Join(t.TempDir(), "closed-stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closedStdout.Close(); err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = closedStdout
+	writeErr := run([]string{"help"})
+	os.Stdout = originalStdout
+	if writeErr == nil {
+		t.Fatal("help succeeded when stdout was closed")
+	}
+}
+
 func TestRunCommandInvokesSkillScript(t *testing.T) {
 	project := t.TempDir()
 	home := t.TempDir()
