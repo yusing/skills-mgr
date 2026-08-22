@@ -109,6 +109,11 @@ type modelInvocationDone struct {
 	err    error
 }
 
+type skillLocationDone struct {
+	result skillLocationResult
+	err    error
+}
+
 type editDone struct {
 	skill      string
 	path       string
@@ -301,6 +306,24 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "uninstalled " + message.result.Skill
 		m.syncViewport()
+	case skillLocationDone:
+		m.busy = false
+		if message.err != nil {
+			m.status = "error: " + message.err.Error()
+			break
+		}
+		m.allSkills = message.result.Skills
+		m.applyCatalog()
+		m.selected = message.result.Selected
+		m.globalSelected = message.result.GlobalSelected
+		m.projectSelected = message.result.ProjectSelected
+		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		m.expanded = ""
+		where := "released to .agents/skills"
+		if message.result.Managed {
+			where = "adopted into the manager home"
+		}
+		m.status = message.result.Skill + " " + where
 	case modelInvocationDone:
 		m.busy = false
 		if m.busyCancel != nil {
@@ -563,6 +586,8 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 			return modelInvocationDone{result: result, err: err}
 		}
+	case "a":
+		return relocateSelectedSkill(m)
 	case "u":
 		if !isLocalTab(m.tab) || m.manager == nil {
 			break
@@ -653,6 +678,35 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 	}
 	return m, nil
+}
+
+// relocateSelectedSkill moves the highlighted skill between $HOME/.agents/skills
+// and the manager home. Only those two roots take part: content in a
+// harness-owned root belongs to that harness, and a project skill is committed
+// where every harness can see it on purpose.
+func relocateSelectedSkill(m model) (tea.Model, tea.Cmd) {
+	if m.tab != localTab || m.manager == nil {
+		return m, nil
+	}
+	skillIndex, ok := m.localSkillIndex(m.cursor)
+	if !ok {
+		return m, nil
+	}
+	skill := m.skills[skillIndex]
+	if skill.Source != "user" && skill.Source != managedSkillSource {
+		m.status = "only a user or managed skill can be adopted or released"
+		return m, nil
+	}
+	action := "adopting "
+	if skill.Source == managedSkillSource {
+		action = "releasing "
+	}
+	m.busy = true
+	m.status = action + skill.Name
+	return m, func() tea.Msg {
+		result, err := m.manager.relocateSkill(m.project, skill)
+		return skillLocationDone{result: result, err: err}
+	}
 }
 
 func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
@@ -1210,7 +1264,7 @@ func (m model) View() string {
 	help := "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	switch m.tab {
 	case localTab:
-		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • u uninstall • e source • i enabled • q quit"
+		help = "←/→ tabs • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • a adopt/release • u uninstall • e source • i enabled • q quit"
 	case codexTab:
 		help = "←/→ tabs • [] sources • f filter • ↑/k ↓/j move • enter/click details • space toggle • m model toggle • e source • i enabled • q quit"
 	case remoteTab:
@@ -1834,12 +1888,16 @@ func (m *manager) applyEnabledDraft(
 	}
 
 	var undoPlaceholder func() error
-	if skill.RemoteKey != "" {
-		ref, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)
-		if err != nil {
-			return selectionState{}, err
+	if placeholderManaged(skill) {
+		var ref *remoteSkillRef
+		if skill.RemoteKey != "" {
+			resolved, err := m.persistedRemoteRef(skill.RemoteKey, skill.Name)
+			if err != nil {
+				return selectionState{}, err
+			}
+			ref = &resolved
 		}
-		frontmatter, err := m.remoteSkillFrontmatter(ref)
+		frontmatter, err := m.placeholderFrontmatter(skill, ref)
 		if err != nil {
 			return selectionState{}, err
 		}
@@ -1851,9 +1909,11 @@ func (m *manager) applyEnabledDraft(
 			}
 			effective, effectiveExists = global.enabled(skill.Name)
 		}
+		// A conditional entry still gets a placeholder. The stub is invisible to
+		// the model, so it cannot bypass a false condition; only list, get, and
+		// run answer for the model, and all three evaluate the expression.
 		create := effectiveExists &&
-			effective.Boolean != nil &&
-			*effective.Boolean
+			(effective.Boolean == nil || *effective.Boolean)
 		undoPlaceholder, err = m.changeRemotePlaceholders(
 			project,
 			skill.Name,

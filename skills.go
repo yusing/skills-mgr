@@ -35,6 +35,7 @@ const (
 	maxSkillNameLen     = 80
 	maxFrontmatterBytes = 64 * 1024
 	projectSkillSource  = "project"
+	managedSkillSource  = "managed"
 )
 
 type manager struct {
@@ -81,6 +82,15 @@ type skillFrontmatter struct {
 	DisableModelInvocation bool   `yaml:"disable-model-invocation"`
 }
 
+type skillLocationResult struct {
+	Skill           string
+	Managed         bool
+	Skills          []discoveredSkill
+	Selected        map[string]bool
+	GlobalSelected  map[string]bool
+	ProjectSelected map[string]bool
+}
+
 type modelInvocationResult struct {
 	Skill           string
 	RemoteKey       string
@@ -109,6 +119,7 @@ func (m *manager) skills(project string, harnesses ...listHarness) ([]discovered
 	roots := []skillRoot{
 		{path: filepath.Join(project, ".agents", "skills"), source: projectSkillSource, editable: true},
 		{path: m.paths.userSkills, source: "user", editable: true},
+		{path: m.paths.managedSkills, source: managedSkillSource, editable: true},
 		{path: filepath.Join(project, ".claude", "skills"), source: "claude", editable: true},
 		{path: filepath.Join(project, ".grok", "skills"), source: "grok", editable: true},
 		{path: filepath.Join(project, ".codex", "skills"), source: "codex", includeSystem: true, editable: true},
@@ -741,6 +752,168 @@ func (m *manager) lockDir(project string) string {
 	return project
 }
 
+// placeholderManaged reports whether skills-mgr owns a skill's content, and so
+// whether a harness needs a placeholder to offer its name. Content already
+// sitting in a placeholder root is left alone: the harness can see it without
+// help, and writing a stub there would collide with the real directory.
+func placeholderManaged(skill discoveredSkill) bool {
+	return skill.RemoteKey != "" || skill.Source == managedSkillSource
+}
+
+// placeholderFrontmatter resolves the frontmatter a placeholder should carry. A
+// remote skill reads from the store, so the stub matches the persisted identity
+// rather than whatever is on disk; anything else reads its own SKILL.md.
+func (m *manager) placeholderFrontmatter(
+	skill discoveredSkill,
+	remoteRef *remoteSkillRef,
+) (string, error) {
+	if remoteRef != nil {
+		return m.remoteSkillFrontmatter(*remoteRef)
+	}
+	file, err := os.Open(skill.Path)
+	if err != nil {
+		return "", fmt.Errorf("open %s: %w", skill.Path, err)
+	}
+	defer file.Close()
+	frontmatter, _, status, err := readFrontmatter(file)
+	if err != nil {
+		return "", fmt.Errorf("read frontmatter from %s: %w", skill.Path, err)
+	}
+	if status != frontmatterValid {
+		return "", fmt.Errorf("%s has no valid frontmatter", skill.Path)
+	}
+	return frontmatter, nil
+}
+
+// effectiveEnabled reads the selection entry that governs a skill here: the
+// current layer's own value, or the global value the project layer inherits.
+func (m *manager) effectiveEnabled(project, name string) (enabledValue, bool, error) {
+	current, err := loadLock(m.lockDir(project))
+	if err != nil {
+		return enabledValue{}, false, err
+	}
+	value, exists := current.enabled(name)
+	if exists || m.global {
+		return value, exists, nil
+	}
+	global, err := loadLock(m.paths.globalLockDir)
+	if err != nil {
+		return enabledValue{}, false, err
+	}
+	value, exists = global.enabled(name)
+	return value, exists, nil
+}
+
+// placeholderWanted reports whether a skill's current selection should carry
+// placeholders. A conditional entry counts, because the stub is invisible to the
+// model and so cannot bypass a false condition.
+func (m *manager) placeholderWanted(project, name string) (bool, error) {
+	value, exists, err := m.effectiveEnabled(project, name)
+	if err != nil {
+		return false, err
+	}
+	return exists && (value.Boolean == nil || *value.Boolean), nil
+}
+
+// adoptSkill moves a user skill into the manager home, where no harness scans
+// it, and leaves a placeholder behind when the skill is enabled here. Adoption
+// is what turns an always-loaded skill into one the selection governs.
+func (m *manager) adoptSkill(project string, skill discoveredSkill) error {
+	if skill.Source != "user" {
+		return fmt.Errorf("only a skill under %s can be adopted", m.paths.userSkills)
+	}
+	destination := filepath.Join(m.paths.managedSkills, skill.Name)
+	if err := moveSkillDirectory(skill.Root, destination); err != nil {
+		return err
+	}
+	frontmatter, err := m.placeholderFrontmatter(
+		discoveredSkill{Path: filepath.Join(destination, "SKILL.md")},
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	wanted, err := m.placeholderWanted(project, skill.Name)
+	if err != nil {
+		return err
+	}
+	return m.setRemotePlaceholders(project, skill.Name, frontmatter, wanted)
+}
+
+// releaseSkill moves a managed skill back under $HOME/.agents/skills, where
+// every harness loads it again regardless of the selection. Placeholders come
+// off first: in global mode the destination is itself a placeholder path, so a
+// surviving stub would block the move.
+func (m *manager) releaseSkill(project string, skill discoveredSkill) error {
+	if skill.Source != managedSkillSource {
+		return fmt.Errorf("only a skill in the manager home can be released")
+	}
+	frontmatter, err := m.placeholderFrontmatter(skill, nil)
+	if err != nil {
+		return err
+	}
+	if err := m.setRemotePlaceholders(project, skill.Name, frontmatter, false); err != nil {
+		return err
+	}
+	return moveSkillDirectory(skill.Root, filepath.Join(m.paths.userSkills, skill.Name))
+}
+
+// relocateSkill moves the selected skill between $HOME/.agents/skills and the
+// manager home, so one keystroke decides whether every harness always loads the
+// skill or the selection governs it.
+func (m *manager) relocateSkill(
+	project string,
+	skill discoveredSkill,
+) (skillLocationResult, error) {
+	adopt := skill.Source != managedSkillSource
+	if adopt {
+		if err := m.adoptSkill(project, skill); err != nil {
+			return skillLocationResult{}, err
+		}
+	} else if err := m.releaseSkill(project, skill); err != nil {
+		return skillLocationResult{}, err
+	}
+	skills, err := m.skills(project)
+	if err != nil {
+		return skillLocationResult{}, err
+	}
+	selection, err := m.selectionState(project, skills)
+	if err != nil {
+		return skillLocationResult{}, err
+	}
+	return skillLocationResult{
+		Skill:           skill.Name,
+		Managed:         adopt,
+		Skills:          skills,
+		Selected:        selection.selected,
+		GlobalSelected:  selection.globalSelected,
+		ProjectSelected: selection.projectSelected,
+	}, nil
+}
+
+func moveSkillDirectory(source, destination string) error {
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("%s already exists", destination)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect %s: %w", destination, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", filepath.Dir(destination), err)
+	}
+	if err := os.Rename(source, destination); err != nil {
+		return fmt.Errorf("move %s to %s: %w", source, destination, err)
+	}
+	return nil
+}
+
+func remoteRefUnchanged(value lock, skill string, ref *remoteSkillRef) bool {
+	current, exists := value.Remote[skill]
+	if ref == nil {
+		return !exists
+	}
+	return exists && current == *ref
+}
+
 func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, error) {
 	var remoteRef *remoteSkillRef
 	if len(remoteKey) > 0 && remoteKey[0] != "" {
@@ -751,17 +924,24 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 		remoteRef = new(ref)
 	}
 
+	catalog, err := m.skills(project)
+	if err != nil {
+		return false, err
+	}
+	var found discoveredSkill
+	for _, discovered := range catalog {
+		if discovered.Name == skill {
+			found = discovered
+			break
+		}
+	}
+	// The global layer resolves against the name alone, so a project-scoped or
+	// user-invocable-only skill does not read as already enabled there.
 	target := discoveredSkill{Name: skill}
 	if !m.global {
-		skills, err := m.skills(project)
-		if err != nil {
-			return false, err
-		}
-		for _, discovered := range skills {
-			if discovered.Name == skill {
-				target = discovered
-				break
-			}
+		target = found
+		if target.Name == "" {
+			target = discoveredSkill{Name: skill}
 		}
 	}
 
@@ -770,7 +950,7 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	previousExists := false
 	var previousRemote remoteSkillRef
 	previousRemoteExists := false
-	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
+	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		selected := configuredSelections(*value)
 		if !m.global {
 			global, err := loadLock(m.paths.globalLockDir)
@@ -799,10 +979,10 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	if remoteRef == nil {
+	if !placeholderManaged(found) {
 		return enabled, nil
 	}
-	frontmatter, placeholderErr := m.remoteSkillFrontmatter(*remoteRef)
+	frontmatter, placeholderErr := m.placeholderFrontmatter(found, remoteRef)
 	if placeholderErr == nil {
 		placeholderErr = m.setRemotePlaceholders(project, skill, frontmatter, enabled)
 	}
@@ -811,7 +991,7 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 			current, exists := value.enabled(skill)
 			if !exists || current.Boolean == nil ||
 				*current.Boolean != enabled ||
-				value.Remote[skill] != *remoteRef {
+				!remoteRefUnchanged(*value, skill, remoteRef) {
 				return false, fmt.Errorf("remote selection changed during placeholder rollback")
 			}
 			if previousExists {
@@ -1278,6 +1458,16 @@ func (m *manager) listContext(
 	return err
 }
 
+// grokLoadsClaudeSkills reports whether Grok's Claude-compatibility scanning is
+// on, which decides whether Grok already sees the .claude/skills roots. Grok
+// scans them by default and documents GROK_CLAUDE_SKILLS_ENABLED as the way to
+// stop it. Turning the same thing off through [compat.claude] in Grok's
+// config.toml is not read here, so a root hidden that way is reported to the
+// agent twice rather than withheld from it.
+func grokLoadsClaudeSkills() bool {
+	return !strings.EqualFold(os.Getenv("GROK_CLAUDE_SKILLS_ENABLED"), "false")
+}
+
 func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarness) (map[string]bool, error) {
 	discovery := skillDiscovery{
 		seenPaths: make(map[string]struct{}),
@@ -1295,6 +1485,16 @@ func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarne
 			roots = []skillRoot{
 				{path: filepath.Join(project, ".grok", "skills")},
 				{path: m.paths.grokSkills},
+				// Grok scans the shared .agents/skills roots natively. Claude
+				// does not.
+				{path: filepath.Join(project, ".agents", "skills")},
+				{path: m.paths.userSkills},
+			}
+			if grokLoadsClaudeSkills() {
+				roots = append(roots,
+					skillRoot{path: filepath.Join(project, ".claude", "skills")},
+					skillRoot{path: m.paths.claudeSkills},
+				)
 			}
 		case listHarnessCodex:
 			roots = []skillRoot{
@@ -1302,13 +1502,6 @@ func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarne
 				{path: filepath.Join(m.paths.codexHome, "skills"), includeSystem: true},
 				{path: m.paths.adminSkills},
 			}
-		}
-		// Grok loads shared .agents/skills roots natively. Claude does not.
-		if harness == listHarnessGrok {
-			roots = append(roots,
-				skillRoot{path: filepath.Join(project, ".agents", "skills")},
-				skillRoot{path: m.paths.userSkills},
-			)
 		}
 		for _, root := range roots {
 			if err := discovery.discoverRoot(root); err != nil {

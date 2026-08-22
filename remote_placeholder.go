@@ -8,9 +8,41 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/goccy/go-yaml"
 )
 
+// The marker text is load-bearing on disk: ownership checks compare these exact
+// bytes, so changing it would orphan every placeholder already written.
 const remotePlaceholderMarker = "skills-mgr remote placeholder\n"
+
+type placeholderFrontmatter struct {
+	Name                   string `yaml:"name"`
+	Description            string `yaml:"description"`
+	DisableModelInvocation bool   `yaml:"disable-model-invocation"`
+}
+
+// placeholderContent renders the stub a harness loads in place of a managed
+// skill. It carries frontmatter and no body, and forces
+// disable-model-invocation so the harness offers the name in its slash-command
+// menu without advertising the skill to the model. That leaves skills-mgr list
+// as the only model-facing view of the enabled set, which is what lets a
+// placeholder outlive a false condition harmlessly.
+func placeholderContent(name, frontmatter string) ([]byte, error) {
+	var metadata skillFrontmatter
+	if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
+		return nil, fmt.Errorf("decode frontmatter for placeholder %s: %w", name, err)
+	}
+	rendered, err := yaml.Marshal(placeholderFrontmatter{
+		Name:                   name,
+		Description:            metadata.Description,
+		DisableModelInvocation: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("render placeholder frontmatter for %s: %w", name, err)
+	}
+	return fmt.Appendf(nil, "---\n%s---\n", rendered), nil
+}
 
 func isRemotePlaceholderRootAlias(base, source, path string) bool {
 	if path != source && !strings.HasPrefix(path, source+string(filepath.Separator)) {
@@ -48,9 +80,12 @@ func (m *manager) changeRemotePlaceholders(
 ) (func() error, error) {
 	base := project
 	if m.global {
-		base = m.paths.globalLockDir
+		base = m.paths.placeholderDir
 	}
-	content := fmt.Appendf(nil, "---\n%s---\n", frontmatter)
+	content, err := placeholderContent(name, frontmatter)
+	if err != nil {
+		return nil, err
+	}
 	marker := []byte(remotePlaceholderMarker)
 	rootDirs := []string{
 		filepath.Join(".agents", "skills"),

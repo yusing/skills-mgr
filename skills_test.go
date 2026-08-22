@@ -2197,3 +2197,316 @@ func assertLock(t *testing.T, project string, want map[string]bool) {
 func skillFile(name, description, body string) string {
 	return "---\nname: " + name + "\ndescription: " + description + "\n---\n" + body
 }
+
+func TestToggleWritesPlaceholdersForManagedSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.managedSkills, "adopted", "SKILL.md"),
+		skillFile("adopted", "Adopted skill.", "body\n"),
+	)
+	stubs := []string{
+		filepath.Join(project, ".agents", "skills", "adopted", "SKILL.md"),
+		filepath.Join(project, ".claude", "skills", "adopted", "SKILL.md"),
+	}
+
+	enabled, err := manager.toggle(project, "adopted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("toggle did not enable the managed skill")
+	}
+	for _, stub := range stubs {
+		assertFile(t, stub, wantPlaceholder("adopted", "Adopted skill."))
+	}
+
+	enabled, err = manager.toggle(project, "adopted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled {
+		t.Fatal("toggle did not disable the managed skill")
+	}
+	for _, stub := range stubs {
+		if _, err := os.Stat(stub); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("placeholder %s survived disabling: %v", stub, err)
+		}
+	}
+}
+
+func TestToggleLeavesHarnessVisibleSkillsWithoutPlaceholders(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	// A skill under $HOME/.agents/skills already sits in a placeholder root, so
+	// writing a stub there would collide with its own directory.
+	source := filepath.Join(manager.paths.userSkills, "native", "SKILL.md")
+	content := skillFile("native", "Native skill.", "body\n")
+	writeFile(t, source, content)
+
+	if _, err := manager.toggle(project, "native"); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, source, content)
+	for _, root := range []string{".agents", ".claude"} {
+		stub := filepath.Join(project, root, "skills", "native", "SKILL.md")
+		if _, err := os.Stat(stub); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unexpected placeholder %s: %v", stub, err)
+		}
+	}
+}
+
+func TestRelocateGlobalLockMovesLegacyFile(t *testing.T) {
+	home := t.TempDir()
+	value := paths{
+		managerHome:   filepath.Join(home, ".skills-mgr"),
+		globalLockDir: filepath.Join(home, ".skills-mgr"),
+		legacyLockDir: home,
+	}
+	legacy := filepath.Join(home, lockName)
+	writeFile(t, legacy, `{"schema_revision":3,"skills":{"alpha":{"enabled":true}}}`)
+
+	if err := value.relocateGlobalLock(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(
+		t,
+		filepath.Join(value.globalLockDir, lockName),
+		`{"schema_revision":3,"skills":{"alpha":{"enabled":true}}}`,
+	)
+	if _, err := os.Stat(legacy); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy selection file survived relocation: %v", err)
+	}
+}
+
+func TestRelocateGlobalLockKeepsExistingManagerHomeFile(t *testing.T) {
+	home := t.TempDir()
+	value := paths{
+		managerHome:   filepath.Join(home, ".skills-mgr"),
+		globalLockDir: filepath.Join(home, ".skills-mgr"),
+		legacyLockDir: home,
+	}
+	current := filepath.Join(value.globalLockDir, lockName)
+	writeFile(t, current, `{"schema_revision":3,"skills":{"current":{"enabled":true}}}`)
+	legacy := filepath.Join(home, lockName)
+	writeFile(t, legacy, `{"schema_revision":3,"skills":{"legacy":{"enabled":true}}}`)
+
+	if err := value.relocateGlobalLock(); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, current, `{"schema_revision":3,"skills":{"current":{"enabled":true}}}`)
+	assertFile(t, legacy, `{"schema_revision":3,"skills":{"legacy":{"enabled":true}}}`)
+}
+
+func TestAdoptSkillMovesContentAndWritesPlaceholder(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"), content)
+	writeFile(t, filepath.Join(project, lockName), `{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`)
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skill.Source != "user" {
+		t.Fatalf("discovered source = %q, want user", skill.Source)
+	}
+	result, err := manager.relocateSkill(project, skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Managed {
+		t.Fatal("relocate did not report adoption")
+	}
+	assertFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+	if _, err := os.Stat(filepath.Join(manager.paths.userSkills, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("adopted content stayed in .agents/skills: %v", err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "drafting", "SKILL.md"),
+			wantPlaceholder("drafting", "Draft specs."),
+		)
+	}
+}
+
+func TestAdoptSkillWithoutSelectionWritesNoPlaceholder(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"),
+		skillFile("drafting", "Draft specs.", "body\n"),
+	)
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		stub := filepath.Join(project, root, "skills", "drafting", "SKILL.md")
+		if _, err := os.Stat(stub); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unselected skill got placeholder %s: %v", stub, err)
+		}
+	}
+}
+
+func TestAdoptSkillKeepsPlaceholderForConditionalSelection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"),
+		skillFile("drafting", "Draft specs.", "body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, lockName),
+		`{"schema_revision":3,"skills":{"drafting":{"enabled":"lang go"}}}`,
+	)
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.relocateSkill(project, skill); err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "drafting", "SKILL.md"),
+			wantPlaceholder("drafting", "Draft specs."),
+		)
+	}
+}
+
+func TestReleaseSkillRemovesPlaceholderBeforeMovingBack(t *testing.T) {
+	manager := newTestManager(t)
+	manager.global = true
+	project := t.TempDir()
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.globalLockDir, lockName),
+		`{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`,
+	)
+
+	skill, err := manager.findSkill(project, "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"drafting",
+		"name: drafting\ndescription: Draft specs.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// In global mode the release destination is the placeholder path itself.
+	stub := filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md")
+	assertFile(t, stub, wantPlaceholder("drafting", "Draft specs."))
+
+	result, err := manager.relocateSkill(project, skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Managed {
+		t.Fatal("relocate reported adoption when releasing")
+	}
+	assertFile(t, stub, content)
+	if _, err := os.Stat(filepath.Join(manager.paths.managedSkills, "drafting")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released content stayed in the manager home: %v", err)
+	}
+}
+
+func TestGrokVisibilityCoversClaudeRootsByDefault(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "shared", "SKILL.md"),
+		skillFile("shared", "Shared skill.", "body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(project, ".claude", "skills", "local", "SKILL.md"),
+		skillFile("local", "Local skill.", "body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "agents", "SKILL.md"),
+		skillFile("agents", "Agents skill.", "body\n"),
+	)
+
+	visible, err := manager.harnessVisibleSkillNames(project, []listHarness{listHarnessGrok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"shared", "local", "agents"} {
+		if !visible[name] {
+			t.Fatalf("Grok visibility missed %q: %#v", name, visible)
+		}
+	}
+}
+
+func TestGrokVisibilityDropsClaudeRootsWhenCompatDisabled(t *testing.T) {
+	t.Setenv("GROK_CLAUDE_SKILLS_ENABLED", "false")
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "shared", "SKILL.md"),
+		skillFile("shared", "Shared skill.", "body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "agents", "SKILL.md"),
+		skillFile("agents", "Agents skill.", "body\n"),
+	)
+
+	visible, err := manager.harnessVisibleSkillNames(project, []listHarness{listHarnessGrok})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visible["shared"] {
+		t.Fatal("Grok credited with a Claude root while compat is off")
+	}
+	if !visible["agents"] {
+		t.Fatal("Grok visibility missed the shared .agents/skills root")
+	}
+}
+
+func TestClaudeVisibilityExcludesAgentsRoots(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "agents", "SKILL.md"),
+		skillFile("agents", "Agents skill.", "body\n"),
+	)
+	writeFile(
+		t,
+		filepath.Join(manager.paths.claudeSkills, "shared", "SKILL.md"),
+		skillFile("shared", "Shared skill.", "body\n"),
+	)
+
+	visible, err := manager.harnessVisibleSkillNames(project, []listHarness{listHarnessClaude})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visible["agents"] {
+		t.Fatal("Claude credited with a .agents/skills root it does not scan")
+	}
+	if !visible["shared"] {
+		t.Fatal("Claude visibility missed ~/.claude/skills")
+	}
+}

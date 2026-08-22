@@ -48,7 +48,9 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
 	}
-	placeholder := "---\n" + frontmatter + "---\n"
+	// The stub carries name, description, and the forced flag. Source fields
+	// such as allowed-tools and metadata are not mirrored into it.
+	placeholder := wantPlaceholder("alpha", "Remote alpha.")
 	paths := []string{
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
@@ -141,7 +143,7 @@ func TestGlobalRemoteToggleCreatesHomePlaceholders(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
 	}
-	placeholder := "---\nname: alpha\ndescription: Remote alpha.\n---\n"
+	placeholder := wantPlaceholder("alpha", "Remote alpha.")
 
 	result, err := manager.toggleRemote(t.Context(), project, ref)
 	if err != nil {
@@ -151,8 +153,8 @@ func TestGlobalRemoteToggleCreatesHomePlaceholders(t *testing.T) {
 		t.Fatalf("global enable result = %#v", result)
 	}
 	for _, path := range []string{
-		filepath.Join(manager.paths.globalLockDir, ".agents", "skills", "alpha", "SKILL.md"),
-		filepath.Join(manager.paths.globalLockDir, ".claude", "skills", "alpha", "SKILL.md"),
+		filepath.Join(manager.paths.placeholderDir, ".agents", "skills", "alpha", "SKILL.md"),
+		filepath.Join(manager.paths.placeholderDir, ".claude", "skills", "alpha", "SKILL.md"),
 	} {
 		assertFile(t, path, placeholder)
 	}
@@ -209,22 +211,24 @@ func TestRemotePlaceholdersRepairManagedFrontmatter(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	root := filepath.Join(project, ".claude", "skills", "alpha")
+	// Stale content, missing the forced flag, so the repair path runs.
 	writeFile(
 		t,
 		filepath.Join(root, "SKILL.md"),
-		"---\nname: alpha\ndescription: Remote alpha.\ndisable-model-invocation: true\n---\n",
+		"---\nname: alpha\ndescription: Stale.\n---\n",
 	)
 	writeFile(
 		t,
 		filepath.Join(root, ".skills-mgr-placeholder"),
 		remotePlaceholderMarker,
 	)
+	// Frontmatter beyond name and description is not mirrored into the stub.
 	frontmatter := "name: alpha\ndescription: Remote alpha.\nmetadata:\n  source: remote\n"
 
 	if err := manager.setRemotePlaceholders(project, "alpha", frontmatter, true); err != nil {
 		t.Fatal(err)
 	}
-	assertFile(t, filepath.Join(root, "SKILL.md"), "---\n"+frontmatter+"---\n")
+	assertFile(t, filepath.Join(root, "SKILL.md"), wantPlaceholder("alpha", "Remote alpha."))
 	assertFile(t, filepath.Join(root, ".skills-mgr-placeholder"), remotePlaceholderMarker)
 }
 
@@ -312,13 +316,13 @@ func TestRemotePlaceholdersSkipCandidateAliases(t *testing.T) {
 			assertFile(
 				t,
 				filepath.Join(project, otherManagedRoot, "skills", "alpha", "SKILL.md"),
-				"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+				wantPlaceholder("alpha", "Remote alpha."),
 			)
 			if tt.target == ".agents" || tt.target == ".claude" {
 				assertFile(
 					t,
 					filepath.Join(project, tt.target, "skills", "alpha", "SKILL.md"),
-					"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+					wantPlaceholder("alpha", "Remote alpha."),
 				)
 				return
 			}
@@ -511,7 +515,7 @@ func TestUninstallRemoteRemovesInstallationAndCurrentSelection(t *testing.T) {
 			assertFile(
 				t,
 				filepath.Join(otherProject, ".agents", "skills", ref.Name, "SKILL.md"),
-				"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+				wantPlaceholder("alpha", "Remote alpha."),
 			)
 		})
 	}
@@ -559,7 +563,7 @@ func TestUninstallRemoteCancellationRestoresCurrentSelection(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+		assertFile(t, path, wantPlaceholder("alpha", "Remote alpha."))
 	}
 }
 
@@ -621,7 +625,7 @@ func TestTUIWaitsForCanceledUninstallRollbackBeforeQuitting(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+		assertFile(t, path, wantPlaceholder("alpha", "Remote alpha."))
 	}
 }
 
@@ -676,8 +680,8 @@ func TestTUIRejectsProjectUninstallOfGlobalRemoteSkill(t *testing.T) {
 	}
 	assertFile(
 		t,
-		filepath.Join(manager.paths.globalLockDir, ".agents", "skills", ref.Name, "SKILL.md"),
-		"---\nname: alpha\ndescription: Remote alpha.\n---\n",
+		filepath.Join(manager.paths.placeholderDir, ".agents", "skills", ref.Name, "SKILL.md"),
+		wantPlaceholder("alpha", "Remote alpha."),
 	)
 }
 
@@ -1009,11 +1013,15 @@ func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
 		value.Remote[ref.Name] != ref {
 		t.Fatalf("remote conditional selection = %#v", value)
 	}
+	// A conditional entry keeps its placeholder. The stub is invisible to the
+	// model, so it cannot bypass a false condition, and it keeps the name in the
+	// harness slash-command menu.
 	for _, root := range []string{".agents", ".claude"} {
-		_, err := os.Stat(filepath.Join(project, root, "skills", ref.Name, "SKILL.md"))
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("conditional placeholder in %s was retained: %v", root, err)
-		}
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", ref.Name, "SKILL.md"),
+			wantPlaceholder(ref.Name, "Review Go code."),
+		)
 	}
 
 	var output bytes.Buffer
@@ -1411,7 +1419,7 @@ func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+		assertFile(t, path, wantPlaceholder("alpha", "Remote alpha."))
 	}
 }
 
@@ -1484,7 +1492,7 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 		assertFile(
 			t,
 			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			"---\nname: alpha\ndescription: Remote skill.\n---\n",
+			wantPlaceholder("alpha", "Remote skill."),
 		)
 		if _, err := os.Stat(
 			filepath.Join(project, root, "skills", "beta", "SKILL.md"),
@@ -1717,7 +1725,7 @@ func TestSyncFetchesEnabledProjectRemotesAndReusesFreshContent(t *testing.T) {
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 		filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"),
 	} {
-		assertFile(t, path, "---\nname: alpha\ndescription: Remote alpha.\n---\n")
+		assertFile(t, path, wantPlaceholder("alpha", "Remote alpha."))
 	}
 	output.Reset()
 	if err := manager.sync(t.Context(), project, &output); err != nil {
