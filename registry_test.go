@@ -240,6 +240,15 @@ func TestSkillsShFetchSkillRejectsMalformedAndUnknownReferences(t *testing.T) {
 			},
 		},
 		{
+			name: "unsafe source path",
+			ref: remoteSkillRef{
+				Provider: skillsShProvider,
+				ID:       "owner/repo/foo/../alpha",
+				Name:     "alpha",
+				Locator:  "owner/repo/foo/../alpha",
+			},
+		},
+		{
 			name: "future provider",
 			ref: remoteSkillRef{
 				Provider: "skills.sh.v2",
@@ -281,6 +290,7 @@ func TestGitHubSkillPostCloneOperationsHonorCancellation(t *testing.T) {
 					t.TempDir(),
 					[]string{"SKILL.md"},
 					"alpha",
+					false,
 				)
 				return err
 			},
@@ -312,54 +322,135 @@ func TestGitHubSkillDiscoveryRejectsExcessiveManifests(t *testing.T) {
 	for index := range tracked {
 		tracked[index] = fmt.Sprintf("skills/%d/SKILL.md", index)
 	}
-	_, err := findGitHubSkillPath(t.Context(), t.TempDir(), tracked, "alpha")
+	_, err := findGitHubSkillPath(t.Context(), t.TempDir(), tracked, "alpha", false)
 	if err == nil || !strings.Contains(err.Error(), "more than 1024 skill manifests") {
 		t.Fatalf("excessive manifest error = %v", err)
 	}
 }
 
-func TestSkillsShFetchSkillRejectsMissingAndDuplicateDeclaredNames(t *testing.T) {
+func TestSkillsShFetchSkillRejectsMissingDeclaredName(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"skills/beta/SKILL.md": {
+				contents: skillFile("beta", "Beta.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	_, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	})
+	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
+		t.Fatalf("fetchSkill error = %v", err)
+	}
+}
+
+func TestSkillsShFetchSkillRejectsMissingExplicitSourcePath(t *testing.T) {
+	fakeGit(t, map[string]map[string]gitTestFile{
+		"default": {
+			"thermos/skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	_, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/missing/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/missing/alpha",
+	})
+	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
+		t.Fatalf("fetchSkill error = %v", err)
+	}
+}
+
+func TestSkillsShFetchSkillSearchesFromCatalogSourcePath(t *testing.T) {
 	tests := []struct {
 		name  string
+		id    string
 		files map[string]gitTestFile
 		want  string
 	}{
 		{
-			name: "missing",
+			name: "named directory copies",
+			id:   "owner/repo/alpha",
 			files: map[string]gitTestFile{
-				"skills/beta/SKILL.md": {
-					contents: skillFile("beta", "Beta.", "body"),
+				"cursor-team-kit/skills/alpha/SKILL.md": {
+					contents: skillFile("alpha", "Alpha kit.", "kit"),
+					mode:     0o644,
+				},
+				"thermos/skills/alpha/SKILL.md": {
+					contents: skillFile("alpha", "Alpha thermos.", "thermos"),
 					mode:     0o644,
 				},
 			},
-			want: `does not contain skill "alpha"`,
+			want: "Alpha kit.",
 		},
 		{
-			name: "duplicate",
+			name: "prefer directory named after the skill",
+			id:   "owner/repo/alpha",
 			files: map[string]gitTestFile{
 				"one/SKILL.md": {
-					contents: skillFile("alpha", "Alpha one.", "body"),
+					contents: skillFile("alpha", "Alpha one.", "one"),
+					mode:     0o644,
+				},
+				"plugins/alpha/SKILL.md": {
+					contents: skillFile("alpha", "Alpha plugin.", "plugin"),
+					mode:     0o644,
+				},
+			},
+			want: "Alpha plugin.",
+		},
+		{
+			name: "explicit source path",
+			id:   "owner/repo/thermos/skills/alpha",
+			files: map[string]gitTestFile{
+				"cursor-team-kit/skills/alpha/SKILL.md": {
+					contents: skillFile("alpha", "Alpha kit.", "kit"),
+					mode:     0o644,
+				},
+				"thermos/skills/alpha/SKILL.md": {
+					contents: skillFile("alpha", "Alpha thermos.", "thermos"),
+					mode:     0o644,
+				},
+			},
+			want: "Alpha thermos.",
+		},
+		{
+			name: "first matching name without a named directory",
+			id:   "owner/repo/alpha",
+			files: map[string]gitTestFile{
+				"one/SKILL.md": {
+					contents: skillFile("alpha", "Alpha one.", "one"),
 					mode:     0o644,
 				},
 				"two/SKILL.md": {
-					contents: skillFile("alpha", "Alpha two.", "body"),
+					contents: skillFile("alpha", "Alpha two.", "two"),
 					mode:     0o644,
 				},
 			},
-			want: `multiple skills named "alpha"`,
+			want: "Alpha one.",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fakeGit(t, map[string]map[string]gitTestFile{"default": test.files})
-			_, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
+			files, err := newRemoteRegistry("").fetchSkill(t.Context(), remoteSkillRef{
 				Provider: skillsShProvider,
-				ID:       "owner/repo/alpha",
+				ID:       test.id,
 				Name:     "alpha",
-				Locator:  "owner/repo/alpha",
+				Locator:  test.id,
 			})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("fetchSkill error = %v, want %q", err, test.want)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(files) != 1 || files[0].Path != "SKILL.md" ||
+				!strings.Contains(string(files[0].Contents), test.want) {
+				t.Fatalf("fetched files = %#v, want %q", files, test.want)
 			}
 		})
 	}

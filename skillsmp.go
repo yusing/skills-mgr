@@ -164,7 +164,7 @@ func (r *skillsMPRegistry) fetchSkill(
 				candidates = append(candidates, trackedPath)
 			}
 		}
-		skillPath, err = findGitHubSkillPath(ctx, checkout, candidates, ref.Name)
+		skillPath, err = findGitHubSkillPath(ctx, checkout, candidates, ref.Name, false)
 		if err != nil {
 			return nil, err
 		}
@@ -346,11 +346,51 @@ func isSafeAgentSkillFile(relative string) bool {
 	return directory == "references" || directory == "scripts" || directory == "assets" || directory == "data"
 }
 
+func gitHubHasTrackedPrefix(tracked []string, sourcePath string) bool {
+	prefix := sourcePath + "/"
+	for _, trackedPath := range tracked {
+		if strings.HasPrefix(trackedPath, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitHubSkillSearchFiles limits discovery to an explicit source path, or to
+// SKILL.md files whose directory is the catalog skill name.
+func gitHubSkillSearchFiles(tracked []string, sourcePath, name string) []string {
+	if sourcePath != "" {
+		prefix := sourcePath + "/"
+		files := make([]string, 0)
+		for _, trackedPath := range tracked {
+			if trackedPath == sourcePath || strings.HasPrefix(trackedPath, prefix) {
+				files = append(files, trackedPath)
+			}
+		}
+		return files
+	}
+	named := make([]string, 0)
+	for _, trackedPath := range tracked {
+		if filepath.Base(filepath.FromSlash(trackedPath)) != "SKILL.md" {
+			continue
+		}
+		directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(trackedPath)))
+		if filepath.Base(filepath.FromSlash(directory)) == name {
+			named = append(named, trackedPath)
+		}
+	}
+	if len(named) > 0 {
+		return named
+	}
+	return tracked
+}
+
 func findGitHubSkillPath(
 	ctx context.Context,
 	checkout string,
 	tracked []string,
 	name string,
+	firstMatch bool,
 ) (string, error) {
 	manifests := make([]string, 0)
 	for _, trackedPath := range tracked {
@@ -402,6 +442,9 @@ func findGitHubSkillPath(
 		candidate := filepath.ToSlash(filepath.Dir(filepath.FromSlash(relative)))
 		if candidate == "." {
 			candidate = ""
+		}
+		if firstMatch {
+			return candidate, nil
 		}
 		if matched {
 			return "", fmt.Errorf(

@@ -137,7 +137,7 @@ Six tabs, selected with `←` and `→`:
 | Codex | Codex-native skills. `[` and `]` cycle the User, Plugin, Builtin, and System sources | None |
 | Grok | Grok-native skills. `[` and `]` cycle the User, Plugin, and Bundled sources | None |
 | Claude | Claude-native skills. `[` and `]` cycle the User and Plugin sources | None |
-| skills.sh | Browse topics, search, and install | skills.sh, then its skill-detail API |
+| skills.sh | Browse topics, search, and install | skills.sh, then `git clone --depth 1` of the skill's source repository |
 | SkillsMP | Browse, search, and install | SkillsMP, then `git clone --depth 1` of the skill's repository |
 
 | Key | Action |

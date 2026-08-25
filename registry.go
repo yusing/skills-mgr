@@ -130,10 +130,10 @@ func (r *remoteRegistry) fetchSkill(
 		return nil, fmt.Errorf("invalid skills.sh skill reference")
 	}
 	parts := strings.Split(ref.ID, "/")
-	if len(parts) != 3 {
+	if len(parts) < 3 {
 		return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
 	}
-	for _, part := range parts[:2] {
+	for _, part := range parts {
 		if !validGitHubRepositoryPart(part) {
 			return nil, fmt.Errorf("invalid skills.sh skill identifier %q", ref.ID)
 		}
@@ -153,7 +153,15 @@ func (r *remoteRegistry) fetchSkill(
 	if err != nil {
 		return nil, err
 	}
-	skillPath, err := findGitHubSkillPath(ctx, checkout, tracked, ref.Name)
+	// Catalog IDs are owner/repo/skill-id, matching `npx skills add <source> --skill <name>`.
+	// Extra ID segments are an explicit source path; a 3-part skill-id is used as a
+	// source path only when that directory exists at the repository root.
+	sourcePath := strings.Join(parts[2:], "/")
+	if len(parts) == 3 && !gitHubHasTrackedPrefix(tracked, sourcePath) {
+		sourcePath = ""
+	}
+	candidates := gitHubSkillSearchFiles(tracked, sourcePath, ref.Name)
+	skillPath, err := findGitHubSkillPath(ctx, checkout, candidates, ref.Name, true)
 	if err != nil {
 		return nil, err
 	}
