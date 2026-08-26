@@ -2189,7 +2189,12 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 		}
 		contents, err := m.manager.remoteStore.applyPatch(ref, original)
 		if err != nil {
-			return skillEdit{}, err
+			if errors.Is(err, errRemoteSkillPatch) {
+				// Fall back to original content when patch no longer applies
+				contents = original
+			} else {
+				return skillEdit{}, err
+			}
 		}
 		temporary, err := os.CreateTemp("", "skills-mgr-remote-skill-*.md")
 		if err != nil {

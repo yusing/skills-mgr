@@ -856,7 +856,12 @@ func (s *remoteSkillStore) savePatch(
 	}
 	currentLayered, err := s.applyPatch(ref, original)
 	if err != nil {
-		return err
+		if errors.Is(err, errRemoteSkillPatch) {
+			// Fall back to original content when patch no longer applies
+			currentLayered = original
+		} else {
+			return err
+		}
 	}
 	if sha256.Sum256(currentLayered) != expectedLayeredDigest {
 		return errRemoteSkillEditConflict

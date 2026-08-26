@@ -128,10 +128,16 @@ func parseUnifiedHunk(line string) (oldPosition, oldCount, newPosition, newCount
 	if !ok {
 		return 0, 0, 0, 0, fmt.Errorf("missing hunk header")
 	}
-	line, ok = strings.CutSuffix(line, " @@\n")
-	if !ok {
+	if !strings.HasSuffix(line, "\n") {
 		return 0, 0, 0, 0, fmt.Errorf("malformed hunk header")
 	}
+	line = strings.TrimSuffix(line, "\n")
+	// Find the closing @@ and accept optional section text after it
+	closeIdx := strings.Index(line, " @@")
+	if closeIdx == -1 {
+		return 0, 0, 0, 0, fmt.Errorf("malformed hunk header")
+	}
+	line = line[:closeIdx]
 	oldRange, newRange, ok := strings.Cut(line, " +")
 	if !ok {
 		return 0, 0, 0, 0, fmt.Errorf("malformed hunk ranges")
