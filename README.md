@@ -149,7 +149,7 @@ Six tabs, selected with `←` and `→`:
 | Enter or click | Expand or collapse details |
 | Space | Enable or disable the selected skill |
 | `i` | Edit this skill's current-layer `enabled` value in `$EDITOR` |
-| `e` | Open an editable local skill's `SKILL.md` in `$EDITOR` |
+| `e` | Open an editable skill's `SKILL.md` in `$EDITOR` |
 | `m` | Toggle `disable-model-invocation` in the skill's own `SKILL.md` |
 | `a` | Adopt a `$HOME/.agents/skills` skill into the manager home, or release it back |
 | `u` | Uninstall the selected installed remote skill |
@@ -159,6 +159,12 @@ The `i` draft accepts `true`, `false`, a bare Bash expression, or a JSON string;
 saving it empty removes the current-layer value. `m` rewrites the skill's source
 file, preserving the rest of its frontmatter. `a` moves content rather than
 copying it; see [The Manager Home](#the-manager-home).
+
+For an installed remote skill, `e` opens the provider content with any existing
+local edit applied. Saving stores the edit under
+`$HOME/.skills-mgr/skills/.remote-patches/`; the fetched provider files remain
+unchanged. Each patch keeps two integrity hashes followed by a readable unified
+diff for `SKILL.md`.
 
 `u` deletes stored remote content, so it is refused for a skill configured in
 the global layer while you are in project mode; uninstall that one from
@@ -343,6 +349,12 @@ filters on them.
 
 `get` omits YAML frontmatter from Markdown files, and a line range applies to
 that frontmatter-free content.
+
+For an installed remote skill, `get` applies its local `SKILL.md` patch before
+writing the requested body or range. If a provider refresh makes the patch no
+longer applicable, `get` writes the unmodified provider body to stdout, reports
+a compact patch error on stderr, and exits nonzero so its caller cannot silently
+consume the fallback as the edited skill.
 
 `run` uses the skill directory as the script's working directory. Executable
 files run directly, non-executable `.py` files run under `python3`, and
@@ -596,6 +608,15 @@ Skills installed from skills.sh or SkillsMP live under the user cache directory,
 in `skills-mgr/remote-skills`, because `sync` can refetch them. Authored content
 cannot be refetched, which is why the manager home sits outside the cache.
 Content is never executed at install time.
+
+Remote edits are stored as stable per-entry `.patch` files under the global
+manager home at `$HOME/.skills-mgr/skills/.remote-patches/`, not in this cache.
+That location can be tracked with the rest of the manager home and restored on
+a machine with an empty remote cache. Their body is a conventional unified diff,
+with base and result SHA-256 headers protecting the layer from mismatched or
+damaged content. Patches survive refreshes, are removed on uninstall, and affect
+`skills-mgr get`; discovery metadata and `skills-mgr run` continue to use the
+validated provider content.
 
 Registry responses are cached alongside the content. The SkillsMP client sends
 `SKILLSMP_API_KEY` as a bearer token when that variable is set, and makes

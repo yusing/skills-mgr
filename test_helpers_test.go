@@ -53,7 +53,10 @@ func newTestManager(t *testing.T) *manager {
 			t.Fatal(err)
 		}
 	}
-	manager.remoteStore = newRemoteSkillStore(manager.paths.remoteSkills)
+	manager.remoteStore = newRemoteSkillStore(
+		manager.paths.remoteSkills,
+		filepath.Join(manager.paths.managedSkills, remoteSkillPatchDir),
+	)
 	return manager
 }
 

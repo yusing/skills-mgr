@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -121,6 +123,362 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 	}
 	for _, path := range paths {
 		assertFile(t, path, placeholder)
+	}
+}
+
+func TestRemoteSkillPatchLayersGetWithoutChangingFetchedContent(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	original := skillFile("alpha", "Remote alpha.", "before\n")
+	provider := &staticRemoteProvider{files: []remoteSkillFile{
+		{Path: "SKILL.md", Contents: []byte(original)},
+		{Path: "references/guide.md", Contents: []byte("# Guide\n")},
+	}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !discovered.Editable {
+		t.Fatal("remote skill is not editable")
+	}
+	edited := skillFile("alpha", "Remote alpha.", "after\n")
+	if err := manager.remoteStore.savePatch(
+		t.Context(), ref, discovered.Path, sha256.Sum256([]byte(original)), []byte(edited),
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, discovered.Path, original)
+	patchContents, err := os.ReadFile(manager.remoteStore.patchPath(ref))
+	if err != nil {
+		t.Fatalf("stored patch: %v", err)
+	}
+	if !bytes.Contains(patchContents, []byte("--- a/SKILL.md\n+++ b/SKILL.md\n")) ||
+		!bytes.Contains(patchContents, []byte("-before\n+after\n")) ||
+		bytes.Contains(patchContents, []byte("%0A")) {
+		t.Fatalf("stored patch is not readable unified diff:\n%s", patchContents)
+	}
+	if got, want := filepath.Dir(manager.remoteStore.patchPath(ref)),
+		filepath.Join(manager.paths.managedSkills, remoteSkillPatchDir); got != want {
+		t.Fatalf("patch directory = %q, want global manager directory %q", got, want)
+	}
+
+	var output strings.Builder
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "after\n" {
+		t.Fatalf("patched remote skill body = %q", output.String())
+	}
+	output.Reset()
+	if err := manager.getContext(
+		t.Context(), project, "alpha/SKILL.md", "1:1", &output,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "after\n" {
+		t.Fatalf("patched remote skill range = %q", output.String())
+	}
+	aged := ageRemoteRecord(t, manager.remoteStore, ref)
+	provider.files[1].Contents = []byte("# Updated guide\n")
+	if err := manager.remoteStore.refresh(t.Context(), aged, provider); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "after\n" {
+		t.Fatalf("patch after compatible refresh = %q", output.String())
+	}
+	output.Reset()
+	if err := manager.getContext(
+		t.Context(), project, "alpha/references/guide.md", "", &output,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "# Updated guide\n" {
+		t.Fatalf("unpatched reference = %q", output.String())
+	}
+}
+
+func TestGlobalRemoteSkillPatchSurvivesFreshCacheInstall(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	original := skillFile("alpha", "Remote alpha.", "before\n")
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path: "SKILL.md", Contents: []byte(original),
+	}}}
+	record, err := manager.remoteStore.ensure(t.Context(), ref, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := manager.remoteStore.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.savePatch(
+		t.Context(),
+		ref,
+		filepath.Join(root, "SKILL.md"),
+		sha256.Sum256([]byte(original)),
+		[]byte(skillFile("alpha", "Remote alpha.", "tracked\n")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	metadata := filepath.Join(manager.remoteStore.root, "entries", ref.key()+".json")
+	if err := os.Remove(metadata); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "tracked\n" {
+		t.Fatalf("restored global patch body = %q", output.String())
+	}
+}
+
+func TestRemoteSkillPatchFailureReturnsUpgradedOriginal(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.savePatch(
+		t.Context(),
+		ref,
+		discovered.Path,
+		sha256.Sum256(provider.files[0].Contents),
+		[]byte(skillFile("alpha", "Remote alpha.", "local\n")),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	aged := ageRemoteRecord(t, manager.remoteStore, ref)
+	provider.files[0].Contents = []byte(skillFile("alpha", "Upgraded.", "upstream\n"))
+	if err := manager.remoteStore.refresh(t.Context(), aged, provider); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	err = manager.getContext(t.Context(), project, "alpha", "", &output)
+	if !errors.Is(err, errRemoteSkillPatch) {
+		t.Fatalf("get error = %v, want remote patch failure", err)
+	}
+	if output.String() != "upstream\n" {
+		t.Fatalf("fallback remote skill body = %q", output.String())
+	}
+	if _, err := os.Stat(manager.remoteStore.patchPath(ref)); err != nil {
+		t.Fatalf("refresh discarded patch: %v", err)
+	}
+
+	writeFile(t, manager.remoteStore.patchPath(ref), "not a patch\n")
+	output.Reset()
+	err = manager.getContext(t.Context(), project, "alpha", "", &output)
+	if !errors.Is(err, errRemoteSkillPatch) || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("malformed patch error = %v", err)
+	}
+	if output.String() != "upstream\n" {
+		t.Fatalf("malformed patch fallback = %q", output.String())
+	}
+
+	baseDigest := sha256.Sum256(provider.files[0].Contents)
+	resultDigest := sha256.Sum256([]byte(skillFile("alpha", "Upgraded.", "local\n")))
+	for name, patchText := range map[string]string{
+		"no-op": "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -0,0 +0,0 @@\n",
+		"mismatched source": "--- a/SKILL.md\n+++ b/SKILL.md\n" +
+			"@@ -1 +1 @@\n-other\n+local\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeFile(
+				t,
+				manager.remoteStore.patchPath(ref),
+				fmt.Sprintf(
+					"%s%x\n%s%x\n%s",
+					remoteSkillPatchBaseHeader,
+					baseDigest,
+					remoteSkillPatchResultHeader,
+					resultDigest,
+					patchText,
+				),
+			)
+			output.Reset()
+			err := manager.getContext(t.Context(), project, "alpha", "", &output)
+			if !errors.Is(err, errRemoteSkillPatch) {
+				t.Fatalf("corrupt patch error = %v", err)
+			}
+			if output.String() != "upstream\n" {
+				t.Fatalf("corrupt patch fallback = %q", output.String())
+			}
+		})
+	}
+}
+
+func TestRemoteSkillPatchFailureCLI(t *testing.T) {
+	if os.Getenv("SKILLS_MGR_TEST_PATCH_FAILURE") == "1" {
+		os.Args = []string{"skills-mgr", "get", "alpha"}
+		main()
+		return
+	}
+
+	home := t.TempDir()
+	cache := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	paths, err := defaultPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &manager{
+		paths: paths,
+		remoteStore: newRemoteSkillStore(
+			paths.remoteSkills,
+			filepath.Join(paths.managedSkills, remoteSkillPatchDir),
+		),
+	}
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.savePatch(
+		t.Context(),
+		ref,
+		discovered.Path,
+		sha256.Sum256(provider.files[0].Contents),
+		[]byte(skillFile("alpha", "Remote alpha.", "local\n")),
+	); err != nil {
+		t.Fatal(err)
+	}
+	aged := ageRemoteRecord(t, manager.remoteStore, ref)
+	provider.files[0].Contents = []byte(skillFile("alpha", "Upgraded.", "upstream\n"))
+	if err := manager.remoteStore.refresh(t.Context(), aged, provider); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestRemoteSkillPatchFailureCLI$")
+	command.Dir = project
+	command.Env = append(os.Environ(), "SKILLS_MGR_TEST_PATCH_FAILURE=1")
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+	err = command.Run()
+	exitError, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitError.ExitCode() != 1 {
+		t.Fatalf("get process error = %v", err)
+	}
+	if stdout.String() != "upstream\n" {
+		t.Fatalf("get stdout = %q", stdout.String())
+	}
+	if stderr.String() != "skills-mgr: remote skill patch no longer applies\n" {
+		t.Fatalf("get stderr = %q", stderr.String())
+	}
+}
+
+func TestRemoteSkillPatchRemovedWithNoChangesAndUninstall(t *testing.T) {
+	manager := newTestManager(t)
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	original := skillFile("alpha", "Remote alpha.", "before\n")
+	record, err := manager.remoteStore.ensure(
+		t.Context(),
+		ref,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path: "SKILL.md", Contents: []byte(original),
+		}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := manager.remoteStore.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(root, "SKILL.md")
+	if err := manager.remoteStore.savePatch(
+		t.Context(), ref, basePath, sha256.Sum256([]byte(original)), []byte(original+"local"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.savePatch(
+		t.Context(), ref, basePath, sha256.Sum256([]byte(original+"local")), []byte(original),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manager.remoteStore.patchPath(ref)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("no-change edit retained patch: %v", err)
+	}
+	if err := manager.remoteStore.savePatch(
+		t.Context(), ref, basePath, sha256.Sum256([]byte(original)), []byte(original+"local"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.remoteStore.remove(t.Context(), ref); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(manager.remoteStore.patchPath(ref)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("uninstall retained patch: %v", err)
 	}
 }
 
@@ -939,7 +1297,10 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("override mode = %o, want 600", info.Mode().Perm())
 	}
-	secondStore := newRemoteSkillStore(manager.remoteStore.root)
+	secondStore := newRemoteSkillStore(
+		manager.remoteStore.root,
+		manager.remoteStore.patchRoot,
+	)
 	records, err := secondStore.recordsForDiscovery()
 	if err != nil {
 		t.Fatal(err)
@@ -1114,8 +1475,8 @@ func TestRemoteModelInvocationTogglesSerializeAcrossStores(t *testing.T) {
 		t.Fatal(err)
 	}
 	stores := []*remoteSkillStore{
-		newRemoteSkillStore(manager.remoteStore.root),
-		newRemoteSkillStore(manager.remoteStore.root),
+		newRemoteSkillStore(manager.remoteStore.root, manager.remoteStore.patchRoot),
+		newRemoteSkillStore(manager.remoteStore.root, manager.remoteStore.patchRoot),
 	}
 	type toggleResult struct {
 		disabled bool
@@ -1243,7 +1604,7 @@ func TestRemoteUninstallStagesCorruptOverrideWithoutStrandingReinstall(t *testin
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), ".remote-skill-override-remove-") {
+		if strings.HasPrefix(entry.Name(), ".remote-skill-remove-") {
 			t.Fatalf("uninstall retained staged override %q", entry.Name())
 		}
 	}
@@ -1903,6 +2264,7 @@ func TestRunSyncFetchesCommittedRemoteIdentity(t *testing.T) {
 	}
 	records, err := newRemoteSkillStore(
 		filepath.Join(cache, "skills-mgr", "remote-skills"),
+		filepath.Join(home, ".skills-mgr", "skills", remoteSkillPatchDir),
 	).records()
 	if err != nil {
 		t.Fatal(err)
@@ -2095,7 +2457,11 @@ func TestSkillsMPRemoteToggleLinksClaudeToAgentsAfterCloneAndRefresh(t *testing.
 }
 
 func TestRemoteStoreAddsClaudeAliasWhenAgentsInstructionsExist(t *testing.T) {
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	storeRoot := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(storeRoot, "remote-skills"),
+		filepath.Join(storeRoot, "remote-patches"),
+	)
 	ref := remoteSkillRef{
 		Provider: skillsShProvider,
 		ID:       "owner/repo/alpha",
@@ -2117,7 +2483,11 @@ func TestRemoteStoreAddsClaudeAliasWhenAgentsInstructionsExist(t *testing.T) {
 }
 
 func TestRemoteStorePreservesDistinctClaudeInstructions(t *testing.T) {
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	storeRoot := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(storeRoot, "remote-skills"),
+		filepath.Join(storeRoot, "remote-patches"),
+	)
 	ref := remoteSkillRef{
 		Provider: skillsShProvider,
 		ID:       "owner/repo/alpha",
@@ -2333,7 +2703,11 @@ func TestRemoteStoreRejectsUnsafeRefreshWithoutReplacingContent(t *testing.T) {
 		Path:     "SKILL.md",
 		Contents: []byte(skillFile("alpha", "Alpha.", "safe")),
 	}}}
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	storeRoot := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(storeRoot, "remote-skills"),
+		filepath.Join(storeRoot, "remote-patches"),
+	)
 	ref := remoteSkillRef{
 		Provider: skillsShProvider,
 		ID:       "owner/repo/alpha",
@@ -2365,8 +2739,8 @@ func TestRemoteStoreRejectsUnsafeRefreshWithoutReplacingContent(t *testing.T) {
 func TestRemoteStoreSerializesConflictingNamesAcrossInstances(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "remote-skills")
 	stores := []*remoteSkillStore{
-		newRemoteSkillStore(root),
-		newRemoteSkillStore(root),
+		newRemoteSkillStore(root, filepath.Join(filepath.Dir(root), "remote-patches")),
+		newRemoteSkillStore(root, filepath.Join(filepath.Dir(root), "remote-patches")),
 	}
 	refs := []remoteSkillRef{
 		{
@@ -2418,7 +2792,11 @@ func TestRemoteStoreSerializesConflictingNamesAcrossInstances(t *testing.T) {
 }
 
 func TestRemoteStoreLockHonorsCanceledContext(t *testing.T) {
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	root := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(root, "remote-skills"),
+		filepath.Join(root, "remote-patches"),
+	)
 	lock, err := store.lockExclusive(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -2437,7 +2815,11 @@ func TestRemoteStoreLockHonorsCanceledContext(t *testing.T) {
 }
 
 func TestRemoteRefreshRetainsPreviousGenerationForReaders(t *testing.T) {
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	root := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(root, "remote-skills"),
+		filepath.Join(root, "remote-patches"),
+	)
 	ref := remoteSkillRef{
 		Provider: skillsShProvider, ID: "owner/repo/alpha",
 		Name: "alpha", Locator: "owner/repo/alpha",
@@ -2468,7 +2850,11 @@ func TestRemoteRefreshRetainsPreviousGenerationForReaders(t *testing.T) {
 }
 
 func TestRemoteFetchTTLStartsAtSuccessfulCompletion(t *testing.T) {
-	store := newRemoteSkillStore(filepath.Join(t.TempDir(), "remote-skills"))
+	root := t.TempDir()
+	store := newRemoteSkillStore(
+		filepath.Join(root, "remote-skills"),
+		filepath.Join(root, "remote-patches"),
+	)
 	ref := remoteSkillRef{
 		Provider: skillsShProvider, ID: "owner/repo/alpha",
 		Name: "alpha", Locator: "owner/repo/alpha",
