@@ -163,7 +163,8 @@ copying it; see [The Manager Home](#the-manager-home).
 For an installed remote skill, `e` opens the provider content with any existing
 local edit applied. Saving stores the edit under
 `$HOME/.skills-mgr/skills/.remote-patches/`; the fetched provider files remain
-unchanged.
+unchanged. Each patch keeps two integrity hashes followed by a readable unified
+diff for `SKILL.md`.
 
 `u` deletes stored remote content, so it is refused for a skill configured in
 the global layer while you are in project mode; uninstall that one from
@@ -611,9 +612,11 @@ Content is never executed at install time.
 Remote edits are stored as stable per-entry `.patch` files under the global
 manager home at `$HOME/.skills-mgr/skills/.remote-patches/`, not in this cache.
 That location can be tracked with the rest of the manager home and restored on
-a machine with an empty remote cache. Patches survive refreshes, are removed on
-uninstall, and affect `skills-mgr get`; discovery metadata and `skills-mgr run`
-continue to use the validated provider content.
+a machine with an empty remote cache. Their body is a conventional unified diff,
+with base and result SHA-256 headers protecting the layer from mismatched or
+damaged content. Patches survive refreshes, are removed on uninstall, and affect
+`skills-mgr get`; discovery metadata and `skills-mgr run` continue to use the
+validated provider content.
 
 Registry responses are cached alongside the content. The SkillsMP client sends
 `SKILLSMP_API_KEY` as a bearer token when that variable is set, and makes

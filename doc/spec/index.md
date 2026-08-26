@@ -4,7 +4,7 @@ pjdoc:
   kind: spec
   scope: root
   status: draft
-  revision: SPEC-4
+  revision: SPEC-5
   files:
     []
 ---
@@ -101,8 +101,10 @@ An installed remote skill shall be editable without modifying its fetched
 provider files. After the editor exits successfully, the manager shall store
 the difference from the fetched `SKILL.md` as a stable local patch associated
 with the remote identity under the global manager home, outside the refetchable
-remote cache. Re-editing shall start from the currently patched content, and
-uninstalling the remote skill shall remove the patch.
+remote cache. The stored body shall be a readable conventional unified diff,
+guarded by base-content and patched-result digests. Re-editing shall start from
+the currently patched content, and uninstalling the remote skill shall remove
+the patch.
 
 `skills-mgr get` shall apply that patch before its existing Markdown
 frontmatter and line-range processing. If the patch cannot be parsed or applied
@@ -114,6 +116,8 @@ Acceptance examples:
 
 - Saving a remote edit creates a patch while the fetched `SKILL.md` remains
   byte-for-byte unchanged.
+- The patch shows literal context, removed lines, and added lines rather than an
+  encoded patch payload.
 - A second edit opens the first edit's patched result.
 - A provider refresh retains the patch and still applies it when `SKILL.md`
   itself is unchanged.

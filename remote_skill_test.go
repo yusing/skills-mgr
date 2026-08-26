@@ -160,8 +160,14 @@ func TestRemoteSkillPatchLayersGetWithoutChangingFetchedContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, discovered.Path, original)
-	if _, err := os.Stat(manager.remoteStore.patchPath(ref)); err != nil {
+	patchContents, err := os.ReadFile(manager.remoteStore.patchPath(ref))
+	if err != nil {
 		t.Fatalf("stored patch: %v", err)
+	}
+	if !bytes.Contains(patchContents, []byte("--- a/SKILL.md\n+++ b/SKILL.md\n")) ||
+		!bytes.Contains(patchContents, []byte("-before\n+after\n")) ||
+		bytes.Contains(patchContents, []byte("%0A")) {
+		t.Fatalf("stored patch is not readable unified diff:\n%s", patchContents)
 	}
 	if got, want := filepath.Dir(manager.remoteStore.patchPath(ref)),
 		filepath.Join(manager.paths.managedSkills, remoteSkillPatchDir); got != want {
@@ -319,8 +325,9 @@ func TestRemoteSkillPatchFailureReturnsUpgradedOriginal(t *testing.T) {
 	baseDigest := sha256.Sum256(provider.files[0].Contents)
 	resultDigest := sha256.Sum256([]byte(skillFile("alpha", "Upgraded.", "local\n")))
 	for name, patchText := range map[string]string{
-		"no-op":          "@@ -0,0 +0,0 @@\n",
-		"invalid escape": "@@ -1 +1 @@\n-%ZZ\n+x\n",
+		"no-op": "--- a/SKILL.md\n+++ b/SKILL.md\n@@ -0,0 +0,0 @@\n",
+		"mismatched source": "--- a/SKILL.md\n+++ b/SKILL.md\n" +
+			"@@ -1 +1 @@\n-other\n+local\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			writeFile(

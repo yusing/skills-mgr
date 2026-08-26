@@ -4,7 +4,7 @@ pjdoc:
   kind: architecture
   scope: root
   status: draft
-  revision: ARCH-4
+  revision: ARCH-5
   files:
     []
 ---
@@ -83,11 +83,14 @@ is outside the refetchable remote cache, so a tracked patch can be restored
 before its provider content is installed. The patch records the fetched
 `SKILL.md` digest it was based on and the expected patched-result digest, so
 changed provider instructions and structurally damaged patches cannot silently
-produce another result. The TUI edits a private temporary copy of the currently
-layered `SKILL.md` and atomically replaces the sidecar only after the editor
-succeeds. The store compares that starting layer again under its exclusive lock
-before publishing, so concurrent editors cannot overwrite an intervening edit.
-It never writes into provider content.
+produce another result. After those integrity headers, it stores a conventional
+unified diff whose file headers name `a/SKILL.md` and `b/SKILL.md`; the store
+strictly applies its hunks to the digest-matched provider bytes. The TUI edits a
+private temporary copy of the currently layered `SKILL.md` and atomically
+replaces the sidecar only after the editor succeeds. The store compares that
+starting layer again under its exclusive lock before publishing, so concurrent
+editors cannot overwrite an intervening edit. It never writes into provider
+content.
 
 The `get` owner applies the sidecar only to a remote skill's `SKILL.md` before
 frontmatter stripping and line-range selection. Patch parsing or application

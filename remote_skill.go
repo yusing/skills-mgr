@@ -19,8 +19,6 @@ import (
 	"syscall"
 	"time"
 	"unicode"
-
-	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 const (
@@ -864,8 +862,10 @@ func (s *remoteSkillStore) savePatch(
 		return errRemoteSkillEditConflict
 	}
 
-	dmp := diffmatchpatch.New()
-	patchText := dmp.PatchToText(dmp.PatchMake(string(original), string(edited)))
+	patchText, err := makeRemoteSkillPatch(original, edited)
+	if err != nil {
+		return fmt.Errorf("create remote skill patch: %w", err)
+	}
 	path := s.patchPath(ref)
 	if patchText == "" {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -927,20 +927,19 @@ func (s *remoteSkillStore) applyPatch(
 		baseDigest == resultDigest {
 		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
 	}
-	if baseDigest != fmt.Sprintf("%x", sha256.Sum256(original)) {
+	baseSum := sha256.Sum256(original)
+	if baseDigest != hex.EncodeToString(baseSum[:]) {
 		return nil, errRemoteSkillPatch
 	}
-	dmp := diffmatchpatch.New()
-	patches, err := dmp.PatchFromText(patchText)
-	if err != nil || len(patches) == 0 {
+	patched, err := applyRemoteSkillPatch(original, patchText)
+	if err != nil {
 		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
 	}
-	patched, applied := dmp.PatchApply(patches, string(original))
-	if slices.Contains(applied, false) ||
-		resultDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(patched))) {
+	resultSum := sha256.Sum256(patched)
+	if resultDigest != hex.EncodeToString(resultSum[:]) {
 		return nil, errRemoteSkillPatch
 	}
-	return []byte(patched), nil
+	return patched, nil
 }
 
 func (s *remoteSkillStore) loadOverrideLocked(ref remoteSkillRef) (*bool, error) {

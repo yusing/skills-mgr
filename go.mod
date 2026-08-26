@@ -9,7 +9,7 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/mattn/go-shellwords v1.0.14
 	github.com/pelletier/go-toml/v2 v2.4.3
-	github.com/sergi/go-diff v1.4.0
+	github.com/pmezard/go-difflib v1.0.0
 	golang.org/x/mod v0.40.0
 	golang.org/x/term v0.45.0
 	mvdan.cc/sh/v3 v3.13.1
@@ -41,6 +41,7 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
