@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -39,8 +40,11 @@ func run(args []string) error {
 	skillsMP := newSkillsMPRegistry(paths.skillsMP, os.Getenv("SKILLSMP_API_KEY"))
 	manager := &manager{
 		paths: paths, remote: remote, skillsMP: skillsMP,
-		remoteStore: newRemoteSkillStore(paths.remoteSkills),
-		global:      global,
+		remoteStore: newRemoteSkillStore(
+			paths.remoteSkills,
+			filepath.Join(paths.managedSkills, remoteSkillPatchDir),
+		),
+		global: global,
 	}
 
 	switch {

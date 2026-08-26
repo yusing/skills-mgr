@@ -152,6 +152,7 @@ func (m *manager) skills(project string, harnesses ...listHarness) ([]discovered
 			)
 			if err := discovery.addSkill(skillRoot{
 				source:                         record.Provider,
+				editable:                       true,
 				remoteKey:                      record.ref().key(),
 				disableModelInvocationOverride: record.disableModelInvocationOverride,
 			}, root); err != nil {
@@ -1716,7 +1717,7 @@ func (m *manager) getContext(
 	if err != nil {
 		return err
 	}
-	root, err := m.openSkillContext(ctx, project, skill)
+	root, discovered, err := m.openSkillContext(ctx, project, skill)
 	if err != nil {
 		return err
 	}
@@ -1741,8 +1742,28 @@ func (m *manager) getContext(
 		}
 	}
 	var input io.Reader = file
+	var patchErr error
+	isSkillMarkdown := filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md"
+	if discovered.RemoteKey != "" && isSkillMarkdown {
+		original, err := io.ReadAll(file)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", target, err)
+		}
+		ref, err := m.persistedRemoteRef(discovered.RemoteKey, discovered.Name)
+		if err == nil {
+			var patched []byte
+			patched, err = m.remoteStore.applyPatch(ref, original)
+			if err == nil {
+				input = bytes.NewReader(patched)
+			}
+		}
+		if err != nil {
+			patchErr = err
+			input = bytes.NewReader(original)
+		}
+	}
 	if strings.EqualFold(filepath.Ext(relative), ".md") {
-		_, body, status, err := readFrontmatter(file)
+		_, body, status, err := readFrontmatter(input)
 		if err != nil {
 			return fmt.Errorf("read %s frontmatter: %w", target, err)
 		}
@@ -1750,7 +1771,7 @@ func (m *manager) getContext(
 		case frontmatterValid:
 			input = body
 		case frontmatterAbsent:
-			if filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md" {
+			if isSkillMarkdown {
 				return fmt.Errorf("%s has invalid frontmatter", target)
 			}
 			input = body
@@ -1760,9 +1781,9 @@ func (m *manager) getContext(
 	}
 	if lineRange == "" {
 		_, err := io.Copy(output, input)
-		return err
+		return errors.Join(err, patchErr)
 	}
-	return writeLineRange(output, input, start, end)
+	return errors.Join(writeLineRange(output, input, start, end), patchErr)
 }
 
 func (m *manager) scriptCommandContext(
@@ -1777,7 +1798,7 @@ func (m *manager) scriptCommandContext(
 	if err != nil {
 		return nil, err
 	}
-	root, err := m.openSkillContext(ctx, project, skill)
+	root, _, err := m.openSkillContext(ctx, project, skill)
 	if err != nil {
 		return nil, err
 	}
@@ -1840,27 +1861,27 @@ func (m *manager) cachedJavaScriptRuntime() (string, error) {
 func (m *manager) openSkillContext(
 	ctx context.Context,
 	project, skill string,
-) (*os.Root, error) {
+) (*os.Root, discoveredSkill, error) {
 	discovered, err := m.findSkill(project, skill)
 	if err != nil {
-		return nil, err
+		return nil, discoveredSkill{}, err
 	}
 	selection, err := m.selectionState(project, []discoveredSkill{discovered})
 	if err != nil {
-		return nil, err
+		return nil, discoveredSkill{}, err
 	}
 	enabled, err := selection.enabled(ctx, newEnabledEvaluator(project), skill)
 	if err != nil {
-		return nil, err
+		return nil, discoveredSkill{}, err
 	}
 	if !enabled {
-		return nil, fmt.Errorf("skill %q is not enabled", skill)
+		return nil, discoveredSkill{}, fmt.Errorf("skill %q is not enabled", skill)
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
-		return nil, fmt.Errorf("open skill %q: %w", skill, err)
+		return nil, discoveredSkill{}, fmt.Errorf("open skill %q: %w", skill, err)
 	}
-	return root, nil
+	return root, discovered, nil
 }
 
 func (m *manager) findSkill(project, name string) (discoveredSkill, error) {

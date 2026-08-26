@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/sergi/go-diff/diffmatchpatch"
 )
 
 const (
@@ -29,8 +31,17 @@ const (
 	remoteSkillMaxBytes               = 16 << 20
 	remoteSkillMetadataLimit          = 64 << 10
 	remoteContentGracePeriod          = 2 * remoteSkillCacheTTL
+	remoteSkillPatchDir               = ".remote-patches"
 	skillsShProvider                  = "skills.sh"
 	skillsMPProvider                  = "SkillsMP"
+)
+
+var errRemoteSkillPatch = errors.New("remote skill patch no longer applies")
+var errRemoteSkillEditConflict = errors.New("remote skill changed while it was being edited")
+
+const (
+	remoteSkillPatchBaseHeader   = "# skills-mgr-base-sha256 "
+	remoteSkillPatchResultHeader = "# skills-mgr-result-sha256 "
 )
 
 type remoteSkillRef struct {
@@ -151,12 +162,13 @@ func (r remoteSkillRecord) fresh(now time.Time) bool {
 }
 
 type remoteSkillStore struct {
-	root string
-	mu   sync.Mutex
+	root      string
+	patchRoot string
+	mu        sync.Mutex
 }
 
-func newRemoteSkillStore(root string) *remoteSkillStore {
-	return &remoteSkillStore{root: root}
+func newRemoteSkillStore(root, patchRoot string) *remoteSkillStore {
+	return &remoteSkillStore{root: root, patchRoot: patchRoot}
 }
 
 func (s *remoteSkillStore) ensure(
@@ -265,37 +277,62 @@ func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error
 		return fmt.Errorf("persisted remote skill %q is missing", ref.Name)
 	}
 	entries := filepath.Join(s.root, "entries")
-	overridePath := s.overridePath(ref)
-	stagedOverride := ""
-	if _, err := os.Lstat(overridePath); err == nil {
-		temporary, err := os.CreateTemp(entries, ".remote-skill-override-remove-")
+	type stagedSidecar struct {
+		original string
+		staged   string
+	}
+	var staged []stagedSidecar
+	rollbackStaged := func() error {
+		var rollbackErr error
+		for index := len(staged) - 1; index >= 0; index-- {
+			rollbackErr = errors.Join(
+				rollbackErr,
+				os.Rename(staged[index].staged, staged[index].original),
+			)
+		}
+		return rollbackErr
+	}
+	for _, sidecar := range s.sidecars(ref) {
+		if _, err := os.Lstat(sidecar.path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return errors.Join(
+				fmt.Errorf("inspect remote skill %s: %w", sidecar.name, err),
+				rollbackStaged(),
+			)
+		}
+		temporary, err := os.CreateTemp(filepath.Dir(sidecar.path), ".remote-skill-remove-")
 		if err != nil {
-			return fmt.Errorf("stage remote skill override removal: %w", err)
+			return errors.Join(
+				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
+				rollbackStaged(),
+			)
 		}
-		stagedOverride = temporary.Name()
-		if err := errors.Join(temporary.Close(), os.Remove(stagedOverride)); err != nil {
-			return fmt.Errorf("stage remote skill override removal: %w", err)
+		stagedPath := temporary.Name()
+		if err := errors.Join(temporary.Close(), os.Remove(stagedPath)); err != nil {
+			return errors.Join(
+				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
+				rollbackStaged(),
+			)
 		}
-		if err := os.Rename(overridePath, stagedOverride); err != nil {
-			return fmt.Errorf("stage remote skill override removal: %w", err)
+		if err := os.Rename(sidecar.path, stagedPath); err != nil {
+			return errors.Join(
+				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
+				rollbackStaged(),
+			)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect remote skill override: %w", err)
+		staged = append(staged, stagedSidecar{original: sidecar.path, staged: stagedPath})
 	}
 
 	path := filepath.Join(entries, ref.key()+".json")
 	if err := os.Remove(path); err != nil {
-		rollbackErr := error(nil)
-		if stagedOverride != "" {
-			rollbackErr = os.Rename(stagedOverride, overridePath)
-		}
 		return errors.Join(
 			fmt.Errorf("remove remote skill metadata: %w", err),
-			rollbackErr,
+			rollbackStaged(),
 		)
 	}
-	if stagedOverride != "" {
-		_ = os.RemoveAll(stagedOverride)
+	for _, sidecar := range staged {
+		_ = os.RemoveAll(sidecar.staged)
 	}
 	return nil
 }
@@ -728,18 +765,26 @@ func (s *remoteSkillStore) saveRecordLocked(record remoteSkillRecord) error {
 }
 
 func saveRemoteMetadataFile(entries, path string, value any) error {
-	if err := os.MkdirAll(entries, 0o700); err != nil {
-		return fmt.Errorf("create metadata directory: %w", err)
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return err
 	}
-	temporary, err := os.CreateTemp(entries, ".remote-skill-")
+	return saveRemoteEntryFile(entries, path, data.Bytes())
+}
+
+func saveRemoteEntryFile(directory, path string, data []byte) error {
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create entry directory: %w", err)
+	}
+	temporary, err := os.CreateTemp(directory, ".remote-skill-")
 	if err != nil {
-		return fmt.Errorf("create metadata: %w", err)
+		return fmt.Errorf("create entry: %w", err)
 	}
 	name := temporary.Name()
 	defer os.Remove(name)
-	encoder := json.NewEncoder(temporary)
-	encoder.SetIndent("", "  ")
-	err = encoder.Encode(value)
+	_, err = temporary.Write(data)
 	if err == nil {
 		err = temporary.Chmod(0o600)
 	}
@@ -755,6 +800,147 @@ func saveRemoteMetadataFile(entries, path string, value any) error {
 
 func (s *remoteSkillStore) overridePath(ref remoteSkillRef) string {
 	return filepath.Join(s.root, "entries", ref.key()+".override")
+}
+
+func (s *remoteSkillStore) patchPath(ref remoteSkillRef) string {
+	return filepath.Join(s.patchRoot, ref.key()+".patch")
+}
+
+func (s *remoteSkillStore) sidecars(ref remoteSkillRef) []struct {
+	path string
+	name string
+} {
+	return []struct {
+		path string
+		name string
+	}{
+		{path: s.overridePath(ref), name: "override"},
+		{path: s.patchPath(ref), name: "patch"},
+	}
+}
+
+func (s *remoteSkillStore) savePatch(
+	ctx context.Context,
+	ref remoteSkillRef,
+	basePath string,
+	expectedLayeredDigest [sha256.Size]byte,
+	edited []byte,
+) error {
+	if err := ref.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	storeLock, err := s.lockExclusive(ctx)
+	if err != nil {
+		return err
+	}
+	defer closeRemoteStoreLock(storeLock)
+
+	record, err := s.loadRecordLocked(ref.key())
+	if err != nil {
+		return err
+	}
+	if record.ref() != ref {
+		return fmt.Errorf("persisted remote skill identity changed")
+	}
+	root, err := s.contentRoot(record)
+	if err != nil {
+		return err
+	}
+	currentPath := filepath.Join(root, "SKILL.md")
+	if filepath.Clean(currentPath) != filepath.Clean(basePath) {
+		return errRemoteSkillEditConflict
+	}
+	original, err := os.ReadFile(currentPath)
+	if err != nil {
+		return fmt.Errorf("read remote skill: %w", err)
+	}
+	currentLayered, err := s.applyPatch(ref, original)
+	if err != nil {
+		return err
+	}
+	if sha256.Sum256(currentLayered) != expectedLayeredDigest {
+		return errRemoteSkillEditConflict
+	}
+
+	dmp := diffmatchpatch.New()
+	patchText := dmp.PatchToText(dmp.PatchMake(string(original), string(edited)))
+	path := s.patchPath(ref)
+	if patchText == "" {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove remote skill patch: %w", err)
+		}
+		return nil
+	}
+	baseDigest := sha256.Sum256(original)
+	resultDigest := sha256.Sum256(edited)
+	patch := fmt.Appendf(
+		nil,
+		"%s%x\n%s%x\n%s",
+		remoteSkillPatchBaseHeader,
+		baseDigest,
+		remoteSkillPatchResultHeader,
+		resultDigest,
+		patchText,
+	)
+	if err := saveRemoteEntryFile(s.patchRoot, path, patch); err != nil {
+		return fmt.Errorf("write remote skill patch: %w", err)
+	}
+	return nil
+}
+
+func (s *remoteSkillStore) applyPatch(
+	ref remoteSkillRef,
+	original []byte,
+) ([]byte, error) {
+	if err := ref.validate(); err != nil {
+		return nil, err
+	}
+	path := s.patchPath(ref)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return original, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("inspect remote skill patch: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: patch is not a regular file", errRemoteSkillPatch)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read remote skill patch: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("%w: patch is empty", errRemoteSkillPatch)
+	}
+
+	baseHeader, remainder, hasResult := strings.Cut(string(data), "\n")
+	resultHeader, patchText, hasPatch := strings.Cut(remainder, "\n")
+	baseDigest, hasBaseHeader := strings.CutPrefix(baseHeader, remoteSkillPatchBaseHeader)
+	resultDigest, hasResultHeader := strings.CutPrefix(
+		resultHeader,
+		remoteSkillPatchResultHeader,
+	)
+	if !hasResult || !hasPatch || !hasBaseHeader || !hasResultHeader || patchText == "" ||
+		baseDigest == resultDigest {
+		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
+	}
+	if baseDigest != fmt.Sprintf("%x", sha256.Sum256(original)) {
+		return nil, errRemoteSkillPatch
+	}
+	dmp := diffmatchpatch.New()
+	patches, err := dmp.PatchFromText(patchText)
+	if err != nil || len(patches) == 0 {
+		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
+	}
+	patched, applied := dmp.PatchApply(patches, string(original))
+	if slices.Contains(applied, false) ||
+		resultDigest != fmt.Sprintf("%x", sha256.Sum256([]byte(patched))) {
+		return nil, errRemoteSkillPatch
+	}
+	return []byte(patched), nil
 }
 
 func (s *remoteSkillStore) loadOverrideLocked(ref remoteSkillRef) (*bool, error) {

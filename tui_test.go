@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,28 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type editExecTestModel struct {
+	current model
+	command tea.Cmd
+}
+
+func (m editExecTestModel) Init() tea.Cmd {
+	return m.command
+}
+
+func (m editExecTestModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	updated, command := m.current.Update(message)
+	m.current = updated.(model)
+	if _, ok := message.(editDone); ok {
+		return m, tea.Quit
+	}
+	return m, command
+}
+
+func (m editExecTestModel) View() string {
+	return ""
+}
 
 func TestSkillListScrollsToKeepCursorVisible(t *testing.T) {
 	current := model{
@@ -1771,14 +1794,233 @@ func TestEditorTargetsCanonicalSkill(t *testing.T) {
 	}
 	t.Setenv("EDITOR", editor+" --flag")
 
-	command, err := (model{manager: manager, project: project}).editor("alpha")
+	edit, err := (model{manager: manager, project: project}).editor("alpha")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := command.Run(); err != nil {
+	if edit.draft != "" {
+		t.Fatalf("local editor draft = %q, want none", edit.draft)
+	}
+	if err := edit.command.Run(); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, skill, "edited")
+}
+
+func TestEditorLayersRemoteSkillThroughPatchDraft(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	original := skillFile("alpha", "Remote alpha.", "before\n")
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		ref,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path: "SKILL.md", Contents: []byte(original),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	edited := skillFile("alpha", "Remote alpha.", "after\n")
+	editor := filepath.Join(t.TempDir(), "editor")
+	if err := os.WriteFile(
+		editor,
+		[]byte("#!/bin/sh\nprintf '%s' '"+edited+"' > \"$2\"\n"),
+		0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", editor+" --flag")
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, err := (model{manager: manager, project: project}).editor(ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edit.draft == "" || edit.draft == discovered.Path {
+		t.Fatalf("remote editor draft = %q", edit.draft)
+	}
+	defer os.Remove(edit.draft)
+	assertFile(t, edit.draft, original)
+	if err := edit.command.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.completeSkillEdit(
+		t.Context(), project, discovered, edit.draft, edit.layeredDigest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, discovered.Path, original)
+
+	var output strings.Builder
+	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "after\n" {
+		t.Fatalf("edited remote body = %q", output.String())
+	}
+	layeredEdit, err := (model{manager: manager, project: project}).editor(ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(layeredEdit.draft)
+	assertFile(t, layeredEdit.draft, edited)
+}
+
+func TestRemoteEditorRejectsConcurrentLayerReplacement(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		ref,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", "true")
+	discovered, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := (model{manager: manager, project: project}).editor(ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(first.draft)
+	second, err := (model{manager: manager, project: project}).editor(ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(second.draft)
+	firstContents := skillFile("alpha", "Remote alpha.", "first\n")
+	if err := os.WriteFile(first.draft, []byte(firstContents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.completeSkillEdit(
+		t.Context(), project, discovered, first.draft, first.layeredDigest,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		second.draft,
+		[]byte(skillFile("alpha", "Remote alpha.", "second\n")),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := manager.completeSkillEdit(
+		t.Context(), project, discovered, second.draft, second.layeredDigest,
+	); !errors.Is(err, errRemoteSkillEditConflict) {
+		t.Fatalf("stale remote edit error = %v", err)
+	}
+
+	var output strings.Builder
+	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "first\n" {
+		t.Fatalf("concurrent edit result = %q", output.String())
+	}
+}
+
+func TestRemoteEditorUsesSourceRediscoveredAfterRefresh(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	current, err := newModel(manager, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stalePath := current.skills[0].Path
+	aged := ageRemoteRecord(t, manager.remoteStore, ref)
+	provider.files[0].Contents = []byte(skillFile("alpha", "Remote alpha.", "upstream\n"))
+	if err := manager.remoteStore.refresh(t.Context(), aged, provider); err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.Path == stalePath {
+		t.Fatal("refresh retained the original content path")
+	}
+	editor := filepath.Join(t.TempDir(), "editor")
+	if err := os.WriteFile(editor, []byte(`#!/bin/sh
+cat > "$1" <<'EOF'
+---
+name: alpha
+description: Remote alpha.
+---
+local
+EOF
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("EDITOR", editor)
+	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	current = updated.(model)
+	if command == nil || !current.busy {
+		t.Fatalf("remote editor did not start: %#v", current)
+	}
+	program := tea.NewProgram(
+		editExecTestModel{current: current, command: command},
+		tea.WithoutRenderer(),
+		tea.WithInput(strings.NewReader("")),
+		tea.WithOutput(io.Discard),
+	)
+	final, err := program.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := final.(editExecTestModel).current
+	if got.busy || got.status != "saved alpha" {
+		t.Fatalf("edit completion = %#v", got)
+	}
+
+	var output strings.Builder
+	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "local\n" {
+		t.Fatalf("edit after refresh = %q", output.String())
+	}
 }
 
 func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {

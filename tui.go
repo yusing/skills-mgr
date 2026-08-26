@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -153,6 +154,13 @@ type editDone struct {
 	selection  selectionState
 	editorErr  error
 	refreshErr error
+}
+
+type skillEdit struct {
+	command       *exec.Cmd
+	draft         string
+	layeredDigest [sha256.Size]byte
+	source        discoveredSkill
 }
 
 type enabledEditDone struct {
@@ -743,30 +751,73 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.status = externalSkillControlStatus(skill)
 			break
 		}
-		command, err := m.editor(skill.Name)
+		edit, err := m.editor(skill.Name)
 		if err != nil {
 			m.status = "error: " + err.Error()
 			break
 		}
 		m.busy = true
 		m.status = "editing " + skill.Name
-		return m, tea.ExecProcess(command, func(err error) tea.Msg {
+		return m, tea.ExecProcess(edit.command, func(err error) tea.Msg {
+			if edit.draft != "" {
+				defer os.Remove(edit.draft)
+			}
 			if err != nil {
 				return editDone{skill: skill.Name, editorErr: err}
 			}
-			skills, selection, refreshErr := m.manager.refreshEditedSkill(
+			skills, selection, refreshErr := m.manager.completeSkillEdit(
+				context.Background(),
 				m.project,
-				skill.Name,
-				skill.Path,
+				edit.source,
+				edit.draft,
+				edit.layeredDigest,
 			)
 			return editDone{
-				skill: skill.Name, path: skill.Path,
+				skill: skill.Name, path: edit.source.Path,
 				skills: skills, selection: selection,
 				refreshErr: refreshErr,
 			}
 		})
 	}
 	return m, nil
+}
+
+func (m *manager) completeSkillEdit(
+	ctx context.Context,
+	project string,
+	edited discoveredSkill,
+	draft string,
+	layeredDigest [sha256.Size]byte,
+) ([]discoveredSkill, selectionState, error) {
+	if edited.RemoteKey == "" {
+		return m.refreshEditedSkill(project, edited.Name, edited.Path)
+	}
+	if draft == "" {
+		return nil, selectionState{}, fmt.Errorf("remote skill edit draft is missing")
+	}
+	contents, err := os.ReadFile(draft)
+	if err != nil {
+		return nil, selectionState{}, fmt.Errorf("read remote skill edit: %w", err)
+	}
+	ref, err := m.persistedRemoteRef(edited.RemoteKey, edited.Name)
+	if err != nil {
+		return nil, selectionState{}, err
+	}
+	if err := m.remoteStore.savePatch(
+		ctx,
+		ref,
+		edited.Path,
+		layeredDigest,
+		contents,
+	); err != nil {
+		return nil, selectionState{}, err
+	}
+	skills, err := m.skills(project)
+	if err != nil {
+		return nil, selectionState{}, err
+	}
+	selection, err := m.selectionState(project, skills)
+	return skills, selection, err
 }
 
 // relocateSelectedSkill moves the highlighted skill between $HOME/.agents/skills
@@ -2114,19 +2165,57 @@ func configuredEditor(file string) (*exec.Cmd, error) {
 	return exec.Command(parts[0], append(parts[1:], file)...), nil
 }
 
-func (m model) editor(skill string) (*exec.Cmd, error) {
+func (m model) editor(skill string) (_ skillEdit, retErr error) {
 	discovered, err := m.manager.findSkill(m.project, skill)
 	if err != nil {
-		return nil, err
+		return skillEdit{}, err
 	}
 	if !discovered.Editable {
-		return nil, fmt.Errorf("skill %q is not editable at its discovered source", skill)
+		return skillEdit{}, fmt.Errorf("skill %q is not editable at its discovered source", skill)
 	}
 	file := discovered.Path
 	if info, err := os.Stat(file); err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("missing %s", file)
+		return skillEdit{}, fmt.Errorf("missing %s", file)
 	}
-	return configuredEditor(file)
+	edit := skillEdit{source: discovered}
+	if discovered.RemoteKey != "" {
+		original, err := os.ReadFile(file)
+		if err != nil {
+			return skillEdit{}, fmt.Errorf("read remote skill: %w", err)
+		}
+		ref, err := m.manager.persistedRemoteRef(discovered.RemoteKey, discovered.Name)
+		if err != nil {
+			return skillEdit{}, err
+		}
+		contents, err := m.manager.remoteStore.applyPatch(ref, original)
+		if err != nil {
+			return skillEdit{}, err
+		}
+		temporary, err := os.CreateTemp("", "skills-mgr-remote-skill-*.md")
+		if err != nil {
+			return skillEdit{}, fmt.Errorf("create remote skill edit: %w", err)
+		}
+		edit.draft = temporary.Name()
+		edit.layeredDigest = sha256.Sum256(contents)
+		defer func() {
+			if retErr != nil {
+				_ = temporary.Close()
+				_ = os.Remove(edit.draft)
+			}
+		}()
+		if err := temporary.Chmod(0o600); err != nil {
+			return skillEdit{}, err
+		}
+		if _, err := temporary.Write(contents); err != nil {
+			return skillEdit{}, fmt.Errorf("write remote skill edit: %w", err)
+		}
+		if err := temporary.Close(); err != nil {
+			return skillEdit{}, fmt.Errorf("close remote skill edit: %w", err)
+		}
+		file = edit.draft
+	}
+	edit.command, err = configuredEditor(file)
+	return edit, err
 }
 
 func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr error) {
