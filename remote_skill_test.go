@@ -767,7 +767,7 @@ func TestRemoteTogglePersistsIdentityWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projectLock.Skills["alpha"] || projectLock.Remote["alpha"] != ref {
+	if !hasRemoteSelection(projectLock, "alpha", false, ref) {
 		t.Fatalf("disabled remote selection = %#v", projectLock)
 	}
 
@@ -847,10 +847,7 @@ func TestUninstallRemoteRemovesInstallationAndCurrentSelection(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, exists := selection.Skills[ref.Name]; exists {
-				t.Fatalf("uninstall retained enabled state: %#v", selection)
-			}
-			if _, exists := selection.Remote[ref.Name]; exists {
-				t.Fatalf("uninstall retained remote identity: %#v", selection)
+				t.Fatalf("uninstall retained selection: %#v", selection)
 			}
 			for _, path := range []string{
 				filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
@@ -867,7 +864,7 @@ func TestUninstallRemoteRemovesInstallationAndCurrentSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !otherSelection.Skills[ref.Name] || otherSelection.Remote[ref.Name] != ref {
+			if !hasRemoteSelection(otherSelection, ref.Name, true, ref) {
 				t.Fatalf("uninstall changed another project selection: %#v", otherSelection)
 			}
 			assertFile(
@@ -914,7 +911,7 @@ func TestUninstallRemoteCancellationRestoresCurrentSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+	if !hasRemoteSelection(selection, ref.Name, true, ref) {
 		t.Fatalf("canceled uninstall changed selection: %#v", selection)
 	}
 	for _, path := range []string{
@@ -968,7 +965,7 @@ func TestUninstallRemoteCatalogFailureLeavesInstallationIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+	if !hasRemoteSelection(selection, ref.Name, true, ref) {
 		t.Fatalf("failed uninstall changed selection: %#v", selection)
 	}
 	for _, path := range []string{
@@ -1030,7 +1027,7 @@ func TestTUIWaitsForCanceledUninstallRollbackBeforeQuitting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+	if !hasRemoteSelection(selection, ref.Name, true, ref) {
 		t.Fatalf("canceled uninstall changed selection: %#v", selection)
 	}
 	for _, path := range []string{
@@ -1087,7 +1084,7 @@ func TestTUIRejectsProjectUninstallOfGlobalRemoteSkill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !global.Skills[ref.Name] || global.Remote[ref.Name] != ref {
+	if !hasRemoteSelection(global, ref.Name, true, ref) {
 		t.Fatalf("project uninstall changed global selection: %#v", global)
 	}
 	assertFile(
@@ -1097,7 +1094,7 @@ func TestTUIRejectsProjectUninstallOfGlobalRemoteSkill(t *testing.T) {
 	)
 }
 
-func TestProjectUninstallRejectsLegacyGlobalRemoteSkill(t *testing.T) {
+func TestProjectUninstallRejectsDisabledLegacyGlobalRemoteSkill(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	ref := remoteSkillRef{
@@ -1110,17 +1107,25 @@ func TestProjectUninstallRejectsLegacyGlobalRemoteSkill(t *testing.T) {
 		Path:     "SKILL.md",
 		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
 	}}}
-	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+	record, err := manager.remoteStore.ensure(t.Context(), ref, provider)
+	if err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(manager.paths.globalLockDir, lockName), `{
   "schema_revision": 1,
   "skills": {
-    "alpha": true
+    "alpha": false
   }
 }`)
+	if err := os.Remove(filepath.Join(
+		manager.remoteStore.root,
+		filepath.FromSlash(record.Content),
+		"SKILL.md",
+	)); err != nil {
+		t.Fatal(err)
+	}
 
-	_, err := manager.uninstallRemote(t.Context(), project, ref.Name, ref.key())
+	_, err = manager.uninstallRemote(t.Context(), project, ref.Name, ref.key())
 	if err == nil || !strings.Contains(err.Error(), "configured globally") {
 		t.Fatalf("legacy global uninstall error = %v", err)
 	}
@@ -1163,8 +1168,8 @@ func TestProjectUninstallRechecksGlobalOwnershipBeforeMetadataRemoval(t *testing
 			func(global *lock) (bool, error) {
 				close(globalLocked)
 				<-publishGlobal
-				global.Skills[ref.Name] = true
-				global.Remote[ref.Name] = ref
+				global.setEnabled(ref.Name, enabledValue{Boolean: new(true)})
+				global.setRemote(ref.Name, ref)
 				return true, nil
 			},
 		)
@@ -1182,7 +1187,7 @@ func TestProjectUninstallRechecksGlobalOwnershipBeforeMetadataRemoval(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, exists := selection.Remote[ref.Name]; !exists {
+		if _, exists := selection.remote(ref.Name); !exists {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1210,7 +1215,7 @@ func TestProjectUninstallRechecksGlobalOwnershipBeforeMetadataRemoval(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !projectSelection.Skills[ref.Name] || projectSelection.Remote[ref.Name] != ref {
+	if !hasRemoteSelection(projectSelection, ref.Name, true, ref) {
 		t.Fatalf("failed uninstall did not restore project selection: %#v", projectSelection)
 	}
 }
@@ -1244,9 +1249,6 @@ func TestGlobalRemoteSelectionRequiresPersistedMetadata(t *testing.T) {
 	}
 	if _, exists := global.Skills[ref.Name]; exists {
 		t.Fatalf("missing metadata wrote global selection: %#v", global)
-	}
-	if _, exists := global.Remote[ref.Name]; exists {
-		t.Fatalf("missing metadata wrote global identity: %#v", global)
 	}
 }
 
@@ -1424,8 +1426,10 @@ func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Expressions[ref.Name] != "[[ -f go.mod ]]" ||
-		value.Remote[ref.Name] != ref {
+	enabled, enabledExists := value.enabled(ref.Name)
+	remote, remoteExists := value.remote(ref.Name)
+	if !enabledExists || enabled.Expression != "[[ -f go.mod ]]" ||
+		!remoteExists || remote != ref {
 		t.Fatalf("remote conditional selection = %#v", value)
 	}
 	// A conditional entry keeps its placeholder. The stub is invisible to the
@@ -1724,13 +1728,14 @@ func TestV2MigrationPersistsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, overridden := projectLock.Skills["alpha"]; overridden ||
-		projectLock.Remote["alpha"] != alpha {
-		t.Fatalf("inherited project selection = %#v", projectLock)
+	if _, overridden := projectLock.enabled("alpha"); overridden {
+		t.Fatalf("inherited project enabled override = %#v", projectLock)
 	}
-	if projectLock.Skills["beta"] ||
-		projectLock.Remote["beta"] != beta ||
-		!projectLock.Skills["local"] {
+	if current, exists := projectLock.remote("alpha"); !exists || current != alpha {
+		t.Fatalf("inherited project remote selection = %#v", projectLock)
+	}
+	if !hasRemoteSelection(projectLock, "beta", false, beta) ||
+		!hasBooleanSelection(projectLock, "local", true) {
 		t.Fatalf("explicit project selections = %#v", projectLock)
 	}
 
@@ -1798,9 +1803,7 @@ func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
 	if err := manager.remoteStore.saveRecordLocked(duplicate); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1815,7 +1818,7 @@ func TestInstalledRemoteToggleRestoresMissingIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Skills["alpha"] || got.Remote["alpha"] != ref {
+	if !hasRemoteSelection(got, "alpha", false, ref) {
 		t.Fatalf("disabled installed remote selection = %#v", got)
 	}
 	for _, path := range []string{
@@ -1870,10 +1873,11 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 			skillFile(ref.Name, "Higher-precedence local skill.", "body"),
 		)
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": false, "beta": true},
-		Remote: map[string]remoteSkillRef{"alpha": alpha, "beta": beta},
-	}); err != nil {
+	if err := saveLock(project, testLock(
+		map[string]bool{"alpha": false, "beta": true},
+		nil,
+		map[string]remoteSkillRef{"alpha": alpha, "beta": beta},
+	)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.setRemotePlaceholders(project, "alpha", "name: alpha\ndescription: Remote skill.\n", true); err != nil {
@@ -1889,7 +1893,7 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 		if err != nil {
 			return 0, err
 		}
-		current.Skills["concurrent"] = true
+		current.setEnabled("concurrent", enabledValue{Boolean: new(true)})
 		if err := saveLock(project, current); err != nil {
 			return 0, err
 		}
@@ -1919,7 +1923,7 @@ func TestSyncRollsBackPlaceholdersWhenSelectionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !current.Skills["concurrent"] {
+	if !hasBooleanSelection(current, "concurrent", true) {
 		t.Fatal("placeholder rollback overwrote the concurrent selection")
 	}
 }
@@ -1956,14 +1960,10 @@ func TestSyncBackfillsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 			skillFile(ref.Name, "Higher-precedence local skill.", "body"),
 		)
 	}
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"beta": false},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"beta": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1978,11 +1978,13 @@ func TestSyncBackfillsExplicitAndInheritedRemoteMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, overridden := got.Skills["alpha"]; overridden ||
-		got.Remote["alpha"] != alpha {
-		t.Fatalf("inherited synchronized selection = %#v", got)
+	if _, overridden := got.enabled("alpha"); overridden {
+		t.Fatalf("inherited synchronized enabled override = %#v", got)
 	}
-	if got.Skills["beta"] || got.Remote["beta"] != beta {
+	if current, exists := got.remote("alpha"); !exists || current != alpha {
+		t.Fatalf("inherited synchronized remote selection = %#v", got)
+	}
+	if !hasRemoteSelection(got, "beta", false, beta) {
 		t.Fatalf("explicit synchronized selection = %#v", got)
 	}
 }
@@ -2006,9 +2008,7 @@ func TestCanceledSyncDoesNotPersistBackfilledMetadata(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := saveLock(project, newLock()); err != nil {
@@ -2053,14 +2053,10 @@ func TestSyncFetchesEnabledInheritedRemote(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
 	}
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Remote: map[string]remoteSkillRef{"alpha": ref},
-	}); err != nil {
+	if err := saveLock(project, testLock(nil, nil, map[string]remoteSkillRef{"alpha": ref})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2072,9 +2068,7 @@ func TestSyncFetchesEnabledInheritedRemote(t *testing.T) {
 		t.Fatalf("sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
 	}
 
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": false},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	output.Reset()
@@ -2110,18 +2104,19 @@ func TestSyncFetchesEnabledProjectRemotesAndReusesFreshContent(t *testing.T) {
 		Name:     "disabled",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/disabled",
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{
+	if err := saveLock(project, testLock(
+		map[string]bool{
 			"alpha":    true,
 			"disabled": false,
 			"local":    true,
 			"legacy":   true,
 		},
-		Remote: map[string]remoteSkillRef{
+		nil,
+		map[string]remoteSkillRef{
 			"alpha":    ref,
 			"disabled": disabled,
 		},
-	}); err != nil {
+	)); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(filepath.Join(project, lockName))
@@ -2177,10 +2172,7 @@ func TestSyncRejectsLocalNameCollisionWithoutFetching(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": true},
-		Remote: map[string]remoteSkillRef{"alpha": ref},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, map[string]remoteSkillRef{"alpha": ref})); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.ReadFile(filepath.Join(project, lockName))
@@ -2226,10 +2218,7 @@ func TestSyncRejectsCachedLocatorMismatch(t *testing.T) {
 	project := t.TempDir()
 	newRef := oldRef
 	newRef.Locator = "other/repo/alpha"
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": true},
-		Remote: map[string]remoteSkillRef{"alpha": newRef},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, map[string]remoteSkillRef{"alpha": newRef})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2256,10 +2245,7 @@ func TestLocalToggleClearsStaleRemoteIdentity(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": false},
-		Remote: map[string]remoteSkillRef{"alpha": ref},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, map[string]remoteSkillRef{"alpha": ref})); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(
@@ -2276,8 +2262,8 @@ func TestLocalToggleClearsStaleRemoteIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := projectLock.Remote["alpha"]; exists {
-		t.Fatalf("local selection retained remote identity: %#v", projectLock.Remote)
+	if _, exists := projectLock.remote("alpha"); exists {
+		t.Fatalf("local selection retained remote identity: %#v", projectLock)
 	}
 }
 
@@ -2303,10 +2289,7 @@ func TestRunSyncFetchesCommittedRemoteIdentity(t *testing.T) {
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": true},
-		Remote: map[string]remoteSkillRef{"alpha": ref},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, map[string]remoteSkillRef{"alpha": ref})); err != nil {
 		t.Fatal(err)
 	}
 

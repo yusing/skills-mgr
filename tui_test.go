@@ -1079,7 +1079,7 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
@@ -1102,8 +1102,8 @@ func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !value.Skills["renamed"] {
-		t.Fatalf("persisted selection = %#v", value.Skills)
+	if !hasBooleanSelection(value, "renamed", true) {
+		t.Fatalf("persisted selection = %#v", value)
 	}
 	var output strings.Builder
 	if err := manager.listContext(t.Context(), project, &output); err != nil {
@@ -1119,7 +1119,7 @@ func TestRefreshEditedManagedSkillUpdatesPlaceholderDescription(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.setRemotePlaceholders(
@@ -1149,7 +1149,7 @@ func TestRefreshEditedManagedSkillReplacesRenamedPlaceholders(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.setRemotePlaceholders(
@@ -1182,10 +1182,10 @@ func TestRefreshEditedManagedSkillKeepsGlobalAndHomeProjectPlaceholders(t *testi
 	project := manager.paths.placeholderDir
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(manager.paths.globalLockDir, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	manager.global = true
@@ -1222,7 +1222,7 @@ func TestRefreshEditedManagedSkillKeepsHomeProjectOnlyPlaceholder(t *testing.T) 
 	project := manager.paths.placeholderDir
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.setRemotePlaceholders(
@@ -1252,7 +1252,7 @@ func TestRefreshEditedManagedSkillRestoresUpdatedPlaceholderOnCollision(t *testi
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(
@@ -1285,7 +1285,7 @@ func TestRefreshEditedManagedSkillRollsBackRenameSelectionOnCollision(t *testing
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := manager.setRemotePlaceholders(
@@ -1322,9 +1322,7 @@ func TestRefreshEditedSkillMigratesRenamedEnabledExpression(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(project, lock{
-		Expressions: map[string]string{"alpha": "[[ -f go.mod ]]"},
-	}); err != nil {
+	if err := saveLock(project, testLock(nil, map[string]string{"alpha": "[[ -f go.mod ]]"}, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
@@ -1336,8 +1334,9 @@ func TestRefreshEditedSkillMigratesRenamedEnabledExpression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Expressions["renamed"] != "[[ -f go.mod ]]" {
-		t.Fatalf("renamed condition = %#v", value.Expressions)
+	if current, exists := value.enabled("renamed"); !exists ||
+		current.Expression != "[[ -f go.mod ]]" {
+		t.Fatalf("renamed condition = %#v", value)
 	}
 	if _, exists := value.enabled("alpha"); exists {
 		t.Fatalf("obsolete condition was retained: %#v", value)
@@ -1423,9 +1422,7 @@ func TestRefreshEditedSkillOverridesInheritedGlobalSelection(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
@@ -1449,14 +1446,10 @@ func TestRefreshEditedSkillPreservesProjectOverrideOfGlobalSelection(t *testing.
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": false},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
@@ -1481,9 +1474,7 @@ func TestRefreshEditedSkillMigratesGlobalSelectionInGlobalMode(t *testing.T) {
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, path, skillFile("renamed", "New.", ""))
@@ -2027,9 +2018,7 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin"), "admin")
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"admin": false},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"admin": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	editor := filepath.Join(t.TempDir(), "editor")
@@ -2071,11 +2060,10 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Expressions["admin"] != "[ -f go.mod ]" {
-		t.Fatalf("enabled expression = %#v", value.Expressions)
-	}
-	if _, boolean := value.Skills["admin"]; boolean {
-		t.Fatalf("enabled boolean was retained: %#v", value.Skills)
+	if current, exists := value.enabled("admin"); !exists ||
+		current.Expression != "[ -f go.mod ]" ||
+		current.Boolean != nil {
+		t.Fatalf("enabled expression = %#v", value)
 	}
 	if state.expressions["admin"] != "[ -f go.mod ]" {
 		t.Fatalf("selection state = %#v", state)
@@ -2086,9 +2074,7 @@ func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	want := `(command -vq herdr || false) && [ "$PWD" == "$HOME" ]`
-	if err := saveLock(project, lock{
-		Expressions: map[string]string{"alpha": want},
-	}); err != nil {
+	if err := saveLock(project, testLock(nil, map[string]string{"alpha": want}, nil)); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("EDITOR", "true")
@@ -2115,8 +2101,8 @@ func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value.Expressions["alpha"] != want {
-		t.Fatalf("saved enabled expression = %q", value.Expressions["alpha"])
+	if current, exists := value.enabled("alpha"); !exists || current.Expression != want {
+		t.Fatalf("saved enabled expression = %#v", value)
 	}
 }
 
@@ -2124,14 +2110,10 @@ func TestEmptyEnabledEditorDraftRemovesProjectOverride(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Expressions: map[string]string{"alpha": "[[ -f go.mod ]]"},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(nil, map[string]string{"alpha": "[[ -f go.mod ]]"}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": false},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), "enabled.json")
@@ -2160,9 +2142,7 @@ func TestInvalidEnabledEditorDraftPreservesPolicy(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
-	if err := saveLock(project, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	draft := filepath.Join(t.TempDir(), "enabled.json")
@@ -2179,7 +2159,7 @@ func TestInvalidEnabledEditorDraftPreservesPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if enabled, exists := value.Skills["alpha"]; !exists || !enabled {
+	if !hasBooleanSelection(value, "alpha", true) {
 		t.Fatalf("invalid draft changed policy: %#v", value)
 	}
 	if _, err := os.Stat(draft); !errors.Is(err, os.ErrNotExist) {

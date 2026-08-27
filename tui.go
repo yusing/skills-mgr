@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1198,17 +1197,6 @@ func (m *manager) refreshEditedSkill(
 	newName := edited.Name
 	var undoSelection func() error
 	if newName != "" && newName != oldName {
-		cloneLock := func(value lock) lock {
-			value.Skills = maps.Clone(value.Skills)
-			value.Expressions = maps.Clone(value.Expressions)
-			value.Remote = maps.Clone(value.Remote)
-			return value
-		}
-		sameLock := func(left, right lock) bool {
-			return maps.Equal(left.Skills, right.Skills) &&
-				maps.Equal(left.Expressions, right.Expressions) &&
-				maps.Equal(left.Remote, right.Remote)
-		}
 		mergeEnabled := func(oldEnabled, newEnabled enabledValue) (enabledValue, error) {
 			if oldEnabled.Boolean == nil || newEnabled.Boolean == nil {
 				return enabledValue{}, fmt.Errorf(
@@ -1224,7 +1212,7 @@ func (m *manager) refreshEditedSkill(
 		var previousLock, renamedLock lock
 		renamedSelection := false
 		err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
-			previousLock = cloneLock(*value)
+			previousLock = value.clone()
 			oldEnabled, exists := value.enabled(oldName)
 			if m.global {
 				if !exists {
@@ -1242,7 +1230,7 @@ func (m *manager) refreshEditedSkill(
 					value.setEnabled(newName, merged)
 				}
 				value.deleteEnabled(oldName)
-				renamedLock = cloneLock(*value)
+				renamedLock = value.clone()
 				renamedSelection = true
 				return true, nil
 			}
@@ -1276,7 +1264,7 @@ func (m *manager) refreshEditedSkill(
 			} else {
 				value.deleteEnabled(oldName)
 			}
-			renamedLock = cloneLock(*value)
+			renamedLock = value.clone()
 			renamedSelection = true
 			return true, nil
 		})
@@ -1286,10 +1274,10 @@ func (m *manager) refreshEditedSkill(
 		if renamedSelection {
 			undoSelection = func() error {
 				return m.updateSelectionLock(project, func(value *lock) (bool, error) {
-					if !sameLock(*value, renamedLock) {
+					if !value.equal(renamedLock) {
 						return false, fmt.Errorf("selection changed during managed edit rollback")
 					}
-					*value = cloneLock(previousLock)
+					*value = previousLock.clone()
 					return true, nil
 				})
 			}

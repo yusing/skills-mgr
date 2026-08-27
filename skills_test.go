@@ -116,17 +116,17 @@ func TestProjectAliasesShareCoordinationLock(t *testing.T) {
 func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := saveLock(manager.paths.globalLockDir, lock{Skills: map[string]bool{
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{
 		"global-enabled":  true,
 		"global-disabled": false,
 		"overridden":      true,
-	}}); err != nil {
+	}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{Skills: map[string]bool{
+	if err := saveLock(project, testLock(map[string]bool{
 		"project-enabled": true,
 		"overridden":      false,
-	}}); err != nil {
+	}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,15 +153,14 @@ func TestSelectionInheritsGlobalStateAndAppliesProjectOverrides(t *testing.T) {
 func TestSelectionStateLayersEnabledExpressionsWithoutEvaluatingThem(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Expressions: map[string]string{"inherited": "exit 2", "project-boolean": "exit 2"},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(nil, map[string]string{"inherited": "exit 2", "project-boolean": "exit 2"}, nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveLock(project, lock{
-		Skills:      map[string]bool{"inherited": true},
-		Expressions: map[string]string{"project-boolean": "[[ -f go.mod ]]"},
-	}); err != nil {
+	if err := saveLock(project, testLock(
+		map[string]bool{"inherited": true},
+		map[string]string{"project-boolean": "[[ -f go.mod ]]"},
+		nil,
+	)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -183,9 +182,7 @@ func TestSelectionStateLayersEnabledExpressionsWithoutEvaluatingThem(t *testing.
 func TestToggleCreatesProjectOverrideForInheritedState(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := saveLock(manager.paths.globalLockDir, lock{
-		Skills: map[string]bool{"alpha": true},
-	}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -201,9 +198,7 @@ func TestToggleReplacesEnabledExpressionWithBoolean(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
-	if err := saveLock(project, lock{
-		Expressions: map[string]string{"alpha": "[[ -f go.mod ]]"},
-	}); err != nil {
+	if err := saveLock(project, testLock(nil, map[string]string{"alpha": "[[ -f go.mod ]]"}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -215,11 +210,8 @@ func TestToggleReplacesEnabledExpressionWithBoolean(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if expression := value.Expressions["alpha"]; expression != "" {
-		t.Fatalf("conditional expression was retained: %q", expression)
-	}
-	if current, exists := value.Skills["alpha"]; !exists || current {
-		t.Fatalf("boolean selection = %#v, want false", value.Skills)
+	if !hasBooleanSelection(value, "alpha", false) {
+		t.Fatalf("boolean selection = %#v, want false", value)
 	}
 }
 
@@ -227,7 +219,7 @@ func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
 	manager := newTestManager(t)
 	manager.global = true
 	project := t.TempDir()
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": false}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -415,17 +407,17 @@ func TestLoadLockRejectsMalformedCurrentSelections(t *testing.T) {
 func TestLockRoundTripsEnabledExpression(t *testing.T) {
 	project := t.TempDir()
 	want := "has_dependency tauri '>=2' && printf '<script>&'"
-	if err := saveLock(project, lock{
-		Expressions: map[string]string{"go-review": want},
-		Remote: map[string]remoteSkillRef{
-			"go-review": {
-				Provider: skillsShProvider,
-				ID:       "owner/repo/go-review",
-				Name:     "go-review",
-				Locator:  "owner/repo/go-review",
-			},
-		},
-	}); err != nil {
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/go-review",
+		Name:     "go-review",
+		Locator:  "owner/repo/go-review",
+	}
+	if err := saveLock(project, testLock(
+		nil,
+		map[string]string{"go-review": want},
+		map[string]remoteSkillRef{"go-review": ref},
+	)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -433,9 +425,11 @@ func TestLockRoundTripsEnabledExpression(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	enabled, enabledExists := got.enabled("go-review")
+	remote, remoteExists := got.remote("go-review")
 	if got.SchemaRevision != lockSchemaRevision ||
-		got.Expressions["go-review"] != want ||
-		got.Remote["go-review"].Name != "go-review" {
+		!enabledExists || enabled.Expression != want ||
+		!remoteExists || remote != ref {
 		t.Fatalf("round-tripped lock = %#v", got)
 	}
 	data, err := os.ReadFile(filepath.Join(project, lockName))
@@ -471,7 +465,7 @@ func TestLoadPreviousLockAndUpgradeOnSelectionChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.SchemaRevision != lockSchemaRevision || got.Skills["alpha"] {
+	if got.SchemaRevision != lockSchemaRevision || !hasBooleanSelection(got, "alpha", false) {
 		t.Fatalf("upgraded lock = %#v", got)
 	}
 }
@@ -556,12 +550,12 @@ description: >
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "future.mdx"), "unknown")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "beta", "SKILL.md"), skillFile("beta", "Disabled.", ""))
 	writeFile(t, filepath.Join(manager.paths.userSkills, "gamma", "SKILL.md"), skillFile("gamma", "No references.", ""))
-	if err := saveLock(project, lock{Skills: map[string]bool{
+	if err := saveLock(project, testLock(map[string]bool{
 		"alpha":  true,
 		"beta":   false,
 		"future": false,
 		"gamma":  true,
-	}}); err != nil {
+	}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -610,7 +604,7 @@ func TestListOmitsHiddenAndUnderscorePrefixedReferences(t *testing.T) {
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", ".hidden.md"), "hidden")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "_private.md"), "private")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_draft.md"), "draft")
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -632,7 +626,7 @@ func TestListKeepsFullSkillDescription(t *testing.T) {
 	project := t.TempDir()
 	description := "Use this skill when matching long instructions. " + strings.Repeat("more ", 80) + "END-MARKER."
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"), skillFile("alpha", description, ""))
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -662,9 +656,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 		filepath.Join(manager.paths.userSkills, "automatic", "SKILL.md"),
 		skillFile("automatic", "Available for model invocation.", "automatic body\n"),
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{
-		"automatic": true,
-	}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"automatic": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -717,11 +709,9 @@ func TestEnabledExpressionControlsListGetAndRun(t *testing.T) {
 	)
 	writeExecutable(t, filepath.Join(root, "check.sh"), "#!/bin/sh\nexit 0\n")
 	t.Setenv("SKILLS_MGR_TEST_ENABLED", "yes")
-	if err := saveLock(project, lock{
-		Expressions: map[string]string{
-			"go-review": "[[ -f go.mod && $SKILLS_MGR_TEST_ENABLED == yes ]]",
-		},
-	}); err != nil {
+	if err := saveLock(project, testLock(nil, map[string]string{
+		"go-review": "[[ -f go.mod && $SKILLS_MGR_TEST_ENABLED == yes ]]",
+	}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -768,10 +758,10 @@ func TestListSharesEnabledEvidenceAcrossSkills(t *testing.T) {
 		)
 	}
 	writeFile(t, filepath.Join(project, "go.mod"), "module example.com/project\n")
-	if err := saveLock(project, lock{Expressions: map[string]string{
+	if err := saveLock(project, testLock(nil, map[string]string{
 		"alpha": "lang go && rm go.mod",
 		"beta":  "lang go",
-	}}); err != nil {
+	}, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -813,7 +803,7 @@ func TestListEnabledFiltersCompleteWithinBudget(t *testing.T) {
 			)
 		}
 	}
-	if err := saveLock(project, lock{Expressions: expressions}); err != nil {
+	if err := saveLock(project, testLock(nil, expressions, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -919,9 +909,7 @@ func TestEnabledExpressionUsesStatusOneForFalseAndHigherStatusForError(t *testin
 		{name: "parse error", expression: "[[", wantError: "parse enabled expression"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if err := saveLock(project, lock{
-				Expressions: map[string]string{"alpha": test.expression},
-			}); err != nil {
+			if err := saveLock(project, testLock(nil, map[string]string{"alpha": test.expression}, nil)); err != nil {
 				t.Fatal(err)
 			}
 			var output bytes.Buffer
@@ -1340,7 +1328,7 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 		filepath.Join(project, ".codex", "skills", "project-codex", "SKILL.md"),
 		skillFile("project-codex", "Project Codex skill.", ""),
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{
+	if err := saveLock(project, testLock(map[string]bool{
 		"admin-only":     true,
 		"builtin":        true,
 		"claude-shared":  true,
@@ -1352,7 +1340,7 @@ func TestListFiltersSkillsVisibleToHarness(t *testing.T) {
 		"project-codex":  true,
 		"project-grok":   true,
 		"remote-shared":  true,
-	}}); err != nil {
+	}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1419,7 +1407,7 @@ func TestListOmitsAgentsSkillsAlreadyVisibleToGrok(t *testing.T) {
 		filepath.Join(manager.paths.userSkills, "user-skill", "SKILL.md"),
 		skillFile("user-skill", "User agents skill.", ""),
 	)
-	if err := saveLock(home, lock{Skills: map[string]bool{"user-skill": true}}); err != nil {
+	if err := saveLock(home, testLock(map[string]bool{"user-skill": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1490,10 +1478,10 @@ func TestGetAndRunResolveSkillsFromAnyAgentSource(t *testing.T) {
 		filepath.Join(project, ".claude", "skills", "project-claude", "SKILL.md"),
 		skillFile("project-claude", "Project Claude skill.", "claude body\n"),
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{
+	if err := saveLock(project, testLock(map[string]bool{
 		"codex-only":     true,
 		"project-claude": true,
-	}}); err != nil {
+	}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1558,7 +1546,7 @@ func TestListHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T)
 		filepath.Join(manager.paths.codexHome, "skills", name, "SKILL.md"),
 		skillFile(name, "Codex skill with the same name.", "codex body\n"),
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{name: true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{name: true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1748,7 +1736,7 @@ func TestListSkipsDeletedGloballyEnabledSkillWithoutChangingSelection(t *testing
 		"alpha":   true,
 		"deleted": true,
 	}
-	if err := saveLock(manager.paths.globalLockDir, lock{Skills: selected}); err != nil {
+	if err := saveLock(manager.paths.globalLockDir, testLock(selected, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(deletedRoot); err != nil {
@@ -1774,7 +1762,7 @@ func TestListSkipsMalformedEnabledSkillWithoutChangingSelection(t *testing.T) {
 		"alpha":     true,
 		"malformed": true,
 	}
-	if err := saveLock(project, lock{Skills: selected}); err != nil {
+	if err := saveLock(project, testLock(selected, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1894,7 +1882,7 @@ func TestGetMalformedSkillWritesNoOutput(t *testing.T) {
 		filepath.Join(manager.paths.userSkills, "malformed", "SKILL.md"),
 		"---\nname: malformed\ndescription: Missing closing delimiter.\n",
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{"malformed": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"malformed": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2258,7 +2246,7 @@ func TestRunCommandInvokesSkillScript(t *testing.T) {
 	root := filepath.Join(home, ".agents", "skills", "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	writeExecutable(t, filepath.Join(root, "scripts", "record.sh"), "#!/bin/sh\nprintf '%s' \"$1\" > result")
-	if err := saveLock(project, lock{Skills: map[string]bool{"alpha": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2292,7 +2280,7 @@ func TestGetAndRunCommandsIgnoreHarnessScope(t *testing.T) {
 		filepath.Join(root, "scripts", "record.sh"),
 		"#!/bin/sh\nprintf codex > result\n",
 	)
-	if err := saveLock(project, lock{Skills: map[string]bool{"codex-only": true}}); err != nil {
+	if err := saveLock(project, testLock(map[string]bool{"codex-only": true}, nil, nil)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2382,7 +2370,7 @@ func assertLock(t *testing.T, project string, want map[string]bool) {
 		t.Fatalf("lock skills = %#v, want %#v", got.Skills, want)
 	}
 	for name, enabled := range want {
-		if got.Skills[name] != enabled {
+		if !hasBooleanSelection(got, name, enabled) {
 			t.Fatalf("lock skills = %#v, want %#v", got.Skills, want)
 		}
 	}

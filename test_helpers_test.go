@@ -60,6 +60,42 @@ func newTestManager(t *testing.T) *manager {
 	return manager
 }
 
+func testLock(
+	booleans map[string]bool,
+	expressions map[string]string,
+	remotes map[string]remoteSkillRef,
+) lock {
+	value := newLock()
+	for name, enabled := range booleans {
+		value.setEnabled(name, enabledValue{Boolean: new(enabled)})
+	}
+	for name, expression := range expressions {
+		value.setEnabled(name, enabledValue{Expression: expression})
+	}
+	for name, ref := range remotes {
+		value.setRemote(name, ref)
+	}
+	return value
+}
+
+func hasRemoteSelection(value lock, name string, enabled bool, ref remoteSkillRef) bool {
+	currentEnabled, enabledExists := value.enabled(name)
+	currentRemote, remoteExists := value.remote(name)
+	return enabledExists &&
+		currentEnabled.Boolean != nil &&
+		*currentEnabled.Boolean == enabled &&
+		remoteExists &&
+		currentRemote == ref
+}
+
+func hasBooleanSelection(value lock, name string, enabled bool) bool {
+	current, exists := value.enabled(name)
+	return exists &&
+		current.Boolean != nil &&
+		*current.Boolean == enabled &&
+		current.Expression == ""
+}
+
 // wantPlaceholder renders the stub content placeholders carry, so a change to
 // placeholder frontmatter updates one place rather than every assertion.
 func wantPlaceholder(name, description string) string {

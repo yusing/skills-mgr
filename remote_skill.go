@@ -1182,9 +1182,7 @@ func (m *manager) sync(
 	if err != nil {
 		return err
 	}
-	originalSkills := maps.Clone(projectLock.Skills)
-	originalExpressions := maps.Clone(projectLock.Expressions)
-	originalRemote := maps.Clone(projectLock.Remote)
+	originalLock := projectLock.clone()
 	persistedRefs, err := m.persistedRemoteRefs()
 	if err != nil {
 		return err
@@ -1207,11 +1205,18 @@ func (m *manager) sync(
 	for _, skill := range discovered {
 		discoveredByName[skill.Name] = skill
 	}
-	names := slices.Sorted(maps.Keys(projectLock.Remote))
+	names := make([]string, 0, len(projectLock.Skills))
+	for name, selection := range projectLock.Skills {
+		if selection.Remote != nil {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
 
 	for _, name := range names {
-		ref := projectLock.Remote[name]
-		if !projectLock.Skills[name] {
+		ref, _ := projectLock.remote(name)
+		enabled, enabledExists := projectLock.enabled(name)
+		if !enabledExists || enabled.Boolean == nil || !*enabled.Boolean {
 			frontmatter, _ := m.remoteSkillFrontmatter(ref)
 			if err := changePlaceholders(name, frontmatter, false); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
@@ -1248,7 +1253,7 @@ func (m *manager) sync(
 		if err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
-		if projectLock.Skills[name] {
+		if enabledExists && enabled.Boolean != nil && *enabled.Boolean {
 			if err := changePlaceholders(name, frontmatter, true); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
@@ -1261,15 +1266,13 @@ func (m *manager) sync(
 		return fmt.Errorf("reconcile remote metadata: %w", err)
 	}
 	err = updateLock(project, m.paths.selectionLocks, func(current *lock) (bool, error) {
-		if !maps.Equal(current.Skills, originalSkills) ||
-			!maps.Equal(current.Expressions, originalExpressions) ||
-			!maps.Equal(current.Remote, originalRemote) {
+		if !current.equal(originalLock) {
 			return false, fmt.Errorf("project selection changed during sync")
 		}
 		if !metadataChanged {
 			return false, nil
 		}
-		maps.Copy(current.Remote, projectLock.Remote)
+		*current = projectLock.clone()
 		return true, nil
 	})
 	if err != nil {
@@ -1318,13 +1321,14 @@ func (m *manager) toggleRemote(
 		return remoteToggleResult{}, err
 	}
 	previousEnabled, previousExists := selectionLock.enabled(ref.Name)
-	previousRemote, previousRemoteExists := selectionLock.Remote[ref.Name]
+	previousRemote, previousRemoteExists := selectionLock.remote(ref.Name)
 	rollbackSelection := func(expected bool) error {
 		return m.updateSelectionLock(project, func(value *lock) (bool, error) {
 			current, exists := value.enabled(ref.Name)
+			currentRemote, remoteExists := value.remote(ref.Name)
 			if !exists || current.Boolean == nil ||
 				*current.Boolean != expected ||
-				value.Remote[ref.Name] != ref {
+				!remoteExists || currentRemote != ref {
 				return false, fmt.Errorf("remote selection changed during placeholder rollback")
 			}
 			if previousExists {
@@ -1333,9 +1337,9 @@ func (m *manager) toggleRemote(
 				value.deleteEnabled(ref.Name)
 			}
 			if previousRemoteExists {
-				value.Remote[ref.Name] = previousRemote
+				value.setRemote(ref.Name, previousRemote)
 			} else {
-				delete(value.Remote, ref.Name)
+				value.deleteRemote(ref.Name)
 			}
 			return true, nil
 		})
@@ -1435,8 +1439,8 @@ func (m *manager) uninstallRemote(
 		if err != nil {
 			return remoteUninstallResult{}, err
 		}
-		_, globallyConfigured := global.Remote[name]
-		_, legacyGlobalSelection := global.Skills[name]
+		_, globallyConfigured := global.remote(name)
+		_, legacyGlobalSelection := global.enabled(name)
 		if globallyConfigured ||
 			(global.SchemaRevision == legacyLockSchemaRevision && legacyGlobalSelection) {
 			return remoteUninstallResult{}, fmt.Errorf(
@@ -1461,9 +1465,9 @@ func (m *manager) uninstallRemote(
 	var previousRemoteExists bool
 	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		previousEnabled, previousExists = value.enabled(name)
-		previousRemote, previousRemoteExists = value.Remote[name]
+		previousRemote, previousRemoteExists = value.remote(name)
 		value.deleteEnabled(name)
-		delete(value.Remote, name)
+		value.deleteRemote(name)
 		currentSelected = configuredSelections(*value)
 		return previousExists || previousRemoteExists, nil
 	})
@@ -1476,14 +1480,14 @@ func (m *manager) uninstallRemote(
 			if _, exists := value.enabled(name); exists {
 				return false, fmt.Errorf("remote selection changed during uninstall rollback")
 			}
-			if _, exists := value.Remote[name]; exists {
+			if _, exists := value.remote(name); exists {
 				return false, fmt.Errorf("remote selection changed during uninstall rollback")
 			}
 			if previousExists {
 				value.setEnabled(name, previousEnabled)
 			}
 			if previousRemoteExists {
-				value.Remote[name] = previousRemote
+				value.setRemote(name, previousRemote)
 			}
 			return previousExists || previousRemoteExists, nil
 		})
@@ -1504,7 +1508,7 @@ func (m *manager) uninstallRemote(
 		m.paths.selectionLocks,
 		func(global *lock) (bool, error) {
 			_, globallySelected := global.enabled(name)
-			_, globallyConfigured := global.Remote[name]
+			_, globallyConfigured := global.remote(name)
 			legacyGlobalSelection := global.SchemaRevision == legacyLockSchemaRevision &&
 				globallySelected
 			if !m.global && (globallyConfigured || legacyGlobalSelection) {

@@ -71,6 +71,38 @@ type skillSelection struct {
 	Remote  *remoteSkillRef `json:"remote,omitempty"`
 }
 
+func (s skillSelection) clone() skillSelection {
+	cloned := skillSelection{}
+	if s.Enabled != nil {
+		cloned.Enabled = new(*s.Enabled)
+		if s.Enabled.Boolean != nil {
+			cloned.Enabled.Boolean = new(*s.Enabled.Boolean)
+		}
+	}
+	if s.Remote != nil {
+		cloned.Remote = new(*s.Remote)
+	}
+	return cloned
+}
+
+func (s skillSelection) equal(other skillSelection) bool {
+	switch {
+	case (s.Enabled == nil) != (other.Enabled == nil),
+		(s.Remote == nil) != (other.Remote == nil):
+		return false
+	case s.Enabled != nil && (s.Enabled.Expression != other.Enabled.Expression ||
+		(s.Enabled.Boolean == nil) != (other.Enabled.Boolean == nil)):
+		return false
+	case s.Enabled != nil && s.Enabled.Boolean != nil &&
+		*s.Enabled.Boolean != *other.Enabled.Boolean:
+		return false
+	case s.Remote != nil && *s.Remote != *other.Remote:
+		return false
+	default:
+		return true
+	}
+}
+
 type previousSkillSelection struct {
 	Enabled *bool           `json:"enabled,omitempty"`
 	Remote  *remoteSkillRef `json:"remote,omitempty"`
@@ -93,34 +125,88 @@ type lockFile struct {
 
 type lock struct {
 	SchemaRevision int
-	Skills         map[string]bool
-	Expressions    map[string]string
-	Remote         map[string]remoteSkillRef
+	Skills         map[string]skillSelection
 }
 
 func (l *lock) enabled(name string) (enabledValue, bool) {
-	if value, ok := l.Skills[name]; ok {
-		return enabledValue{Boolean: new(value)}, true
+	selection, ok := l.Skills[name]
+	if !ok || selection.Enabled == nil {
+		return enabledValue{}, false
 	}
-	if expression, ok := l.Expressions[name]; ok {
-		return enabledValue{Expression: expression}, true
-	}
-	return enabledValue{}, false
+	return *selection.Enabled, true
 }
 
 func (l *lock) setEnabled(name string, value enabledValue) {
+	selection := l.Skills[name]
+	selection.Enabled = new(value)
 	if value.Boolean != nil {
-		l.Skills[name] = *value.Boolean
-		delete(l.Expressions, name)
-		return
+		selection.Enabled.Boolean = new(*value.Boolean)
 	}
-	l.Expressions[name] = value.Expression
-	delete(l.Skills, name)
+	l.Skills[name] = selection
 }
 
 func (l *lock) deleteEnabled(name string) {
-	delete(l.Skills, name)
-	delete(l.Expressions, name)
+	selection, ok := l.Skills[name]
+	if !ok {
+		return
+	}
+	selection.Enabled = nil
+	if selection.Remote == nil {
+		delete(l.Skills, name)
+		return
+	}
+	l.Skills[name] = selection
+}
+
+func (l *lock) remote(name string) (remoteSkillRef, bool) {
+	selection, ok := l.Skills[name]
+	if !ok || selection.Remote == nil {
+		return remoteSkillRef{}, false
+	}
+	return *selection.Remote, true
+}
+
+func (l *lock) setRemote(name string, ref remoteSkillRef) {
+	selection := l.Skills[name]
+	selection.Remote = new(ref)
+	l.Skills[name] = selection
+}
+
+func (l *lock) deleteRemote(name string) {
+	selection, ok := l.Skills[name]
+	if !ok {
+		return
+	}
+	selection.Remote = nil
+	if selection.Enabled == nil {
+		delete(l.Skills, name)
+		return
+	}
+	l.Skills[name] = selection
+}
+
+func (l lock) clone() lock {
+	cloned := lock{
+		SchemaRevision: l.SchemaRevision,
+		Skills:         make(map[string]skillSelection, len(l.Skills)),
+	}
+	for name, selection := range l.Skills {
+		cloned.Skills[name] = selection.clone()
+	}
+	return cloned
+}
+
+func (l lock) equal(other lock) bool {
+	if len(l.Skills) != len(other.Skills) {
+		return false
+	}
+	for name, selection := range l.Skills {
+		otherSelection, ok := other.Skills[name]
+		if !ok || !selection.equal(otherSelection) {
+			return false
+		}
+	}
+	return true
 }
 
 func loadLock(project string) (lock, error) {
@@ -153,7 +239,9 @@ func loadLock(project string) (lock, error) {
 			return lock{}, fmt.Errorf("decode %s: missing skills", path)
 		}
 		result.SchemaRevision = legacyLockSchemaRevision
-		result.Skills = legacy.Skills
+		for name, enabled := range legacy.Skills {
+			result.setEnabled(name, enabledValue{Boolean: new(enabled)})
+		}
 	case previousLockSchemaRevision:
 		var previous previousDecodedLockFile
 		if err := decodeLockJSON(data, &previous); err != nil {
@@ -214,24 +302,20 @@ func loadLock(project string) (lock, error) {
 }
 
 func loadSelection(path, name string, selection *skillSelection, result *lock) error {
-	if selection.Enabled != nil {
-		result.setEnabled(name, *selection.Enabled)
+	if selection.Remote != nil {
+		if selection.Remote.Name != name {
+			return fmt.Errorf(
+				"decode %s: skill %q remote name is %q",
+				path,
+				name,
+				selection.Remote.Name,
+			)
+		}
+		if err := selection.Remote.validate(); err != nil {
+			return fmt.Errorf("decode %s: skill %q: %w", path, name, err)
+		}
 	}
-	if selection.Remote == nil {
-		return nil
-	}
-	if selection.Remote.Name != name {
-		return fmt.Errorf(
-			"decode %s: skill %q remote name is %q",
-			path,
-			name,
-			selection.Remote.Name,
-		)
-	}
-	if err := selection.Remote.validate(); err != nil {
-		return fmt.Errorf("decode %s: skill %q: %w", path, name, err)
-	}
-	result.Remote[name] = *selection.Remote
+	result.Skills[name] = *selection
 	return nil
 }
 
@@ -251,27 +335,16 @@ func saveLock(project string, value lock) error {
 	path := filepath.Join(project, lockName)
 	serialized := lockFile{
 		SchemaRevision: lockSchemaRevision,
-		Skills: make(
-			map[string]skillSelection,
-			len(value.Skills)+len(value.Expressions)+len(value.Remote),
-		),
+		Skills:         make(map[string]skillSelection, len(value.Skills)),
 	}
-	for name, enabled := range value.Skills {
-		serialized.Skills[name] = skillSelection{
-			Enabled: &enabledValue{Boolean: new(enabled)},
+	for name, selection := range value.Skills {
+		if selection.Enabled == nil && selection.Remote == nil {
+			return fmt.Errorf(
+				"write %s: skill %q has neither enabled state nor remote metadata",
+				path,
+				name,
+			)
 		}
-	}
-	for name, expression := range value.Expressions {
-		if _, duplicate := value.Skills[name]; duplicate {
-			return fmt.Errorf("write %s: skill %q has multiple enabled values", path, name)
-		}
-		serialized.Skills[name] = skillSelection{
-			Enabled: &enabledValue{Expression: expression},
-		}
-	}
-	for name, ref := range value.Remote {
-		selection := serialized.Skills[name]
-		selection.Remote = new(ref)
 		serialized.Skills[name] = selection
 	}
 	temp, err := os.CreateTemp(project, "."+lockName+"-")
@@ -343,8 +416,6 @@ func updateLock(project, coordinationDir string, update func(*lock) (bool, error
 func newLock() lock {
 	return lock{
 		SchemaRevision: lockSchemaRevision,
-		Skills:         make(map[string]bool),
-		Expressions:    make(map[string]string),
-		Remote:         make(map[string]remoteSkillRef),
+		Skills:         make(map[string]skillSelection),
 	}
 }

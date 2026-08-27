@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -728,8 +727,8 @@ func (m *manager) selectionState(
 		selected := configuredSelections(global)
 		return selectionState{
 			selected:          selected,
-			expressions:       maps.Clone(global.Expressions),
-			globalExpressions: maps.Clone(global.Expressions),
+			expressions:       selectionExpressions(global),
+			globalExpressions: selectionExpressions(global),
 		}, nil
 	}
 	projectLock, err := loadLock(project)
@@ -756,8 +755,8 @@ func (m *manager) selectionState(
 		globalSelected:     configuredSelections(global),
 		projectSelected:    configuredSelections(projectLock),
 		expressions:        expressions,
-		globalExpressions:  maps.Clone(global.Expressions),
-		projectExpressions: maps.Clone(projectLock.Expressions),
+		globalExpressions:  selectionExpressions(global),
+		projectExpressions: selectionExpressions(projectLock),
 	}, nil
 }
 
@@ -1064,7 +1063,7 @@ func validateRelocationParent(path string) error {
 }
 
 func remoteRefUnchanged(value lock, skill string, ref *remoteSkillRef) bool {
-	current, exists := value.Remote[skill]
+	current, exists := value.remote(skill)
 	if ref == nil {
 		return !exists
 	}
@@ -1123,12 +1122,12 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 			}
 		}
 		previousEnabled, previousExists = value.enabled(skill)
-		previousRemote, previousRemoteExists = value.Remote[skill]
+		previousRemote, previousRemoteExists = value.remote(skill)
 		value.setEnabled(skill, enabledValue{Boolean: new(enabled)})
 		if remoteRef == nil {
-			delete(value.Remote, skill)
+			value.deleteRemote(skill)
 		} else {
-			value.Remote[skill] = *remoteRef
+			value.setRemote(skill, *remoteRef)
 		}
 
 		return true, nil
@@ -1157,9 +1156,9 @@ func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, erro
 				value.deleteEnabled(skill)
 			}
 			if previousRemoteExists {
-				value.Remote[skill] = previousRemote
+				value.setRemote(skill, previousRemote)
 			} else {
-				delete(value.Remote, skill)
+				value.deleteRemote(skill)
 			}
 			return true, nil
 		})
@@ -1181,7 +1180,7 @@ func (m *manager) setRemoteSelection(
 			}
 		}
 		value.setEnabled(ref.Name, enabledValue{Boolean: new(enabled)})
-		value.Remote[ref.Name] = ref
+		value.setRemote(ref.Name, ref)
 		selected = configuredSelections(*value)
 		if !m.global {
 			global, err := loadLock(m.paths.globalLockDir)
@@ -1312,7 +1311,7 @@ func reconcileRemoteMetadata(
 		if !ok {
 			return nil
 		}
-		if existing, ok := projectLock.Remote[name]; ok {
+		if existing, ok := projectLock.remote(name); ok {
 			if existing != ref {
 				return fmt.Errorf(
 					"remote skill %q identity conflicts with persisted reference",
@@ -1321,29 +1320,22 @@ func reconcileRemoteMetadata(
 			}
 			return nil
 		}
-		projectLock.Remote[name] = ref
+		projectLock.setRemote(name, ref)
 		changed = true
 		return nil
 	}
-	for name := range projectLock.Skills {
-		if err := add(name); err != nil {
-			return false, err
-		}
-	}
-	for name := range projectLock.Expressions {
-		if err := add(name); err != nil {
-			return false, err
-		}
-	}
-	for name := range globalLock.Skills {
-		if _, overridden := projectLock.enabled(name); overridden {
+	for name, selection := range projectLock.Skills {
+		if selection.Enabled == nil {
 			continue
 		}
 		if err := add(name); err != nil {
 			return false, err
 		}
 	}
-	for name := range globalLock.Expressions {
+	for name, selection := range globalLock.Skills {
+		if selection.Enabled == nil {
+			continue
+		}
 		if _, overridden := projectLock.enabled(name); overridden {
 			continue
 		}
@@ -1355,23 +1347,44 @@ func reconcileRemoteMetadata(
 }
 
 func configuredSelections(value lock) map[string]bool {
-	selected := maps.Clone(value.Skills)
-	for name := range value.Expressions {
-		selected[name] = true
+	selected := make(map[string]bool, len(value.Skills))
+	for name, selection := range value.Skills {
+		if selection.Enabled == nil {
+			continue
+		}
+		if selection.Enabled.Boolean == nil {
+			selected[name] = true
+			continue
+		}
+		selected[name] = *selection.Enabled.Boolean
 	}
 	return selected
 }
 
+func selectionExpressions(value lock) map[string]string {
+	expressions := make(map[string]string)
+	for name, selection := range value.Skills {
+		if selection.Enabled != nil && selection.Enabled.Boolean == nil {
+			expressions[name] = selection.Enabled.Expression
+		}
+	}
+	return expressions
+}
+
 func mergeSelectionLocks(global, project lock) (map[string]bool, map[string]string) {
 	selected := configuredSelections(global)
-	expressions := maps.Clone(global.Expressions)
-	for name, enabled := range project.Skills {
-		selected[name] = enabled
+	expressions := selectionExpressions(global)
+	for name, selection := range project.Skills {
+		if selection.Enabled == nil {
+			continue
+		}
+		if selection.Enabled.Boolean == nil {
+			selected[name] = true
+			expressions[name] = selection.Enabled.Expression
+			continue
+		}
+		selected[name] = *selection.Enabled.Boolean
 		delete(expressions, name)
-	}
-	for name, expression := range project.Expressions {
-		selected[name] = true
-		expressions[name] = expression
 	}
 	return selected, expressions
 }
