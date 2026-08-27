@@ -1176,6 +1176,92 @@ func TestRefreshEditedManagedSkillReplacesRenamedPlaceholders(t *testing.T) {
 		)
 	}
 }
+func TestRefreshEditedManagedSkillRenamesLegacySelections(t *testing.T) {
+	tests := []struct {
+		name string
+		lock string
+	}{
+		{
+			name: "legacy revision",
+			lock: `{"schema_revision":1,"skills":{"alpha":true}}`,
+		},
+		{
+			name: "previous revision",
+			lock: `{"schema_revision":2,"skills":{"alpha":{"enabled":true}}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := newTestManager(t)
+			project := t.TempDir()
+			path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+			writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+			writeFile(t, filepath.Join(project, lockName), test.lock)
+			if err := manager.setRemotePlaceholders(
+				project,
+				"alpha",
+				"name: alpha\ndescription: Old.\n",
+				true,
+			); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, path, skillFile("renamed", "New.", "body\n"))
+
+			if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+				t.Fatal(err)
+			}
+
+			value, err := loadLock(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if value.SchemaRevision != lockSchemaRevision ||
+				!hasBooleanSelection(value, "renamed", true) {
+				t.Fatalf("renamed migrated selection = %#v", value)
+			}
+			if _, exists := value.enabled("alpha"); exists {
+				t.Fatalf("renamed migrated selection retained alpha: %#v", value)
+			}
+		})
+	}
+}
+
+func TestRefreshEditedManagedSkillTreatsPlaceholderRootAliasAsSameRoot(t *testing.T) {
+	manager := newTestManager(t)
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(manager.paths.placeholderDir, project); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
+	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.setRemotePlaceholders(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Old.\n",
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
+
+	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, root := range []string{".agents", ".claude"} {
+		if _, err := os.Stat(filepath.Join(project, root, "skills", "alpha")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("old aliased placeholder survived rename in %s: %v", root, err)
+		}
+		assertFile(
+			t,
+			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
+			wantPlaceholder("renamed", "New."),
+		)
+	}
+}
 
 func TestRefreshEditedManagedSkillKeepsGlobalAndHomeProjectPlaceholders(t *testing.T) {
 	manager := newTestManager(t)
@@ -1280,7 +1366,7 @@ func TestRefreshEditedManagedSkillRestoresUpdatedPlaceholderOnCollision(t *testi
 	assertFile(t, conflict, skillFile("alpha", "Conflict.", "body\n"))
 }
 
-func TestRefreshEditedManagedSkillRollsBackRenameSelectionOnCollision(t *testing.T) {
+func TestRefreshEditedManagedSkillRejectsRenameCollisionBeforeSelectionMutation(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
@@ -1300,8 +1386,21 @@ func TestRefreshEditedManagedSkillRollsBackRenameSelectionOnCollision(t *testing
 	writeFile(t, conflict, skillFile("renamed", "Conflict.", "body\n"))
 	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
 
+	lockPath := filepath.Join(project, lockName)
+	beforeInfo, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err == nil {
 		t.Fatal("managed rename refresh succeeded despite collision")
+	}
+	afterInfo, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(beforeInfo, afterInfo) {
+		t.Fatal("managed rename collision rewrote selection before placeholder validation")
 	}
 	assertLock(t, project, map[string]bool{"alpha": true})
 	for _, root := range []string{".agents", ".claude"} {

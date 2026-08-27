@@ -537,11 +537,85 @@ func TestRemotePlaceholdersDoNotOverwriteExistingSkill(t *testing.T) {
 		t.Fatal("placeholder creation overwrote an existing skill")
 	}
 	assertFile(t, existing, "existing skill\n")
+	if _, err := os.Stat(filepath.Join(project, ".agents", "skills")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("placeholder planning failure created an earlier root: %v", err)
+	}
 	if _, err := os.Stat(
 		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
 	); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed placeholder creation left a partial skill: %v", err)
 	}
+}
+
+func TestRemotePlaceholderRollbackPreservesPreexistingEmptySkillDirectory(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	skillDir := filepath.Join(project, ".agents", "skills", "alpha")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(skillDir, 0o711); err != nil {
+		t.Fatal(err)
+	}
+
+	undo, err := manager.changeRemotePlaceholdersAt(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Remote alpha.\n",
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := undo(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(skillDir)
+	if err != nil {
+		t.Fatalf("rollback removed pre-existing skill directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o711 {
+		t.Fatalf("rollback changed pre-existing skill directory mode to %v", info.Mode().Perm())
+	}
+	entries, err := os.ReadDir(skillDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rollback left placeholder files in pre-existing directory: %v", entries)
+	}
+}
+
+func TestRemotePlaceholderRollbackRemovesRootsCreatedBeforeLaterApplyFailure(t *testing.T) {
+	project := t.TempDir()
+	planned, err := planRemotePlaceholdersAt(
+		project,
+		"alpha",
+		"name: alpha\ndescription: Remote alpha.\n",
+		true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned) != 2 {
+		t.Fatalf("placeholder plan has %d mutations, want 2", len(planned))
+	}
+
+	conflict := filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md")
+	writeFile(t, conflict, "concurrent skill\n")
+	journal := &mutationJournal{}
+	if err := applyRemotePlaceholderPlan(planned, journal); err == nil {
+		t.Fatal("placeholder plan succeeded despite a concurrent second-root collision")
+	}
+	if err := journal.rollback(); err != nil {
+		t.Fatalf("rollback placeholder plan: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(project, ".agents")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback retained roots created by the first mutation: %v", err)
+	}
+	assertFile(t, conflict, "concurrent skill\n")
 }
 
 func TestRemotePlaceholdersStoreOwnershipMarkerInSkillDirectory(t *testing.T) {

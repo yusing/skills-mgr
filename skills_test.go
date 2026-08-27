@@ -2515,6 +2515,42 @@ func TestAdoptSkillMovesContentAndWritesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestAdoptSkillTreatsPlaceholderRootAliasAsSameRoot(t *testing.T) {
+	manager := newTestManager(t)
+	project := filepath.Join(t.TempDir(), "project")
+	if err := os.Symlink(manager.paths.placeholderDir, project); err != nil {
+		t.Fatal(err)
+	}
+	content := skillFile("drafting", "Draft specs.", "body\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "drafting", "SKILL.md"), content)
+	writeFile(
+		t,
+		filepath.Join(project, lockName),
+		`{"schema_revision":3,"skills":{"drafting":{"enabled":true}}}`,
+	)
+
+	skill, err := manager.findSkill(t.TempDir(), "drafting")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.relocateSkill(project, skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Managed {
+		t.Fatal("relocate did not report adoption")
+	}
+
+	assertFile(t, filepath.Join(manager.paths.managedSkills, "drafting", "SKILL.md"), content)
+	for _, root := range []string{".agents", ".claude"} {
+		assertFile(
+			t,
+			filepath.Join(manager.paths.placeholderDir, root, "skills", "drafting", "SKILL.md"),
+			wantPlaceholder("drafting", "Draft specs."),
+		)
+	}
+}
+
 func TestAdoptSkillWithoutSelectionWritesNoPlaceholder(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

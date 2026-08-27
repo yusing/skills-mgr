@@ -80,7 +80,11 @@ func (m *manager) adoptSkill(project string, skill discoveredSkill) (func() erro
 			return nil, err
 		}
 		projectWantsPlaceholder := lockWantsPlaceholder(projectLock, skill.Name)
-		if filepath.Clean(project) == filepath.Clean(m.paths.placeholderDir) {
+		sameRoot, err := samePlaceholderRoot(project, m.paths.placeholderDir)
+		if err != nil {
+			return nil, err
+		}
+		if sameRoot {
 			changes[0].enabled = changes[0].enabled || projectWantsPlaceholder
 		} else {
 			changes = append(changes, placeholderChange{
@@ -129,17 +133,10 @@ func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr er
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	var undos []func() error
-	rollback := func() error {
-		rollbackErr := error(nil)
-		for _, undo := range slices.Backward(undos) {
-			rollbackErr = errors.Join(rollbackErr, undo())
-		}
-		return rollbackErr
-	}
+	journal := &mutationJournal{}
 	defer func() {
 		if retErr != nil {
-			retErr = errors.Join(retErr, rollback())
+			retErr = errors.Join(retErr, journal.rollback())
 		}
 	}()
 
@@ -149,7 +146,7 @@ func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr er
 		if err != nil {
 			return fmt.Errorf("adopt skill %q: %w", skill.Name, err)
 		}
-		undos = append(undos, undo)
+		journal.add(undo)
 		report.WriteString(skill.Name)
 		report.WriteByte('\n')
 	}
@@ -178,7 +175,11 @@ func (m *manager) releaseSkill(project string, skill discoveredSkill) (func() er
 		return nil, err
 	}
 	changes := []placeholderChange{{base: m.paths.placeholderDir, name: skill.Name}}
-	if filepath.Clean(project) != filepath.Clean(m.paths.placeholderDir) {
+	sameRoot, err := samePlaceholderRoot(project, m.paths.placeholderDir)
+	if err != nil {
+		return nil, err
+	}
+	if !sameRoot {
 		changes = append(changes, placeholderChange{base: project, name: skill.Name})
 	}
 	undoPlaceholders, err := m.changeRemotePlaceholdersAcross(changes, frontmatter)

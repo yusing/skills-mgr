@@ -28,6 +28,23 @@ type placeholderChange struct {
 	enabled bool
 }
 
+// samePlaceholderRoot prevents aliased roots from producing overlapping plans
+// whose mutations would invalidate each other during revalidation.
+func samePlaceholderRoot(first, second string) (bool, error) {
+	if filepath.Clean(first) == filepath.Clean(second) {
+		return true, nil
+	}
+	firstInfo, err := os.Stat(first)
+	if err != nil {
+		return false, fmt.Errorf("inspect remote skill placeholder root %s: %w", first, err)
+	}
+	secondInfo, err := os.Stat(second)
+	if err != nil {
+		return false, fmt.Errorf("inspect remote skill placeholder root %s: %w", second, err)
+	}
+	return os.SameFile(firstInfo, secondInfo), nil
+}
+
 // placeholderContent renders the stub a harness loads in place of a managed
 // skill. It carries frontmatter and no body, and forces
 // disable-model-invocation so the harness offers the name in its slash-command
@@ -91,6 +108,578 @@ func (m *manager) changeRemotePlaceholders(
 	return m.changeRemotePlaceholdersAt(base, name, frontmatter, enabled)
 }
 
+type placeholderMutationKind uint8
+
+const (
+	placeholderCreate placeholderMutationKind = iota
+	placeholderUpdate
+	placeholderRemove
+)
+
+type removedPlaceholder struct {
+	skillData  []byte
+	skillMode  os.FileMode
+	markerMode os.FileMode
+	dirMode    os.FileMode
+}
+
+type placeholderMutation struct {
+	base        string
+	rootDir     string
+	name        string
+	kind        placeholderMutationKind
+	content     []byte
+	marker      []byte
+	previous    []byte
+	removed     *removedPlaceholder
+	missingDirs []string
+	createdDirs []string
+}
+
+type placeholderState struct {
+	skip         bool
+	skillData    []byte
+	markerData   []byte
+	skillMode    os.FileMode
+	markerMode   os.FileMode
+	dirMode      os.FileMode
+	skillExists  bool
+	markerExists bool
+	dirExists    bool
+	missingDirs  []string
+}
+
+func inspectRemotePlaceholder(
+	base, rootDir, name string,
+) (placeholderState, error) {
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return placeholderState{}, fmt.Errorf("open remote skill placeholder root %s: %w", base, err)
+	}
+	defer root.Close()
+
+	skillDir := filepath.Join(rootDir, name)
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	state := placeholderState{}
+	current := ""
+	for component := range strings.SplitSeq(filepath.ToSlash(skillDir), "/") {
+		current = filepath.Join(current, filepath.FromSlash(component))
+		info, err := root.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			state.missingDirs = append(state.missingDirs, current)
+			continue
+		}
+		if err != nil {
+			return placeholderState{}, fmt.Errorf(
+				"inspect remote skill placeholder path %s: %w",
+				current,
+				err,
+			)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if isRemotePlaceholderRootAlias(base, filepath.Dir(rootDir), current) {
+				return placeholderState{skip: true}, nil
+			}
+			return placeholderState{}, fmt.Errorf(
+				"remote skill placeholder path %s contains a symbolic link",
+				current,
+			)
+		}
+	}
+
+	read := func(path string) ([]byte, bool, error) {
+		data, err := root.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return data, err == nil, err
+	}
+	state.skillData, state.skillExists, err = read(skillPath)
+	if err != nil {
+		return placeholderState{}, fmt.Errorf(
+			"inspect remote skill placeholder %s: %w",
+			skillPath,
+			err,
+		)
+	}
+	state.markerData, state.markerExists, err = read(markerPath)
+	if err != nil {
+		return placeholderState{}, fmt.Errorf(
+			"inspect remote skill placeholder marker %s: %w",
+			markerPath,
+			err,
+		)
+	}
+	if state.skillExists {
+		info, err := root.Lstat(skillPath)
+		if err != nil {
+			return placeholderState{}, fmt.Errorf(
+				"inspect remote skill placeholder %s: %w",
+				skillPath,
+				err,
+			)
+		}
+		state.skillMode = info.Mode()
+	}
+	if state.markerExists {
+		info, err := root.Lstat(markerPath)
+		if err != nil {
+			return placeholderState{}, fmt.Errorf(
+				"inspect remote skill placeholder marker %s: %w",
+				markerPath,
+				err,
+			)
+		}
+		state.markerMode = info.Mode()
+	}
+	info, err := root.Lstat(skillDir)
+	switch {
+	case err == nil:
+		state.dirExists = true
+		state.dirMode = info.Mode()
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return placeholderState{}, fmt.Errorf(
+			"inspect remote skill placeholder directory %s: %w",
+			skillDir,
+			err,
+		)
+	}
+	return state, nil
+}
+
+func planRemotePlaceholder(
+	base, rootDir, name string,
+	content, marker []byte,
+	create bool,
+) (placeholderMutation, bool, error) {
+	state, err := inspectRemotePlaceholder(base, rootDir, name)
+	if err != nil {
+		return placeholderMutation{}, false, err
+	}
+	if state.skip {
+		return placeholderMutation{}, false, nil
+	}
+	managed := state.skillExists &&
+		state.markerExists &&
+		bytes.Equal(state.markerData, marker)
+	planned := placeholderMutation{
+		base:    base,
+		rootDir: rootDir,
+		name:    name,
+		content: slices.Clone(content),
+		marker:  slices.Clone(marker),
+	}
+
+	if create {
+		owned := managed && bytes.Equal(state.skillData, content)
+		vacant := !state.skillExists && !state.markerExists
+		switch {
+		case owned:
+			return placeholderMutation{}, false, nil
+		case managed:
+			if !state.skillMode.IsRegular() || !state.markerMode.IsRegular() {
+				return placeholderMutation{}, false, fmt.Errorf(
+					"update remote skill placeholder %s: managed files are not regular",
+					filepath.Join(rootDir, name, "SKILL.md"),
+				)
+			}
+			planned.kind = placeholderUpdate
+			planned.previous = slices.Clone(state.skillData)
+			return planned, true, nil
+		case !vacant:
+			return placeholderMutation{}, false, fmt.Errorf(
+				"create remote skill placeholder %s: path already exists",
+				filepath.Join(rootDir, name, "SKILL.md"),
+			)
+		default:
+			planned.kind = placeholderCreate
+			planned.missingDirs = slices.Clone(state.missingDirs)
+			return planned, true, nil
+		}
+	}
+
+	if !managed {
+		return placeholderMutation{}, false, nil
+	}
+	if !state.skillMode.IsRegular() ||
+		!state.markerMode.IsRegular() ||
+		!state.dirExists ||
+		!state.dirMode.IsDir() {
+		return placeholderMutation{}, false, fmt.Errorf(
+			"remove remote skill placeholder %s: managed paths changed",
+			filepath.Join(rootDir, name, "SKILL.md"),
+		)
+	}
+	planned.kind = placeholderRemove
+	planned.removed = &removedPlaceholder{
+		skillData:  slices.Clone(state.skillData),
+		skillMode:  state.skillMode,
+		markerMode: state.markerMode,
+		dirMode:    state.dirMode,
+	}
+	return planned, true, nil
+}
+
+func planRemotePlaceholdersAt(
+	base, name, frontmatter string,
+	enabled bool,
+) ([]placeholderMutation, error) {
+	content, err := placeholderContent(name, frontmatter)
+	if err != nil {
+		return nil, err
+	}
+	marker := []byte(remotePlaceholderMarker)
+	rootDirs := [...]string{
+		filepath.Join(".agents", "skills"),
+		filepath.Join(".claude", "skills"),
+	}
+	var planned []placeholderMutation
+	for _, rootDir := range rootDirs {
+		mutation, changed, err := planRemotePlaceholder(
+			base,
+			rootDir,
+			name,
+			content,
+			marker,
+			enabled,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if changed {
+			planned = append(planned, mutation)
+		}
+	}
+	return planned, nil
+}
+
+func writePlaceholderFile(
+	root *os.Root,
+	path string,
+	data []byte,
+	mode os.FileMode,
+) (bool, error) {
+	file, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
+	if err != nil {
+		return false, err
+	}
+	_, writeErr := file.Write(data)
+	closeErr := file.Close()
+	chmodErr := error(nil)
+	if writeErr == nil && closeErr == nil {
+		chmodErr = root.Chmod(path, mode.Perm())
+	}
+	return true, errors.Join(writeErr, closeErr, chmodErr)
+}
+
+func removePlaceholderPath(root *os.Root, path string) error {
+	err := root.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func restorePlaceholderFile(
+	root *os.Root,
+	path string,
+	data []byte,
+	mode os.FileMode,
+) error {
+	created, err := writePlaceholderFile(root, path, data, mode)
+	if err == nil {
+		return nil
+	}
+	if created {
+		return errors.Join(err, removePlaceholderPath(root, path))
+	}
+	return err
+}
+
+func removePlaceholderDirs(root *os.Root, paths []string) error {
+	var result error
+	for index := len(paths) - 1; index >= 0; index-- {
+		result = errors.Join(result, removePlaceholderPath(root, paths[index]))
+	}
+	return result
+}
+
+func (mutation placeholderMutation) apply() (func() error, error) {
+	state, err := inspectRemotePlaceholder(mutation.base, mutation.rootDir, mutation.name)
+	if err != nil {
+		return nil, err
+	}
+	skillDir := filepath.Join(mutation.rootDir, mutation.name)
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	managed := state.skillExists &&
+		state.markerExists &&
+		bytes.Equal(state.markerData, mutation.marker)
+
+	switch mutation.kind {
+	case placeholderCreate:
+		if state.skip ||
+			state.skillExists ||
+			state.markerExists ||
+			!slices.Equal(state.missingDirs, mutation.missingDirs) {
+			return nil, fmt.Errorf(
+				"create remote skill placeholder %s: path changed after planning",
+				skillPath,
+			)
+		}
+	case placeholderUpdate:
+		if state.skip ||
+			!managed ||
+			!state.skillMode.IsRegular() ||
+			!state.markerMode.IsRegular() ||
+			!bytes.Equal(state.skillData, mutation.previous) {
+			return nil, fmt.Errorf(
+				"update remote skill placeholder %s: managed files changed",
+				skillPath,
+			)
+		}
+	case placeholderRemove:
+		previous := mutation.removed
+		if state.skip ||
+			previous == nil ||
+			!managed ||
+			!state.dirExists ||
+			state.skillMode != previous.skillMode ||
+			state.markerMode != previous.markerMode ||
+			state.dirMode != previous.dirMode ||
+			!bytes.Equal(state.skillData, previous.skillData) {
+			return nil, fmt.Errorf(
+				"remove remote skill placeholder %s: managed paths changed",
+				skillPath,
+			)
+		}
+	default:
+		return nil, fmt.Errorf("remote skill placeholder mutation is invalid")
+	}
+
+	root, err := os.OpenRoot(mutation.base)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"open remote skill placeholder root %s: %w",
+			mutation.base,
+			err,
+		)
+	}
+	defer root.Close()
+
+	switch mutation.kind {
+	case placeholderCreate:
+		createdDirs := make([]string, 0, len(mutation.missingDirs))
+		for _, path := range mutation.missingDirs {
+			if err := root.Mkdir(path, 0o755); err != nil {
+				return nil, errors.Join(
+					fmt.Errorf("create remote skill placeholder directory %s: %w", path, err),
+					removePlaceholderDirs(root, createdDirs),
+				)
+			}
+			createdDirs = append(createdDirs, path)
+		}
+		skillCreated, err := writePlaceholderFile(root, skillPath, mutation.content, 0o644)
+		if err != nil {
+			cleanupErr := error(nil)
+			if skillCreated {
+				cleanupErr = removePlaceholderPath(root, skillPath)
+			}
+			cleanupErr = errors.Join(cleanupErr, removePlaceholderDirs(root, createdDirs))
+			return nil, errors.Join(
+				fmt.Errorf("write remote skill placeholder %s: %w", skillPath, err),
+				cleanupErr,
+			)
+		}
+		markerCreated, err := writePlaceholderFile(root, markerPath, mutation.marker, 0o644)
+		if err != nil {
+			cleanupErr := error(nil)
+			if markerCreated {
+				cleanupErr = removePlaceholderPath(root, markerPath)
+			}
+			cleanupErr = errors.Join(
+				cleanupErr,
+				removePlaceholderPath(root, skillPath),
+				removePlaceholderDirs(root, createdDirs),
+			)
+			return nil, errors.Join(
+				fmt.Errorf("write remote skill placeholder marker %s: %w", markerPath, err),
+				cleanupErr,
+			)
+		}
+		mutation.createdDirs = createdDirs
+	case placeholderUpdate:
+		if err := root.WriteFile(skillPath, mutation.content, 0o644); err != nil {
+			restoreErr := root.WriteFile(skillPath, mutation.previous, 0o644)
+			return nil, errors.Join(
+				fmt.Errorf("update remote skill placeholder %s: %w", skillPath, err),
+				restoreErr,
+			)
+		}
+	case placeholderRemove:
+		previous := mutation.removed
+		if err := root.Remove(markerPath); err != nil {
+			return nil, fmt.Errorf(
+				"remove remote skill placeholder marker %s: %w",
+				markerPath,
+				err,
+			)
+		}
+		if err := root.Remove(skillPath); err != nil {
+			restoreErr := restorePlaceholderFile(
+				root,
+				markerPath,
+				mutation.marker,
+				previous.markerMode,
+			)
+			return nil, errors.Join(
+				fmt.Errorf("remove remote skill placeholder %s: %w", skillPath, err),
+				restoreErr,
+			)
+		}
+		_ = root.Remove(skillDir)
+	}
+	return mutation.undo, nil
+}
+
+func (mutation placeholderMutation) undo() error {
+	state, err := inspectRemotePlaceholder(mutation.base, mutation.rootDir, mutation.name)
+	if err != nil {
+		return err
+	}
+	skillDir := filepath.Join(mutation.rootDir, mutation.name)
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	managed := state.skillExists &&
+		state.markerExists &&
+		bytes.Equal(state.markerData, mutation.marker)
+	root, err := os.OpenRoot(mutation.base)
+	if err != nil {
+		return fmt.Errorf(
+			"open remote skill placeholder root %s: %w",
+			mutation.base,
+			err,
+		)
+	}
+	defer root.Close()
+
+	switch mutation.kind {
+	case placeholderCreate:
+		if state.skip ||
+			!managed ||
+			!bytes.Equal(state.skillData, mutation.content) {
+			return fmt.Errorf(
+				"restore remote skill placeholder %s: managed files changed",
+				skillPath,
+			)
+		}
+		if err := root.Remove(markerPath); err != nil {
+			return fmt.Errorf(
+				"restore remote skill placeholder marker %s: %w",
+				markerPath,
+				err,
+			)
+		}
+		if err := root.Remove(skillPath); err != nil {
+			restoreErr := restorePlaceholderFile(root, markerPath, mutation.marker, 0o644)
+			return errors.Join(
+				fmt.Errorf("restore remote skill placeholder %s: %w", skillPath, err),
+				restoreErr,
+			)
+		}
+		return removePlaceholderDirs(root, mutation.createdDirs)
+	case placeholderUpdate:
+		if state.skip ||
+			!managed ||
+			!bytes.Equal(state.skillData, mutation.content) {
+			return fmt.Errorf(
+				"restore remote skill placeholder %s: managed files changed",
+				skillPath,
+			)
+		}
+		if err := root.WriteFile(skillPath, mutation.previous, 0o644); err != nil {
+			return fmt.Errorf("restore remote skill placeholder %s: %w", skillPath, err)
+		}
+		return nil
+	case placeholderRemove:
+		if state.skip || state.skillExists || state.markerExists {
+			return fmt.Errorf(
+				"restore remote skill placeholder %s: path changed",
+				skillPath,
+			)
+		}
+		previous := mutation.removed
+		if previous == nil {
+			return fmt.Errorf("restore remote skill placeholder %s: state is missing", skillPath)
+		}
+		if err := root.MkdirAll(mutation.rootDir, 0o755); err != nil {
+			return fmt.Errorf(
+				"restore remote skill placeholder root %s: %w",
+				mutation.rootDir,
+				err,
+			)
+		}
+		if err := root.Mkdir(skillDir, previous.dirMode.Perm()); err != nil &&
+			!errors.Is(err, os.ErrExist) {
+			return fmt.Errorf(
+				"restore remote skill placeholder directory %s: %w",
+				skillDir,
+				err,
+			)
+		}
+		if err := restorePlaceholderFile(
+			root,
+			skillPath,
+			previous.skillData,
+			previous.skillMode,
+		); err != nil {
+			return fmt.Errorf("restore remote skill placeholder %s: %w", skillPath, err)
+		}
+		if err := restorePlaceholderFile(
+			root,
+			markerPath,
+			mutation.marker,
+			previous.markerMode,
+		); err != nil {
+			cleanupErr := removePlaceholderPath(root, skillPath)
+			return errors.Join(
+				fmt.Errorf(
+					"restore remote skill placeholder marker %s: %w",
+					markerPath,
+					err,
+				),
+				cleanupErr,
+			)
+		}
+		if err := root.Chmod(skillDir, previous.dirMode.Perm()); err != nil {
+			return fmt.Errorf(
+				"restore remote skill placeholder directory %s mode: %w",
+				skillDir,
+				err,
+			)
+		}
+		return nil
+	default:
+		return fmt.Errorf("remote skill placeholder mutation is invalid")
+	}
+}
+
+func applyRemotePlaceholderPlan(
+	planned []placeholderMutation,
+	journal *mutationJournal,
+) error {
+	for _, mutation := range planned {
+		undo, err := mutation.apply()
+		if err != nil {
+			return err
+		}
+		journal.add(undo)
+	}
+	return nil
+}
+
 // changeRemotePlaceholdersAt applies a placeholder change at an explicit
 // harness root. Relocating authored content may need to update both the global
 // root and the current project, independently of the TUI's selection layer.
@@ -98,318 +687,48 @@ func (m *manager) changeRemotePlaceholdersAt(
 	base, name, frontmatter string,
 	enabled bool,
 ) (func() error, error) {
-	content, err := placeholderContent(name, frontmatter)
+	planned, err := planRemotePlaceholdersAt(base, name, frontmatter, enabled)
 	if err != nil {
 		return nil, err
 	}
-	marker := []byte(remotePlaceholderMarker)
-	rootDirs := []string{
-		filepath.Join(".agents", "skills"),
-		filepath.Join(".claude", "skills"),
+	journal := &mutationJournal{}
+	if err := applyRemotePlaceholderPlan(planned, journal); err != nil {
+		return nil, errors.Join(err, journal.rollback())
 	}
-	restoreContent := func(rootDir string, previous []byte) error {
-		root, err := os.OpenRoot(base)
-		if err != nil {
-			return fmt.Errorf("open remote skill placeholder root %s: %w", base, err)
-		}
-		defer root.Close()
-		skillDir := filepath.Join(rootDir, name)
-		skillPath := filepath.Join(skillDir, "SKILL.md")
-		markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
-		skillInfo, skillErr := root.Lstat(skillPath)
-		markerInfo, markerErr := root.Lstat(markerPath)
-		markerData, readErr := root.ReadFile(markerPath)
-		if skillErr != nil || markerErr != nil || readErr != nil ||
-			!skillInfo.Mode().IsRegular() || !markerInfo.Mode().IsRegular() ||
-			!bytes.Equal(markerData, marker) {
-			return fmt.Errorf("restore remote skill placeholder %s: managed files changed", skillPath)
-		}
-		if err := root.WriteFile(skillPath, previous, 0o644); err != nil {
-			return fmt.Errorf("restore remote skill placeholder %s: %w", skillPath, err)
-		}
-		return nil
-	}
-	type removedPlaceholder struct {
-		skillData  []byte
-		markerData []byte
-		skillMode  os.FileMode
-		markerMode os.FileMode
-		dirMode    os.FileMode
-	}
-	restoreRemoved := func(rootDir string, previous removedPlaceholder) error {
-		root, err := os.OpenRoot(base)
-		if err != nil {
-			return fmt.Errorf("open remote skill placeholder root %s: %w", base, err)
-		}
-		defer root.Close()
-		skillDir := filepath.Join(rootDir, name)
-		skillPath := filepath.Join(skillDir, "SKILL.md")
-		markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
-		if err := root.MkdirAll(rootDir, 0o755); err != nil {
-			return fmt.Errorf("restore remote skill placeholder root %s: %w", rootDir, err)
-		}
-		if err := root.Mkdir(skillDir, previous.dirMode.Perm()); err != nil &&
-			!errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("restore remote skill placeholder directory %s: %w", skillDir, err)
-		}
-		write := func(path string, data []byte, mode os.FileMode) error {
-			file, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
-			if err != nil {
-				return err
-			}
-			_, writeErr := file.Write(data)
-			closeErr := file.Close()
-			chmodErr := error(nil)
-			if writeErr == nil && closeErr == nil {
-				chmodErr = root.Chmod(path, mode.Perm())
-			}
-			return errors.Join(writeErr, closeErr, chmodErr)
-		}
-		if err := write(skillPath, previous.skillData, previous.skillMode); err != nil {
-			return fmt.Errorf("restore remote skill placeholder %s: %w", skillPath, err)
-		}
-		if err := write(markerPath, previous.markerData, previous.markerMode); err != nil {
-			cleanupErr := root.Remove(skillPath)
-			return errors.Join(
-				fmt.Errorf("restore remote skill placeholder marker %s: %w", markerPath, err),
-				cleanupErr,
-			)
-		}
-		if err := root.Chmod(skillDir, previous.dirMode.Perm()); err != nil {
-			return fmt.Errorf("restore remote skill placeholder directory %s mode: %w", skillDir, err)
-		}
-		return nil
-	}
-	type mutation struct {
-		rootDir  string
-		previous []byte
-		removed  *removedPlaceholder
-	}
-
-	apply := func(rootDir string, create bool) (mutation, bool, error) {
-		root, err := os.OpenRoot(base)
-		if err != nil {
-			return mutation{}, false, fmt.Errorf("open remote skill placeholder root %s: %w", base, err)
-		}
-		defer root.Close()
-
-		skillDir := filepath.Join(rootDir, name)
-		skillPath := filepath.Join(skillDir, "SKILL.md")
-		markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
-		current := ""
-		for component := range strings.SplitSeq(filepath.ToSlash(skillDir), "/") {
-			current = filepath.Join(current, filepath.FromSlash(component))
-			info, err := root.Lstat(current)
-			if errors.Is(err, os.ErrNotExist) {
-				break
-			}
-			if err != nil {
-				return mutation{}, false, fmt.Errorf("inspect remote skill placeholder path %s: %w", current, err)
-			}
-			if info.Mode()&os.ModeSymlink != 0 {
-				if isRemotePlaceholderRootAlias(base, filepath.Dir(rootDir), current) {
-					return mutation{}, false, nil
-				}
-				return mutation{}, false, fmt.Errorf("remote skill placeholder path %s contains a symbolic link", current)
-			}
-		}
-
-		read := func(path string) ([]byte, bool, error) {
-			data, err := root.ReadFile(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, false, nil
-			}
-			return data, err == nil, err
-		}
-		skillData, skillExists, err := read(skillPath)
-		if err != nil {
-			return mutation{}, false, fmt.Errorf("inspect remote skill placeholder %s: %w", skillPath, err)
-		}
-		markerData, markerExists, err := read(markerPath)
-		if err != nil {
-			return mutation{}, false, fmt.Errorf("inspect remote skill placeholder marker %s: %w", markerPath, err)
-		}
-		managed := skillExists && markerExists && bytes.Equal(markerData, marker)
-		owned := managed && bytes.Equal(skillData, content)
-		vacant := !skillExists && !markerExists
-
-		remove := func(path string) error {
-			err := root.Remove(path)
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return err
-		}
-		write := func(path string, data []byte) (bool, error) {
-			file, err := root.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-			if err != nil {
-				return false, err
-			}
-			_, writeErr := file.Write(data)
-			return true, errors.Join(writeErr, file.Close())
-		}
-
-		if create {
-			if owned {
-				return mutation{}, false, nil
-			}
-			if managed {
-				skillInfo, skillErr := root.Lstat(skillPath)
-				markerInfo, markerErr := root.Lstat(markerPath)
-				if skillErr != nil || markerErr != nil || !skillInfo.Mode().IsRegular() || !markerInfo.Mode().IsRegular() {
-					return mutation{}, false, fmt.Errorf("update remote skill placeholder %s: managed files are not regular", skillPath)
-				}
-				if err := root.WriteFile(skillPath, content, 0o644); err != nil {
-					restoreErr := root.WriteFile(skillPath, skillData, 0o644)
-					return mutation{}, false, errors.Join(
-						fmt.Errorf("update remote skill placeholder %s: %w", skillPath, err),
-						restoreErr,
-					)
-				}
-				return mutation{rootDir: rootDir, previous: slices.Clone(skillData)}, true, nil
-			}
-			if !vacant {
-				return mutation{}, false, fmt.Errorf("create remote skill placeholder %s: path already exists", skillPath)
-			}
-			if err := root.MkdirAll(rootDir, 0o755); err != nil {
-				return mutation{}, false, fmt.Errorf("create remote skill placeholder root %s: %w", rootDir, err)
-			}
-			skillDirCreated := false
-			if err := root.Mkdir(skillDir, 0o755); err == nil {
-				skillDirCreated = true
-			} else if !errors.Is(err, os.ErrExist) {
-				return mutation{}, false, fmt.Errorf("create remote skill placeholder directory %s: %w", skillDir, err)
-			}
-			cleanupSkillDir := func() error {
-				if !skillDirCreated {
-					return nil
-				}
-				return remove(skillDir)
-			}
-			skillCreated, err := write(skillPath, content)
-			if err != nil {
-				cleanupErr := cleanupSkillDir()
-				if skillCreated {
-					cleanupErr = errors.Join(remove(skillPath), cleanupErr)
-				}
-				return mutation{}, false, errors.Join(
-					fmt.Errorf("write remote skill placeholder %s: %w", skillPath, err),
-					cleanupErr,
-				)
-			}
-			markerCreated, err := write(markerPath, marker)
-			if err != nil {
-				cleanupErr := error(nil)
-				if markerCreated {
-					cleanupErr = remove(markerPath)
-				}
-				if skillCreated {
-					cleanupErr = errors.Join(cleanupErr, remove(skillPath))
-				}
-				cleanupErr = errors.Join(cleanupErr, cleanupSkillDir())
-				return mutation{}, false, errors.Join(
-					fmt.Errorf("write remote skill placeholder marker %s: %w", markerPath, err),
-					cleanupErr,
-				)
-			}
-			return mutation{rootDir: rootDir}, true, nil
-		}
-
-		if !managed {
-			return mutation{}, false, nil
-		}
-		skillInfo, skillErr := root.Lstat(skillPath)
-		markerInfo, markerErr := root.Lstat(markerPath)
-		dirInfo, dirErr := root.Lstat(skillDir)
-		if skillErr != nil || markerErr != nil || dirErr != nil ||
-			!skillInfo.Mode().IsRegular() || !markerInfo.Mode().IsRegular() ||
-			!dirInfo.IsDir() {
-			return mutation{}, false, fmt.Errorf("remove remote skill placeholder %s: managed paths changed", skillPath)
-		}
-		previous := &removedPlaceholder{
-			skillData:  slices.Clone(skillData),
-			markerData: slices.Clone(markerData),
-			skillMode:  skillInfo.Mode(),
-			markerMode: markerInfo.Mode(),
-			dirMode:    dirInfo.Mode(),
-		}
-		if err := root.Remove(markerPath); err != nil {
-			return mutation{}, false, fmt.Errorf("remove remote skill placeholder marker %s: %w", markerPath, err)
-		}
-		if err := root.Remove(skillPath); err != nil {
-			markerCreated, restoreErr := write(markerPath, marker)
-			if restoreErr != nil && markerCreated {
-				restoreErr = errors.Join(restoreErr, remove(markerPath))
-			}
-			return mutation{}, false, errors.Join(
-				fmt.Errorf("remove remote skill placeholder %s: %w", skillPath, err),
-				restoreErr,
-			)
-		}
-		_ = root.Remove(skillDir)
-		return mutation{rootDir: rootDir, removed: previous}, true, nil
-	}
-
-	var mutations []mutation
-	rollback := func() error {
-		rollbackErr := error(nil)
-		for _, mutation := range slices.Backward(mutations) {
-			var undoErr error
-			if mutation.removed != nil {
-				undoErr = restoreRemoved(mutation.rootDir, *mutation.removed)
-			} else if mutation.previous != nil {
-				undoErr = restoreContent(mutation.rootDir, mutation.previous)
-			} else {
-				_, _, undoErr = apply(mutation.rootDir, !enabled)
-			}
-			rollbackErr = errors.Join(rollbackErr, undoErr)
-		}
-		return rollbackErr
-	}
-	for _, rootDir := range rootDirs {
-		mutation, didChange, err := apply(rootDir, enabled)
-		if err == nil {
-			if didChange {
-				mutations = append(mutations, mutation)
-			}
-			continue
-		}
-		return nil, errors.Join(err, rollback())
-	}
-	if len(mutations) == 0 {
-		return nil, nil
-	}
-	return rollback, nil
+	return journal.undo(), nil
 }
 
-func (m *manager) changeRemotePlaceholdersAcross(
+func planRemotePlaceholdersAcross(
 	changes []placeholderChange,
 	frontmatter string,
-) (func() error, error) {
-	var undos []func() error
-	rollback := func() error {
-		rollbackErr := error(nil)
-		for _, undo := range slices.Backward(undos) {
-			rollbackErr = errors.Join(rollbackErr, undo())
-		}
-		return rollbackErr
-	}
+) ([]placeholderMutation, error) {
+	var planned []placeholderMutation
 	for _, change := range changes {
-		undo, err := m.changeRemotePlaceholdersAt(
+		changePlan, err := planRemotePlaceholdersAt(
 			change.base,
 			change.name,
 			frontmatter,
 			change.enabled,
 		)
 		if err != nil {
-			return nil, errors.Join(err, rollback())
+			return nil, err
 		}
-		if undo != nil {
-			undos = append(undos, undo)
-		}
+		planned = append(planned, changePlan...)
 	}
-	if len(undos) == 0 {
-		return nil, nil
+	return planned, nil
+}
+
+func (m *manager) changeRemotePlaceholdersAcross(
+	changes []placeholderChange,
+	frontmatter string,
+) (func() error, error) {
+	planned, err := planRemotePlaceholdersAcross(changes, frontmatter)
+	if err != nil {
+		return nil, err
 	}
-	return rollback, nil
+	journal := &mutationJournal{}
+	if err := applyRemotePlaceholderPlan(planned, journal); err != nil {
+		return nil, errors.Join(err, journal.rollback())
+	}
+	return journal.undo(), nil
 }
