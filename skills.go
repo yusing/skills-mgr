@@ -117,6 +117,14 @@ const (
 
 // Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
 func (m *manager) skills(project string, harnesses ...listHarness) ([]discoveredSkill, error) {
+	return m.discoverSkills(project, "", harnesses...)
+}
+
+func (m *manager) discoverSkills(
+	project string,
+	excludedRemoteKey string,
+	harnesses ...listHarness,
+) ([]discoveredSkill, error) {
 	discovery := skillDiscovery{
 		seenPaths: make(map[string]struct{}),
 		seenNames: make(map[string]struct{}),
@@ -141,7 +149,7 @@ func (m *manager) skills(project string, harnesses ...listHarness) ([]discovered
 		return nil, err
 	}
 	if m.remoteStore != nil {
-		records, err := m.remoteStore.recordsForDiscovery()
+		records, err := m.remoteStore.recordsForDiscovery(excludedRemoteKey)
 		if err != nil {
 			return nil, err
 		}

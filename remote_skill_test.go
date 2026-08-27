@@ -925,6 +925,60 @@ func TestUninstallRemoteCancellationRestoresCurrentSelection(t *testing.T) {
 	}
 }
 
+func TestUninstallRemoteCatalogFailureLeavesInstallationIntact(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	provider := &staticRemoteProvider{files: []remoteSkillFile{{
+		Path:     "SKILL.md",
+		Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+	}}}
+	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(
+		filepath.Join(project, ".agents", "skills", "broken", "SKILL.md"),
+		0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.uninstallRemote(
+		t.Context(), project, ref.Name, ref.key(),
+	); err == nil {
+		t.Fatal("uninstall succeeded with an unreadable catalog")
+	}
+
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != ref {
+		t.Fatalf("failed uninstall changed metadata: %#v", records)
+	}
+	selection, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selection.Skills[ref.Name] || selection.Remote[ref.Name] != ref {
+		t.Fatalf("failed uninstall changed selection: %#v", selection)
+	}
+	for _, path := range []string{
+		filepath.Join(project, ".agents", "skills", ref.Name, "SKILL.md"),
+		filepath.Join(project, ".claude", "skills", ref.Name, "SKILL.md"),
+	} {
+		assertFile(t, path, wantPlaceholder("alpha", "Remote alpha."))
+	}
+}
+
 func TestTUIWaitsForCanceledUninstallRollbackBeforeQuitting(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
@@ -1301,7 +1355,7 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 		manager.remoteStore.root,
 		manager.remoteStore.patchRoot,
 	)
-	records, err := secondStore.recordsForDiscovery()
+	records, err := secondStore.recordsForDiscovery("")
 	if err != nil {
 		t.Fatal(err)
 	}

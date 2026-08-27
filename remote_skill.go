@@ -1001,21 +1001,28 @@ func (s *remoteSkillStore) records() ([]remoteSkillRecord, error) {
 	return s.recordsLocked()
 }
 
-func (s *remoteSkillStore) recordsForDiscovery() ([]remoteSkillRecord, error) {
+func (s *remoteSkillStore) recordsForDiscovery(
+	excludedRemoteKey string,
+) ([]remoteSkillRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	records, err := s.recordsLocked()
 	if err != nil {
 		return nil, err
 	}
-	for index := range records {
-		override, err := s.loadOverrideLocked(records[index].ref())
+	filtered := records[:0]
+	for _, record := range records {
+		if record.ref().key() == excludedRemoteKey {
+			continue
+		}
+		override, err := s.loadOverrideLocked(record.ref())
 		if err != nil {
 			return nil, err
 		}
-		records[index].disableModelInvocationOverride = override
+		record.disableModelInvocationOverride = override
+		filtered = append(filtered, record)
 	}
-	return records, nil
+	return filtered, nil
 }
 
 func (s *remoteSkillStore) recordsLocked() ([]remoteSkillRecord, error) {
@@ -1442,7 +1449,12 @@ func (m *manager) uninstallRemote(
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}
+	skills, err := m.discoverSkills(project, key)
+	if err != nil {
+		return remoteUninstallResult{}, err
+	}
 
+	var currentSelected map[string]bool
 	var previousEnabled enabledValue
 	var previousExists bool
 	var previousRemote remoteSkillRef
@@ -1452,6 +1464,7 @@ func (m *manager) uninstallRemote(
 		previousRemote, previousRemoteExists = value.Remote[name]
 		value.deleteEnabled(name)
 		delete(value.Remote, name)
+		currentSelected = configuredSelections(*value)
 		return previousExists || previousRemoteExists, nil
 	})
 	if err != nil {
@@ -1485,6 +1498,7 @@ func (m *manager) uninstallRemote(
 		}
 		return undoPlaceholders()
 	}
+	var globalSelected map[string]bool
 	removeErr := updateLock(
 		m.paths.globalLockDir,
 		m.paths.selectionLocks,
@@ -1502,6 +1516,7 @@ func (m *manager) uninstallRemote(
 			if m.global && (globallySelected || globallyConfigured) {
 				return false, fmt.Errorf("remote selection changed during uninstall")
 			}
+			globalSelected = configuredSelections(*global)
 			return false, m.remoteStore.remove(ctx, ref)
 		},
 	)
@@ -1513,20 +1528,24 @@ func (m *manager) uninstallRemote(
 		)
 	}
 
-	skills, err := m.skills(project)
-	if err != nil {
-		return remoteUninstallResult{}, err
-	}
-	selection, err := m.selectionState(project, nil)
-	if err != nil {
-		return remoteUninstallResult{}, err
+	selected := maps.Clone(globalSelected)
+	var resultGlobalSelected, projectSelected map[string]bool
+	if !m.global {
+		resultGlobalSelected = globalSelected
+		projectSelected = currentSelected
+		maps.Copy(selected, projectSelected)
+		for _, skill := range skills {
+			if skillEnabled(selected, skill) {
+				selected[skill.Name] = true
+			}
+		}
 	}
 	return remoteUninstallResult{
 		Skill:           name,
 		Skills:          skills,
-		Selected:        selection.selected,
-		GlobalSelected:  selection.globalSelected,
-		ProjectSelected: selection.projectSelected,
+		Selected:        selected,
+		GlobalSelected:  resultGlobalSelected,
+		ProjectSelected: projectSelected,
 	}, nil
 }
 
