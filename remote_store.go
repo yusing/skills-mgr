@@ -244,8 +244,7 @@ func (s *remoteSkillStore) toggleModelInvocation(
 		SchemaRevision:         remoteSkillOverrideSchemaRevision,
 		DisableModelInvocation: new(disabled),
 	}
-	entries := filepath.Join(s.root, "entries")
-	if err := saveRemoteMetadataFile(entries, s.overridePath(ref), value); err != nil {
+	if err := saveRemoteMetadataFile(s.overridePath(ref), value); err != nil {
 		return false, fmt.Errorf("write remote skill override: %w", err)
 	}
 	return disabled, nil
@@ -587,44 +586,19 @@ func validRemoteFilePath(value string) (string, error) {
 }
 
 func (s *remoteSkillStore) saveRecordLocked(record remoteSkillRecord) error {
-	entries := filepath.Join(s.root, "entries")
-	path := filepath.Join(entries, record.ref().key()+".json")
-	if err := saveRemoteMetadataFile(entries, path, record); err != nil {
+	path := filepath.Join(s.root, "entries", record.ref().key()+".json")
+	if err := saveRemoteMetadataFile(path, record); err != nil {
 		return fmt.Errorf("write remote skill metadata: %w", err)
 	}
 	return nil
 }
 
-func saveRemoteMetadataFile(entries, path string, value any) error {
+func saveRemoteMetadataFile(path string, value any) error {
 	var data bytes.Buffer
 	encoder := json.NewEncoder(&data)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
 		return err
 	}
-	return saveRemoteEntryFile(entries, path, data.Bytes())
-}
-
-func saveRemoteEntryFile(directory, path string, data []byte) error {
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create entry directory: %w", err)
-	}
-	temporary, err := os.CreateTemp(directory, ".remote-skill-")
-	if err != nil {
-		return fmt.Errorf("create entry: %w", err)
-	}
-	name := temporary.Name()
-	defer os.Remove(name)
-	_, err = temporary.Write(data)
-	if err == nil {
-		err = temporary.Chmod(0o600)
-	}
-	if err == nil {
-		err = temporary.Sync()
-	}
-	err = errors.Join(err, temporary.Close())
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	return err
+	return writeAtomicFile(path, "entry", data.Bytes())
 }

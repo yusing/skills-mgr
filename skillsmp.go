@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -626,15 +626,9 @@ func loadSkillsMPCache(path string) (skillsMPCache, error) {
 		return skillsMPCache{}, fmt.Errorf("open SkillsMP cache: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, remoteResponseLimit+1))
+	data, err := readBoundedFile(file, remoteResponseLimit)
 	if err != nil {
 		return skillsMPCache{}, fmt.Errorf("read SkillsMP cache: %w", err)
-	}
-	if len(data) > remoteResponseLimit {
-		return skillsMPCache{}, fmt.Errorf(
-			"decode SkillsMP cache: file exceeds %d bytes",
-			remoteResponseLimit,
-		)
 	}
 	var cache skillsMPCache
 	if err := json.Unmarshal(data, &cache); err != nil {
@@ -650,28 +644,11 @@ func loadSkillsMPCache(path string) (skillsMPCache, error) {
 }
 
 func saveSkillsMPCache(path string, cache skillsMPCache) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create SkillsMP cache directory: %w", err)
-	}
-	temp, err := os.CreateTemp(directory, ".skillsmp-")
-	if err != nil {
-		return fmt.Errorf("create SkillsMP cache: %w", err)
-	}
-	name := temp.Name()
-	defer os.Remove(name)
-	encoder := json.NewEncoder(temp)
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
 	encoder.SetIndent("", "  ")
-	err = encoder.Encode(cache)
-	if err == nil {
-		err = temp.Chmod(0o600)
-	}
-	err = errors.Join(err, temp.Close())
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err != nil {
+	if err := encoder.Encode(cache); err != nil {
 		return fmt.Errorf("write SkillsMP cache: %w", err)
 	}
-	return nil
+	return writeAtomicFile(path, "SkillsMP cache", data.Bytes())
 }

@@ -475,3 +475,40 @@ func TestDaemonRefreshFailureIsReportedWithoutReturning(t *testing.T) {
 		t.Fatalf("daemon diagnostic = %q", logs.String())
 	}
 }
+
+func TestLoadRemoteCacheHandlesMissingAndInvalidFiles(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	cache, err := loadRemoteCache(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.SchemaRevision != 0 || len(cache.Topics) != 0 {
+		t.Fatalf("missing remote cache = %#v", cache)
+	}
+
+	tests := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "oversized", contents: strings.Repeat(" ", remoteResponseLimit+1), want: "exceeds"},
+		{name: "malformed", contents: "{", want: "decode remote registry cache"},
+		{
+			name:     "unsupported schema",
+			contents: `{"schemaRevision":2,"topics":[]}`,
+			want:     "unsupported schema revision 2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "skills-sh.json")
+			if err := os.WriteFile(path, []byte(test.contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadRemoteCache(path); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load remote cache error = %v", err)
+			}
+		})
+	}
+}

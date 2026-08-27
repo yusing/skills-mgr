@@ -3288,6 +3288,42 @@ func TestLocalToggleDoneKeepsRemoteKeysOutsideCatalog(t *testing.T) {
 	}
 }
 
+func TestLoadRemoteRecordHandlesMissingAndInvalidFiles(t *testing.T) {
+	store := newRemoteSkillStore(t.TempDir(), t.TempDir())
+	records, err := store.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("missing remote metadata store returned %#v", records)
+	}
+
+	tests := []struct {
+		name     string
+		contents string
+		want     string
+	}{
+		{name: "oversized", contents: strings.Repeat(" ", remoteSkillMetadataLimit+1), want: "exceeds"},
+		{name: "malformed", contents: "{", want: "decode remote skill metadata"},
+		{
+			name:     "unsupported schema",
+			contents: `{"schemaRevision":2}`,
+			want:     "unsupported remote skill schema revision 2",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			key := strings.ReplaceAll(test.name, " ", "-")
+			path := filepath.Join(store.root, "entries", key+".json")
+			writeFile(t, path, test.contents)
+			if _, err := store.loadRecordLocked(key); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load remote metadata error = %v", err)
+			}
+		})
+	}
+}
+
 type staticRemoteProvider struct {
 	files []remoteSkillFile
 }

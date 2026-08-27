@@ -109,7 +109,7 @@ func (s *remoteSkillStore) savePatch(
 		resultDigest,
 		patchText,
 	)
-	if err := saveRemoteEntryFile(s.patchRoot, path, patch); err != nil {
+	if err := writeAtomicFile(path, "entry", patch); err != nil {
 		return fmt.Errorf("write remote skill patch: %w", err)
 	}
 	return nil
@@ -184,15 +184,9 @@ func (s *remoteSkillStore) loadOverrideLocked(ref remoteSkillRef) (*bool, error)
 		return nil, fmt.Errorf("open remote skill override: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, remoteSkillMetadataLimit+1))
+	data, err := readBoundedFile(file, remoteSkillMetadataLimit)
 	if err != nil {
 		return nil, fmt.Errorf("read remote skill override: %w", err)
-	}
-	if len(data) > remoteSkillMetadataLimit {
-		return nil, fmt.Errorf(
-			"remote skill override exceeds %d bytes",
-			remoteSkillMetadataLimit,
-		)
 	}
 	var value remoteSkillOverride
 	decoder := json.NewDecoder(bytes.NewReader(data))

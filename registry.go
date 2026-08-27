@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -229,15 +229,9 @@ func loadRemoteCache(path string) (remoteRegistryCache, error) {
 		return remoteRegistryCache{}, fmt.Errorf("open remote registry cache: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, remoteResponseLimit+1))
+	data, err := readBoundedFile(file, remoteResponseLimit)
 	if err != nil {
 		return remoteRegistryCache{}, fmt.Errorf("read remote registry cache: %w", err)
-	}
-	if len(data) > remoteResponseLimit {
-		return remoteRegistryCache{}, fmt.Errorf(
-			"decode remote registry cache: file exceeds %d bytes",
-			remoteResponseLimit,
-		)
 	}
 	var cache remoteRegistryCache
 	if err := json.Unmarshal(data, &cache); err != nil {
@@ -256,28 +250,11 @@ func loadRemoteCache(path string) (remoteRegistryCache, error) {
 }
 
 func saveRemoteCache(path string, cache remoteRegistryCache) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create remote registry cache directory: %w", err)
-	}
-	temp, err := os.CreateTemp(directory, ".skills-sh-")
-	if err != nil {
-		return fmt.Errorf("create remote registry cache: %w", err)
-	}
-	name := temp.Name()
-	defer os.Remove(name)
-	encoder := json.NewEncoder(temp)
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
 	encoder.SetIndent("", "  ")
-	err = encoder.Encode(cache)
-	if err == nil {
-		err = temp.Chmod(0o600)
-	}
-	err = errors.Join(err, temp.Close())
-	if err == nil {
-		err = os.Rename(name, path)
-	}
-	if err != nil {
+	if err := encoder.Encode(cache); err != nil {
 		return fmt.Errorf("write remote registry cache: %w", err)
 	}
-	return nil
+	return writeAtomicFile(path, "remote registry cache", data.Bytes())
 }

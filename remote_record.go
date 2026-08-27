@@ -152,15 +152,9 @@ func (s *remoteSkillStore) loadRecordLocked(key string) (remoteSkillRecord, erro
 		return remoteSkillRecord{}, fmt.Errorf("open remote skill metadata: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, remoteSkillMetadataLimit+1))
+	data, err := readBoundedFile(file, remoteSkillMetadataLimit)
 	if err != nil {
 		return remoteSkillRecord{}, fmt.Errorf("read remote skill metadata: %w", err)
-	}
-	if len(data) > remoteSkillMetadataLimit {
-		return remoteSkillRecord{}, fmt.Errorf(
-			"remote skill metadata exceeds %d bytes",
-			remoteSkillMetadataLimit,
-		)
 	}
 	var record remoteSkillRecord
 	decoder := json.NewDecoder(bytes.NewReader(data))
