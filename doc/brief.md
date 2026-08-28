@@ -20,8 +20,9 @@ enabled remote skills after cloning or pulling the project.
 - Add `skills-mgr sync` to fetch enabled remote skills that are missing or stale
   in the current user's persisted remote-skill store.
 - Keep synchronization explicit. Existing `list`, `get`, `run`, TUI startup,
-  and daemon behavior do not download a remote skill merely because its
-  identity appears in project configuration.
+  and automatic daemon cycles do not download a remote skill merely because
+  its identity appears in configuration. The explicit `daemon sync` command
+  may obtain unconditionally enabled identities from the global selection.
 - Continue accepting existing schema-revision-1 project files and write the new
   representation when selection is next changed.
 - Preserve the existing global and project selection overlay.
@@ -29,11 +30,17 @@ enabled remote skills after cloning or pulling the project.
 ## User-visible surface
 
 `skills-mgr sync` reconciles missing remote identities from the current user's
-canonical remote store into the current project's `.skills-mgr.json`, resolves
-enabled state through the global and project selection overlay, and reports each
-synchronized skill. Explicit project entries retain enabled state; inherited
-entries omit it. A failure identifies the skill that could not be synchronized,
-returns a non-zero status, and leaves project configuration unchanged.
+global selection and canonical remote store into the current project's
+`.skills-mgr.json`, resolves enabled state through the global and project
+selection overlay, and reports each synchronized skill. Explicit project
+entries retain enabled state; inherited entries omit it. A failure identifies
+the skill that could not be synchronized, returns a non-zero status, and leaves
+project configuration unchanged.
+
+`skills-mgr daemon sync` obtains missing, unconditionally enabled remote
+identities directly from the global selection before refreshing stale store
+records. It does not inspect project selections. Daemon startup and timed
+cycles continue to refresh only identities already present in the store.
 
 The `.skills-mgr.json` skill values become records containing optional enabled
 state and, for remote skills, provider identity, provider-specific ID, and
@@ -57,7 +64,7 @@ state only.
 ## Non-goals
 
 - Automatic downloading during `list`, `get`, `run`, TUI startup, or daemon
-  discovery of a previously unknown remote identity.
+  startup and timed discovery of a previously unknown remote identity.
 - Synchronizing effectively disabled remote selections.
 - Adding confirmation, dry-run, update, remove, force-refresh, or cache
   management options.

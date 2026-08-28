@@ -696,7 +696,8 @@ That recipe runs `shadowtree install` first, so the binary lands wherever
 ## Documentation
 
 Design notes for the remote-selection subsystem live in
-[`doc/brief.md`](doc/brief.md), [`doc/spec/index.md`](doc/spec/index.md), and
+[`doc/brief.md`](doc/brief.md). Product requirements and architecture contracts
+are inventoried by [`doc/spec/index.md`](doc/spec/index.md) and
 [`doc/architecture/index.md`](doc/architecture/index.md).
 
 ## Development
