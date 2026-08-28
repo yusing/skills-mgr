@@ -873,7 +873,7 @@ func TestTUIStylesUseColorWithoutReplacingTextState(t *testing.T) {
 
 func TestStyledPathLinesWrapOnlyPathCharacters(t *testing.T) {
 	const width = 20
-	lines := styledPathLines("/skills/世界/alpha/SKILL.md", width)
+	lines := styledMetadataLines("path", "/skills/世界/alpha/SKILL.md", width)
 	if len(lines) < 2 {
 		t.Fatalf("path did not wrap: %#v", lines)
 	}
@@ -1879,9 +1879,7 @@ func TestEditorTargetsCanonicalSkill(t *testing.T) {
 	skill := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
 	writeFile(t, skill, skillFile("alpha", "Alpha.", "before"))
 	editor := filepath.Join(t.TempDir(), "editor")
-	if err := os.WriteFile(editor, []byte("#!/bin/sh\nprintf edited > \"$2\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, editor, "#!/bin/sh\nprintf edited > \"$2\"\n")
 	t.Setenv("EDITOR", editor+" --flag")
 
 	edit, err := (model{manager: manager, project: project}).editor("alpha")
@@ -1921,13 +1919,7 @@ func TestEditorLayersRemoteSkillThroughPatchDraft(t *testing.T) {
 	}
 	edited := skillFile("alpha", "Remote alpha.", "after\n")
 	editor := filepath.Join(t.TempDir(), "editor")
-	if err := os.WriteFile(
-		editor,
-		[]byte("#!/bin/sh\nprintf '%s' '"+edited+"' > \"$2\"\n"),
-		0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, editor, "#!/bin/sh\nprintf '%s' '"+edited+"' > \"$2\"\n")
 	t.Setenv("EDITOR", editor+" --flag")
 	discovered, err := manager.findSkill(project, ref.Name)
 	if err != nil {
@@ -2072,7 +2064,7 @@ func TestRemoteEditorUsesSourceRediscoveredAfterRefresh(t *testing.T) {
 		t.Fatal("refresh retained the original content path")
 	}
 	editor := filepath.Join(t.TempDir(), "editor")
-	if err := os.WriteFile(editor, []byte(`#!/bin/sh
+	writeExecutable(t, editor, `#!/bin/sh
 cat > "$1" <<'EOF'
 ---
 name: alpha
@@ -2080,9 +2072,7 @@ description: Remote alpha.
 ---
 local
 EOF
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`)
 	t.Setenv("EDITOR", editor)
 	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
 	current = updated.(model)
@@ -2121,13 +2111,7 @@ func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	editor := filepath.Join(t.TempDir(), "editor")
-	if err := os.WriteFile(
-		editor,
-		[]byte("#!/bin/sh\nprintf '%s\\n' '[ -f go.mod ]' > \"$2\"\n"),
-		0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, editor, "#!/bin/sh\nprintf '%s\\n' '[ -f go.mod ]' > \"$2\"\n")
 	t.Setenv("EDITOR", editor+" --flag")
 	current := model{manager: manager, project: project}
 	command, draft, err := current.enabledEditor("admin")

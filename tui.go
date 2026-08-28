@@ -299,11 +299,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				delete(m.globalConditional, message.skill)
 			}
-			catalog := m.allSkills
-			if catalog == nil {
-				catalog = m.skills
-			}
-			m.remoteSelected = remoteSelectionFrom(catalog, m.selected)
+			m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
 			if message.enabled {
 				m.status = "enabled " + message.skill
 			} else {
@@ -362,17 +358,17 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.replaceManagedSkills(message.result.Skills)
-		m.applyCatalog()
-		m.selected = message.result.Selected
-		m.globalSelected = message.result.GlobalSelected
-		m.projectSelected = message.result.ProjectSelected
+		m.applyCatalogResult(
+			message.result.Skills,
+			message.result.Selected,
+			message.result.GlobalSelected,
+			message.result.ProjectSelected,
+		)
 		if m.projectSelected != nil {
 			delete(m.projectConditional, message.result.Skill)
 		} else {
 			delete(m.globalConditional, message.result.Skill)
 		}
-		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
 		if m.expanded == message.result.Skill {
 			m.expanded = ""
 		}
@@ -384,12 +380,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.replaceManagedSkills(message.result.Skills)
-		m.applyCatalog()
-		m.selected = message.result.Selected
-		m.globalSelected = message.result.GlobalSelected
-		m.projectSelected = message.result.ProjectSelected
-		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		m.applyCatalogResult(
+			message.result.Skills,
+			message.result.Selected,
+			message.result.GlobalSelected,
+			message.result.ProjectSelected,
+		)
 		m.expanded = ""
 		where := "released to .agents/skills"
 		if message.result.Managed {
@@ -407,12 +403,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		wasExpanded := m.expanded == message.result.Skill
-		m.replaceManagedSkills(message.result.Skills)
-		m.applyCatalog()
-		m.selected = message.result.Selected
-		m.globalSelected = message.result.GlobalSelected
-		m.projectSelected = message.result.ProjectSelected
-		m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
+		m.applyCatalogResult(
+			message.result.Skills,
+			message.result.Selected,
+			message.result.GlobalSelected,
+			message.result.ProjectSelected,
+		)
 		m.expanded = ""
 		for index, skillIndex := range m.localSkillIndices() {
 			skill := m.skills[skillIndex]
@@ -529,6 +525,21 @@ func (m *model) applyEnabledEditDone(message enabledEditDone) {
 	}
 	m.syncViewport()
 	m.status = "saved enabled value for " + message.skill
+}
+
+// applyCatalogResult adopts a refreshed catalog together with the selection maps
+// that were computed against it, so every action that rebuilds the catalog keeps
+// the same derived model fields in step.
+func (m *model) applyCatalogResult(
+	skills []discoveredSkill,
+	selected, global, project map[string]bool,
+) {
+	m.replaceManagedSkills(skills)
+	m.applyCatalog()
+	m.selected = selected
+	m.globalSelected = global
+	m.projectSelected = project
+	m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
 }
 
 func (m *model) applySelectionState(selection selectionState) {

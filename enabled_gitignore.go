@@ -105,9 +105,7 @@ func (p projectIgnorePattern) matchExact(path []string, isDir bool) gitignore.Ma
 		if len(path) <= len(p.base) || !slices.Equal(path[:len(p.base)], p.base) {
 			return gitignore.NoMatch
 		}
-		direct := make([]string, len(p.base)+1)
-		copy(direct, p.base)
-		direct[len(p.base)] = path[len(path)-1]
+		direct := slices.Concat(p.base, path[len(path)-1:])
 		return p.parsed.Match(direct, isDir)
 	}
 	if p.trailingDoubleStar != nil {
@@ -116,9 +114,7 @@ func (p projectIgnorePattern) matchExact(path []string, isDir bool) gitignore.Ma
 	if p.exact == nil {
 		return gitignore.NoMatch
 	}
-	exactPath := make([]string, len(path)+1)
-	copy(exactPath, path)
-	exactPath[len(path)] = projectIgnoreMatchEnd
+	exactPath := slices.Concat(path, []string{projectIgnoreMatchEnd})
 	return p.exact.Match(exactPath, false)
 }
 

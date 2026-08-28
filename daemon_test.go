@@ -62,7 +62,7 @@ func startTestDaemon(t *testing.T, manager *manager) *logBuffer {
 	t.Cleanup(func() {
 		cancel()
 		if err := recv(); err != nil {
-			t.Errorf("runDaemon = %v", err)
+			t.Errorf("runDaemonReady = %v", err)
 		}
 	})
 	select {
@@ -114,7 +114,7 @@ func writeSkillsShSearch(t *testing.T, response http.ResponseWriter, skills []re
 func TestDaemonStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if err := runDaemon(ctx, newTestManager(t), testLoggerSink()); err != nil {
+	if err := runDaemonReady(ctx, newTestManager(t), testLoggerSink(), nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -381,7 +381,7 @@ func TestDaemonRefusesSecondInstance(t *testing.T) {
 		writeSkillsShSearch(t, response, nil)
 	})
 	startTestDaemon(t, manager)
-	err := runDaemon(t.Context(), manager, testLoggerSink())
+	err := runDaemonReady(t.Context(), manager, testLoggerSink(), nil)
 	if err == nil || err.Error() != "daemon already running" {
 		t.Fatalf("error = %v", err)
 	}

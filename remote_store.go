@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -15,7 +13,6 @@ import (
 
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -135,62 +132,53 @@ func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error
 		return fmt.Errorf("persisted remote skill %q is missing", ref.Name)
 	}
 	entries := filepath.Join(s.root, "entries")
-	type stagedSidecar struct {
-		original string
-		staged   string
-	}
-	var staged []stagedSidecar
-	rollbackStaged := func() error {
-		var rollbackErr error
-		for index := len(staged) - 1; index >= 0; index-- {
-			rollbackErr = errors.Join(
-				rollbackErr,
-				os.Rename(staged[index].staged, staged[index].original),
-			)
-		}
-		return rollbackErr
-	}
-	for _, sidecar := range s.sidecars(ref) {
+	var journal mutationJournal
+	var staged []string
+	for _, sidecar := range []struct{ path, name string }{
+		{path: s.overridePath(ref), name: "override"},
+		{path: s.patchPath(ref), name: "patch"},
+	} {
 		if _, err := os.Lstat(sidecar.path); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
 			return errors.Join(
 				fmt.Errorf("inspect remote skill %s: %w", sidecar.name, err),
-				rollbackStaged(),
+				journal.rollback(),
 			)
 		}
 		temporary, err := os.CreateTemp(filepath.Dir(sidecar.path), ".remote-skill-remove-")
 		if err != nil {
 			return errors.Join(
 				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
-				rollbackStaged(),
+				journal.rollback(),
 			)
 		}
 		stagedPath := temporary.Name()
 		if err := errors.Join(temporary.Close(), os.Remove(stagedPath)); err != nil {
 			return errors.Join(
 				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
-				rollbackStaged(),
+				journal.rollback(),
 			)
 		}
 		if err := os.Rename(sidecar.path, stagedPath); err != nil {
 			return errors.Join(
 				fmt.Errorf("stage remote skill %s removal: %w", sidecar.name, err),
-				rollbackStaged(),
+				journal.rollback(),
 			)
 		}
-		staged = append(staged, stagedSidecar{original: sidecar.path, staged: stagedPath})
+		journal.add(func() error { return os.Rename(stagedPath, sidecar.path) })
+		staged = append(staged, stagedPath)
 	}
 
 	path := filepath.Join(entries, ref.key()+".json")
 	if err := os.Remove(path); err != nil {
 		return errors.Join(
 			fmt.Errorf("remove remote skill metadata: %w", err),
-			rollbackStaged(),
+			journal.rollback(),
 		)
 	}
-	for _, sidecar := range staged {
-		_ = os.RemoveAll(sidecar.staged)
+	for _, stagedPath := range staged {
+		_ = os.RemoveAll(stagedPath)
 	}
 	return nil
 }
@@ -230,7 +218,7 @@ func (s *remoteSkillStore) toggleModelInvocation(
 		if err != nil {
 			return false, err
 		}
-		skill, ok, err := parseSkill(filepath.Join(root, "SKILL.md"))
+		skill, ok, err := parseSkill(filepath.Join(root, skillManifestName))
 		if err != nil {
 			return false, err
 		}
@@ -385,35 +373,18 @@ func (s *remoteSkillStore) lockExclusive(ctx context.Context) (*os.File, error) 
 	if err != nil {
 		return nil, fmt.Errorf("open remote skill store lock: %w", err)
 	}
-	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		switch {
-		case err == nil:
-			return lock, nil
-		case errors.Is(err, syscall.EINTR):
-			continue
-		case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
-			timer := time.NewTimer(25 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				_ = lock.Close()
-				return nil, ctx.Err()
-			case <-timer.C:
-				continue
-			}
-		default:
-			_ = lock.Close()
-			return nil, fmt.Errorf("lock remote skill store: %w", err)
-		}
+	if err := flockExclusiveContext(ctx, lock, "remote skill store"); err != nil {
+		_ = lock.Close()
+		return nil, err
 	}
+	return lock, nil
 }
 
 func closeRemoteStoreLock(lock *os.File) {
 	if lock == nil {
 		return
 	}
-	_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	unlockFlock(lock)
 	_ = lock.Close()
 }
 
@@ -500,7 +471,7 @@ func (s *remoteSkillStore) writeContent(
 				remoteSkillMaxBytes,
 			)
 		}
-		if relative == "SKILL.md" {
+		if relative == skillManifestName {
 			hasSkill = true
 		}
 		if relative == "AGENTS.md" {
@@ -539,7 +510,7 @@ func (s *remoteSkillStore) writeContent(
 	if hasClaudeAlias && !hasAgents {
 		return "", fmt.Errorf("remote skill %q CLAUDE.md link is missing AGENTS.md", ref.Name)
 	}
-	parsed, ok, err := parseSkill(filepath.Join(temporary, "SKILL.md"))
+	parsed, ok, err := parseSkill(filepath.Join(temporary, skillManifestName))
 	if err != nil {
 		return "", fmt.Errorf("validate remote skill %q: %w", ref.Name, err)
 	}
@@ -594,11 +565,5 @@ func (s *remoteSkillStore) saveRecordLocked(record remoteSkillRecord) error {
 }
 
 func saveRemoteMetadataFile(path string, value any) error {
-	var data bytes.Buffer
-	encoder := json.NewEncoder(&data)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	return writeAtomicFile(path, "entry", data.Bytes())
+	return writeAtomicJSONFile(path, "entry", value)
 }

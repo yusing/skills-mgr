@@ -9,8 +9,6 @@ import (
 
 	"path/filepath"
 	"slices"
-
-	"strings"
 )
 
 type discoveredSkill struct {
@@ -37,6 +35,14 @@ type skillDiscovery struct {
 	harnesses []listHarness
 }
 
+func newSkillDiscovery(harnesses ...listHarness) skillDiscovery {
+	return skillDiscovery{
+		seenPaths: make(map[string]struct{}),
+		seenNames: make(map[string]struct{}),
+		harnesses: harnesses,
+	}
+}
+
 type skillRoot struct {
 	path                           string
 	source                         string
@@ -44,6 +50,9 @@ type skillRoot struct {
 	editable                       bool
 	remoteKey                      string
 	disableModelInvocationOverride *bool
+	// pluginCache marks a root whose skills live at a nested plugin path rather
+	// than directly under it, so one root table can describe both shapes.
+	pluginCache bool
 }
 
 // Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
@@ -56,28 +65,22 @@ func (m *manager) discoverSkills(
 	excludedRemoteKey string,
 	harnesses ...listHarness,
 ) ([]discoveredSkill, error) {
-	discovery := skillDiscovery{
-		seenPaths: make(map[string]struct{}),
-		seenNames: make(map[string]struct{}),
-		harnesses: harnesses,
-	}
+	discovery := newSkillDiscovery(harnesses...)
 	roots := []skillRoot{
-		{path: filepath.Join(project, ".agents", "skills"), source: projectSkillSource, editable: true},
+		{path: m.paths.projectSkills(project, ".agents"), source: projectSkillSource, editable: true},
 		{path: m.paths.userSkills, source: "user", editable: true},
 		{path: m.paths.managedSkills, source: managedSkillSource, editable: true},
-		{path: filepath.Join(project, ".claude", "skills"), source: "claude", editable: true},
-		{path: filepath.Join(project, ".grok", "skills"), source: "grok", editable: true},
-		{path: filepath.Join(project, ".codex", "skills"), source: "codex", includeSystem: true, editable: true},
-		{path: filepath.Join(m.paths.codexHome, "skills"), source: "codex", includeSystem: true, editable: true},
+		{path: m.paths.projectSkills(project, ".claude"), source: "claude", editable: true},
+		{path: m.paths.projectSkills(project, ".grok"), source: "grok", editable: true},
+		{path: m.paths.projectSkills(project, ".codex"), source: "codex", includeSystem: true, editable: true},
+		{path: m.paths.codexSkills(), source: "codex", includeSystem: true, editable: true},
 		{path: m.paths.adminSkills, source: "admin"},
+		{path: m.paths.codexPluginCache(), pluginCache: true},
 	}
 	for _, root := range roots {
-		if err := discovery.discoverRoot(root); err != nil {
+		if err := discovery.discover(root); err != nil {
 			return nil, err
 		}
-	}
-	if err := discovery.discoverPluginCache(filepath.Join(m.paths.codexHome, "plugins", "cache")); err != nil {
-		return nil, err
 	}
 	if m.remoteStore != nil {
 		records, err := m.remoteStore.recordsForDiscovery(excludedRemoteKey)
@@ -85,10 +88,10 @@ func (m *manager) discoverSkills(
 			return nil, err
 		}
 		for _, record := range records {
-			root := filepath.Join(
-				m.remoteStore.root,
-				filepath.FromSlash(record.Content),
-			)
+			root, err := m.remoteStore.contentRoot(record)
+			if err != nil {
+				return nil, err
+			}
 			if err := discovery.addSkill(skillRoot{
 				source:                         record.Provider,
 				editable:                       true,
@@ -99,10 +102,15 @@ func (m *manager) discoverSkills(
 			}
 		}
 	}
-	slices.SortFunc(discovery.skills, func(a, b discoveredSkill) int {
-		return strings.Compare(a.Name, b.Name)
-	})
+	slices.SortFunc(discovery.skills, compareDiscoveredSkills)
 	return discovery.skills, nil
+}
+
+func (d *skillDiscovery) discover(root skillRoot) error {
+	if root.pluginCache {
+		return d.discoverPluginCache(root.path)
+	}
+	return d.discoverRoot(root)
 }
 
 func (d *skillDiscovery) discoverRoot(root skillRoot) error {
@@ -185,11 +193,11 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	if err != nil {
 		return nil //nolint:nilerr // Ignore entries that are not usable skill roots.
 	}
-	if marker, err := os.ReadFile(filepath.Join(resolvedRoot, ".skills-mgr-placeholder")); err == nil &&
+	if marker, err := os.ReadFile(filepath.Join(resolvedRoot, remotePlaceholderMarkerName)); err == nil &&
 		string(marker) == remotePlaceholderMarker {
 		return nil
 	}
-	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, "SKILL.md"))
+	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, skillManifestName))
 	if err != nil {
 		return nil //nolint:nilerr // Ignore roots without a usable SKILL.md.
 	}
@@ -210,7 +218,7 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	if root.disableModelInvocationOverride != nil {
 		skill.DisableModelInvocation = *root.disableModelInvocationOverride
 	}
-	if !skillAllowedForAgent(skill, d.harnesses, true) {
+	if !skillAllowedForAgent(skill, d.harnesses) {
 		return nil
 	}
 	if _, exists := d.seenPaths[resolvedSkill]; exists {

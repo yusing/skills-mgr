@@ -1,12 +1,8 @@
 package main
 
 import (
-	"bytes"
-
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"os"
 	"path/filepath"
@@ -23,36 +19,42 @@ func (m *manager) remoteSkillFrontmatter(ref remoteSkillRef) (string, error) {
 		if record.Provider != ref.Provider || record.ID != ref.ID {
 			continue
 		}
-		if record.Name != ref.Name || record.Locator != ref.Locator {
-			return "", fmt.Errorf("persisted remote skill identity changed")
-		}
-		skillPath := filepath.Join(
-			m.remoteStore.root,
-			filepath.FromSlash(record.Content),
-			"SKILL.md",
-		)
-		skill, ok, err := parseSkill(skillPath)
-		if err != nil {
-			return "", err
-		}
-		if !ok || skill.Name != ref.Name {
-			return "", fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
-		}
-		file, err := os.Open(skillPath)
-		if err != nil {
-			return "", err
-		}
-		defer file.Close()
-		frontmatter, _, status, err := readFrontmatter(file)
-		if err != nil {
-			return "", err
-		}
-		if status != frontmatterValid {
-			return "", fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
-		}
-		return frontmatter, nil
+		return m.recordFrontmatter(record, ref)
 	}
 	return "", fmt.Errorf("persisted remote skill %q is missing", ref.Name)
+}
+
+// recordFrontmatter reads a persisted remote skill's frontmatter from a record
+// the caller already holds. Callers iterating many skills use this so each one
+// costs a single manifest read instead of a full store scan.
+func (m *manager) recordFrontmatter(
+	record remoteSkillRecord,
+	ref remoteSkillRef,
+) (string, error) {
+	if record.Name != ref.Name || record.Locator != ref.Locator {
+		return "", fmt.Errorf("persisted remote skill identity changed")
+	}
+	root, err := m.remoteStore.contentRoot(record)
+	if err != nil {
+		return "", err
+	}
+	file, err := os.Open(filepath.Join(root, skillManifestName))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return "", fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
+		}
+		return "", err
+	}
+	defer file.Close()
+	frontmatter, _, status, err := readFrontmatter(file)
+	if err != nil {
+		return "", err
+	}
+	skill, ok := skillFromFrontmatter(frontmatter)
+	if status != frontmatterValid || !ok || skill.Name != ref.Name {
+		return "", fmt.Errorf("persisted remote skill %q is invalid", ref.Name)
+	}
+	return frontmatter, nil
 }
 
 func findRemoteRecord(
@@ -157,13 +159,8 @@ func (s *remoteSkillStore) loadRecordLocked(key string) (remoteSkillRecord, erro
 		return remoteSkillRecord{}, fmt.Errorf("read remote skill metadata: %w", err)
 	}
 	var record remoteSkillRecord
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&record); err != nil {
+	if err := decodeStrictJSON(data, &record); err != nil {
 		return remoteSkillRecord{}, fmt.Errorf("decode remote skill metadata: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return remoteSkillRecord{}, fmt.Errorf("decode remote skill metadata: unexpected data")
 	}
 	if record.SchemaRevision != remoteSkillSchemaRevision {
 		return remoteSkillRecord{}, fmt.Errorf(

@@ -91,9 +91,12 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		if len(harnesses) == 0 {
+			harnesses = inferHarnessFromEnv()
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return manager.listContext(ctx, project, os.Stdout, resolveHarnesses(harnesses)...)
+		return manager.listContext(ctx, project, os.Stdout, harnesses...)
 	case args[0] == "sync":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr sync")
@@ -152,7 +155,7 @@ func run(args []string) error {
 		switch {
 		case len(args) == 1:
 			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-			return runDaemon(ctx, manager, logger)
+			return runDaemonReady(ctx, manager, logger, nil)
 		case len(args) == 2 && (args[1] == daemonCommandRefresh || args[1] == daemonCommandSync):
 			return triggerDaemon(ctx, manager.paths.daemonSocket, args[1])
 		default:
@@ -181,13 +184,6 @@ func parseHarnessArgs(args []string) ([]listHarness, []string, error) {
 		}
 	}
 	return harnesses, nil, nil
-}
-
-func resolveHarnesses(explicit []listHarness) []listHarness {
-	if len(explicit) > 0 {
-		return explicit
-	}
-	return inferHarnessFromEnv()
 }
 
 func inferHarnessFromEnv() []listHarness {

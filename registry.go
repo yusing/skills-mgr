@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -157,7 +156,9 @@ func (r *remoteRegistry) fetchSkill(
 	// Extra ID segments are an explicit source path; a 3-part skill-id is used as a
 	// source path only when that directory exists at the repository root.
 	sourcePath := strings.Join(parts[2:], "/")
-	if len(parts) == 3 && !gitHubHasTrackedPrefix(tracked, sourcePath) {
+	if len(parts) == 3 && !slices.ContainsFunc(tracked, func(trackedPath string) bool {
+		return strings.HasPrefix(trackedPath, sourcePath+"/")
+	}) {
 		sourcePath = ""
 	}
 	candidates := gitHubSkillSearchFiles(tracked, sourcePath, ref.Name)
@@ -250,11 +251,5 @@ func loadRemoteCache(path string) (remoteRegistryCache, error) {
 }
 
 func saveRemoteCache(path string, cache remoteRegistryCache) error {
-	var data bytes.Buffer
-	encoder := json.NewEncoder(&data)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(cache); err != nil {
-		return fmt.Errorf("write remote registry cache: %w", err)
-	}
-	return writeAtomicFile(path, "remote registry cache", data.Bytes())
+	return writeAtomicJSONFile(path, "remote registry cache", cache)
 }

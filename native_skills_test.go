@@ -381,10 +381,7 @@ func writeGrokInspectCommand(t *testing.T, output string) string {
 	script := "#!/bin/sh\n" +
 		"test \"$1\" = inspect && test \"$2\" = --json || exit 2\n" +
 		"cat <<'SKILLS_MGR_JSON'\n" + output + "\nSKILLS_MGR_JSON\n"
-	writeFile(t, path, script)
-	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeExecutable(t, path, script)
 	return path
 }
 

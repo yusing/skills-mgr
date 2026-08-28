@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -83,10 +82,7 @@ func (r *skillsMPRegistry) catalog(ctx context.Context) ([]skillsMPSkill, error)
 		Skills:         skills,
 	})
 	r.mu.Unlock()
-	if err != nil {
-		return skills, err
-	}
-	return skills, nil
+	return skills, err
 }
 
 func (r *skillsMPRegistry) search(
@@ -152,9 +148,9 @@ func (r *skillsMPRegistry) fetchSkill(
 		candidates := make([]string, 0, 1)
 		for _, trackedPath := range tracked {
 			parts := strings.Split(trackedPath, "/")
-			if trackedPath == "SKILL.md" || len(parts) == 4 && len(parts[0]) > 1 &&
+			if trackedPath == skillManifestName || len(parts) == 4 && len(parts[0]) > 1 &&
 				strings.HasPrefix(parts[0], ".") && parts[1] == "skills" &&
-				parts[2] == ref.Name && parts[3] == "SKILL.md" {
+				parts[2] == ref.Name && parts[3] == skillManifestName {
 				if len(candidates) >= remoteSkillMaxFiles {
 					return nil, fmt.Errorf(
 						"GitHub repository contains more than %d skill manifests",
@@ -264,7 +260,7 @@ func filesFromGitHubCheckout(
 				continue
 			}
 		}
-		if relative == "" || manifestOnly && relative != "SKILL.md" ||
+		if relative == "" || manifestOnly && relative != skillManifestName ||
 			agentSkill && !isSafeAgentSkillFile(relative) {
 			continue
 		}
@@ -336,7 +332,7 @@ func isGitHubAgentSkillPath(skillPath string) bool {
 }
 
 func isSafeAgentSkillFile(relative string) bool {
-	if relative == "SKILL.md" {
+	if relative == skillManifestName {
 		return true
 	}
 	directory, _, nested := strings.Cut(relative, "/")
@@ -344,16 +340,6 @@ func isSafeAgentSkillFile(relative string) bool {
 		return false
 	}
 	return directory == "references" || directory == "scripts" || directory == "assets" || directory == "data"
-}
-
-func gitHubHasTrackedPrefix(tracked []string, sourcePath string) bool {
-	prefix := sourcePath + "/"
-	for _, trackedPath := range tracked {
-		if strings.HasPrefix(trackedPath, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // gitHubSkillSearchFiles limits discovery to an explicit source path, or to
@@ -371,7 +357,7 @@ func gitHubSkillSearchFiles(tracked []string, sourcePath, name string) []string 
 	}
 	named := make([]string, 0)
 	for _, trackedPath := range tracked {
-		if filepath.Base(filepath.FromSlash(trackedPath)) != "SKILL.md" {
+		if filepath.Base(filepath.FromSlash(trackedPath)) != skillManifestName {
 			continue
 		}
 		directory := filepath.ToSlash(filepath.Dir(filepath.FromSlash(trackedPath)))
@@ -397,7 +383,7 @@ func findGitHubSkillPath(
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if filepath.Base(filepath.FromSlash(trackedPath)) == "SKILL.md" {
+		if filepath.Base(filepath.FromSlash(trackedPath)) == skillManifestName {
 			manifests = append(manifests, trackedPath)
 			if len(manifests) > remoteSkillMaxFiles {
 				return "", fmt.Errorf(
@@ -531,10 +517,7 @@ func (r *skillsMPRegistry) searchSkills(
 	}
 	removeExpiredSkillsMPSearches(cache.Searches, time.Now())
 	trimSkillsMPSearches(cache.Searches)
-	if err := saveSkillsMPCache(r.searchCachePath, cache); err != nil {
-		return skills, err
-	}
-	return skills, nil
+	return skills, saveSkillsMPCache(r.searchCachePath, cache)
 }
 
 func trimSkillsMPSearches(searches map[string]skillsMPSearchResult) {
@@ -644,11 +627,5 @@ func loadSkillsMPCache(path string) (skillsMPCache, error) {
 }
 
 func saveSkillsMPCache(path string, cache skillsMPCache) error {
-	var data bytes.Buffer
-	encoder := json.NewEncoder(&data)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(cache); err != nil {
-		return fmt.Errorf("write SkillsMP cache: %w", err)
-	}
-	return writeAtomicFile(path, "SkillsMP cache", data.Bytes())
+	return writeAtomicJSONFile(path, "SkillsMP cache", cache)
 }

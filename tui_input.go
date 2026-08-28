@@ -22,7 +22,8 @@ func updateMouse(m model, message tea.MouseMsg) (tea.Model, tea.Cmd) {
 	header := m.headerHeight()
 	if len(sourceSubtabsFor(m.tab)) > 0 && mouse.Y == header-2 {
 		if subtab, ok := m.sourceSubtabAt(mouse.X); ok {
-			return m, m.selectSourceSubtab(subtab)
+			m.selectSourceSubtab(subtab)
+			return m, nil
 		}
 		return m, nil
 	}
@@ -86,11 +87,13 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.selectTab(min(skillsMPTab, m.tab+1))
 	case "[":
 		if len(sourceSubtabsFor(m.tab)) > 0 {
-			return m, m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] - 1))
+			m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] - 1))
+			return m, nil
 		}
 	case "]":
 		if len(sourceSubtabsFor(m.tab)) > 0 {
-			return m, m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] + 1))
+			m.selectSourceSubtab(m.wrapSourceSubtab(m.sourceSubtabs[m.tab] + 1))
+			return m, nil
 		}
 	case "up", "k":
 		if m.cursor > 0 {

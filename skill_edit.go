@@ -207,43 +207,51 @@ func (m *manager) planEditedSkillPlaceholders(
 	if err != nil {
 		return nil, err
 	}
-	if sameRoot || oldName == newName {
-		if sameRoot && oldName != newName {
-			changes = append(changes,
-				placeholderChange{
-					base: project,
-					name: oldName,
-					enabled: lockWantsPlaceholder(global, oldName) ||
-						lockWantsPlaceholder(projectLock, oldName),
-				},
-				placeholderChange{
-					base: project,
-					name: newName,
-					enabled: lockWantsPlaceholder(global, newName) ||
-						lockWantsPlaceholder(projectLock, newName),
-				},
-			)
-		} else {
-			enabled := lockWantsPlaceholder(global, newName)
-			if sameRoot {
-				enabled = enabled || lockWantsPlaceholder(projectLock, newName)
-			}
-			changes = append(changes, placeholderChange{
+	switch {
+	case sameRoot && oldName != newName:
+		changes = append(changes,
+			placeholderChange{
+				base: project,
+				name: oldName,
+				enabled: lockWantsPlaceholder(global, oldName) ||
+					lockWantsPlaceholder(projectLock, oldName),
+			},
+			placeholderChange{
+				base: project,
+				name: newName,
+				enabled: lockWantsPlaceholder(global, newName) ||
+					lockWantsPlaceholder(projectLock, newName),
+			},
+		)
+	case sameRoot:
+		changes = append(changes, placeholderChange{
+			base: m.paths.placeholderDir,
+			name: newName,
+			enabled: lockWantsPlaceholder(global, newName) ||
+				lockWantsPlaceholder(projectLock, newName),
+		})
+	case oldName == newName:
+		changes = append(changes,
+			placeholderChange{
 				base:    m.paths.placeholderDir,
 				name:    newName,
-				enabled: enabled,
-			})
-		}
-	}
-	if !sameRoot {
-		if oldName != newName {
-			changes = append(changes, placeholderChange{base: project, name: oldName})
-		}
-		changes = append(changes, placeholderChange{
-			base:    project,
-			name:    newName,
-			enabled: lockWantsPlaceholder(projectLock, newName),
-		})
+				enabled: lockWantsPlaceholder(global, newName),
+			},
+			placeholderChange{
+				base:    project,
+				name:    newName,
+				enabled: lockWantsPlaceholder(projectLock, newName),
+			},
+		)
+	default:
+		changes = append(changes,
+			placeholderChange{base: project, name: oldName},
+			placeholderChange{
+				base:    project,
+				name:    newName,
+				enabled: lockWantsPlaceholder(projectLock, newName),
+			},
+		)
 	}
 	return planRemotePlaceholdersAcross(changes, frontmatter)
 }
@@ -338,11 +346,7 @@ func (m *manager) applyEnabledDraft(
 			}
 			effective, effectiveExists = global.enabled(skill.Name)
 		}
-		// A conditional entry still gets a placeholder. The stub is invisible to
-		// the model, so it cannot bypass a false condition; only list, get, and
-		// run answer for the model, and all three evaluate the expression.
-		create := effectiveExists &&
-			(effective.Boolean == nil || *effective.Boolean)
+		create := effectiveExists && effective.wantsPlaceholder()
 		base := project
 		if m.global {
 			base = m.paths.placeholderDir
@@ -366,14 +370,8 @@ func (m *manager) applyEnabledDraft(
 	selectionChanged := false
 	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		current, currentExists := value.enabled(skill.Name)
-		same := currentExists == desiredExists
-		if same && currentExists {
-			same = current.Expression == desired.Expression &&
-				((current.Boolean == nil && desired.Boolean == nil) ||
-					(current.Boolean != nil &&
-						desired.Boolean != nil &&
-						*current.Boolean == *desired.Boolean))
-		}
+		same := currentExists == desiredExists &&
+			(!currentExists || current.equal(desired))
 		if same {
 			return false, nil
 		}

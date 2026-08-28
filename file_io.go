@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,6 +46,33 @@ func writeAtomicFile(path, label string, data []byte) error {
 	}
 	if err := os.Rename(name, path); err != nil {
 		return fmt.Errorf("write %s: %w", label, err)
+	}
+	return nil
+}
+
+// writeAtomicJSONFile renders value as the indented JSON every on-disk metadata
+// file in this package uses, then replaces path atomically.
+func writeAtomicJSONFile(path, label string, value any) error {
+	var data bytes.Buffer
+	encoder := json.NewEncoder(&data)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Errorf("write %s: %w", label, err)
+	}
+	return writeAtomicFile(path, label, data.Bytes())
+}
+
+// decodeStrictJSON owns the strict-decoding contract for every file this
+// package reads back: unknown fields and trailing data are rejected so a
+// corrupted or hand-edited file cannot be silently half-applied.
+func decodeStrictJSON(data []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("unexpected data")
 	}
 	return nil
 }

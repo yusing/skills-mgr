@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"syscall"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/pelletier/go-toml/v2/unstable"
@@ -105,10 +104,7 @@ func (m *manager) claudePluginSkills() ([]discoveredSkill, error) {
 	for _, pluginID := range pluginIDs {
 		enabled := settings.EnabledPlugins[pluginID]
 		for _, installation := range installed.Plugins[pluginID] {
-			discovery := skillDiscovery{
-				seenPaths: make(map[string]struct{}),
-				seenNames: make(map[string]struct{}),
-			}
+			discovery := newSkillDiscovery()
 			if err := discovery.discoverRoot(skillRoot{
 				path: filepath.Join(installation.InstallPath, "skills"), source: claudePluginSource,
 			}); err != nil {
@@ -166,10 +162,7 @@ func (m *manager) grokNativeSkills(project string) ([]discoveredSkill, error) {
 		default:
 			continue
 		}
-		enabled := true
-		if _, found := disabledSet[inspectedSkill.Name]; found {
-			enabled = false
-		}
+		_, disabled := disabledSet[inspectedSkill.Name]
 		skills = append(skills, discoveredSkill{
 			Name:                inspectedSkill.Name,
 			Description:         inspectedSkill.Description,
@@ -180,7 +173,7 @@ func (m *manager) grokNativeSkills(project string) ([]discoveredSkill, error) {
 			Vendor:              inspectedSkill.Vendor,
 			UserInvocable:       inspectedSkill.UserInvocable,
 			CompatibilityStatus: inspectedSkill.CompatibilityStatus,
-			ExternalEnabled:     enabled,
+			ExternalEnabled:     !disabled,
 		})
 	}
 	return skills, nil
@@ -213,16 +206,10 @@ func (m *manager) toggleGrokSkill(name string) (bool, error) {
 		return false, fmt.Errorf("open Grok config lock: %w", err)
 	}
 	defer lockFile.Close()
-	for {
-		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX)
-		if !errors.Is(err, syscall.EINTR) {
-			break
-		}
+	if err := flockExclusive(lockFile, "Grok config"); err != nil {
+		return false, err
 	}
-	if err != nil {
-		return false, fmt.Errorf("lock Grok config: %w", err)
-	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
+	defer unlockFlock(lockFile)
 
 	path := m.paths.grokConfig
 	snapshot, err := readGrokConfig(path)

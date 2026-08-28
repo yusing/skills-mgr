@@ -106,16 +106,30 @@ func (m model) currentList() renderedList {
 	}
 }
 
+// currentRowCount reports the active tab's row count without building the
+// render closure or its cache, which the cursor-clamping callers never use.
+func (m model) currentRowCount() int {
+	switch {
+	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
+		return len(m.remoteRows())
+	case m.tab == remoteTab || m.tab == skillsMPTab:
+		return len(m.registrySkills)
+	default:
+		return len(m.localSkillIndices())
+	}
+}
+
 func (m *model) syncViewport() renderedList {
-	list := m.currentList()
-	if list.count == 0 {
+	count := m.currentRowCount()
+	if count == 0 {
 		m.cursor = 0
 		m.offset = 0
-		return list
+		return m.currentList()
 	}
-	m.cursor = min(max(m.cursor, 0), list.count-1)
-	m.offset = min(max(m.offset, 0), list.count-1)
-	list = m.currentList()
+	// currentList captures the cursor, so clamp before building the list.
+	m.cursor = min(max(m.cursor, 0), count-1)
+	m.offset = min(max(m.offset, 0), count-1)
+	list := m.currentList()
 	visible := m.height - m.chromeHeight()
 	if visible <= 0 {
 		m.offset = m.cursor
@@ -297,7 +311,13 @@ type remoteRow struct {
 }
 
 func (m model) remoteRows() []remoteRow {
-	rows := make([]remoteRow, 0, len(m.remoteTopics))
+	total := len(m.remoteTopics)
+	for _, topic := range m.remoteTopics {
+		if !m.remoteCollapsed[topic.Slug] {
+			total += len(topic.Skills)
+		}
+	}
+	rows := make([]remoteRow, 0, total)
 	for topicIndex, topic := range m.remoteTopics {
 		rows = append(rows, remoteRow{
 			topic: topicIndex,
@@ -542,7 +562,7 @@ func (m model) skillLines(indices []int, index int) []string {
 	if projectConditional || effectiveGlobalConditional {
 		label := " [conditional]"
 		if !projectConditional {
-			if effectiveGlobalConditional && (m.manager == nil || !m.manager.global) {
+			if effectiveGlobalConditional && m.projectSelected != nil {
 				label = " [conditional inherited]"
 			}
 		}
@@ -571,7 +591,7 @@ func (m model) skillLines(indices []int, index int) []string {
 		}
 		return append(
 			details,
-			styledPathLines(terminalSafeText(skill.Path), m.width)...,
+			styledMetadataLines("path", terminalSafeText(skill.Path), m.width)...,
 		)
 	})
 }
@@ -593,13 +613,13 @@ func skillSourceStyle(skill discoveredSkill) lipgloss.Style {
 	case skill.RemoteKey != "",
 		skill.Source == skillsShProvider,
 		skill.Source == skillsMPProvider:
-		color = lipgloss.AdaptiveColor{Light: "#6F42C1", Dark: "#C4A7E7"}
+		color = inheritedColor
 	case skill.Source == "user":
-		color = lipgloss.AdaptiveColor{Light: "#005F87", Dark: "#7DD3FC"}
+		color = accentColor
 	case skill.Source == managedSkillSource:
-		color = lipgloss.AdaptiveColor{Light: "#237A3B", Dark: "#75D18B"}
+		color = successColor
 	case skill.Source == "plugin", skill.Source == claudePluginSource, skill.Source == grokPluginSource:
-		color = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#E5C07B"}
+		color = warningColor
 	case skill.Source == "bundled", skill.Source == grokBundledSource:
 		color = lipgloss.AdaptiveColor{Light: "#A63D73", Dark: "#F49AC2"}
 	}
@@ -607,26 +627,29 @@ func skillSourceStyle(skill discoveredSkill) lipgloss.Style {
 }
 
 func (m model) localSkillIndices() []int {
-	indices := make([]int, 0, len(m.skills))
+	// Grouped in index order, groups concatenated: one classification pass keeps
+	// that ordering without asking localSkillGroup about every skill four times.
+	var groups [4][]int
 	query := strings.ToLower(m.filterQuery)
-	for group := range 4 {
-		for index, skill := range m.skills {
-			if m.localSkillGroup(skill) != group {
-				continue
-			}
-			if matchesNormalizedFilter(
-				query,
-				skill.Name,
-				skill.Description,
-				skill.Path,
-				skill.Source,
-				skill.Plugin,
-				skill.Vendor,
-				skill.CompatibilityStatus,
-			) {
-				indices = append(indices, index)
-			}
+	for index, skill := range m.skills {
+		if !matchesNormalizedFilter(
+			query,
+			skill.Name,
+			skill.Description,
+			skill.Path,
+			skill.Source,
+			skill.Plugin,
+			skill.Vendor,
+			skill.CompatibilityStatus,
+		) {
+			continue
 		}
+		group := m.localSkillGroup(skill)
+		groups[group] = append(groups[group], index)
+	}
+	indices := make([]int, 0, len(m.skills))
+	for _, group := range groups {
+		indices = append(indices, group...)
 	}
 	return indices
 }
@@ -713,10 +736,6 @@ func wrapDetail(value string, width int) []string {
 	return append(lines, indent+value)
 }
 
-func styledPathLines(path string, width int) []string {
-	return styledMetadataLines("path", path, width)
-}
-
 func styledMetadataLines(label, value string, width int) []string {
 	if width <= 0 {
 		return []string{""}
@@ -749,24 +768,34 @@ func hardWrap(value string, width int) []string {
 		return []string{value}
 	}
 	var lines []string
-	for lipgloss.Width(value) > width {
-		runes := []rune(value)
+	runes := []rune(value)
+	for lipgloss.Width(string(runes)) > width {
 		cut := displayWidthCut(runes, width)
 		lines = append(lines, string(runes[:cut]))
-		value = string(runes[cut:])
+		runes = runes[cut:]
 	}
-	return append(lines, value)
+	return append(lines, string(runes))
 }
 
+// displayWidthCut reports how many leading runes fit in width columns, always at
+// least one so callers keep making progress. Every value reaching the wrappers
+// has passed through terminalSafeText, which strips control runes including ESC,
+// so no escape sequence can make a longer prefix measure narrower; prefix width
+// is therefore non-decreasing and this binary search is exact.
 func displayWidthCut(runes []rune, width int) int {
-	cut := 0
-	for cut < len(runes) && lipgloss.Width(string(runes[:cut+1])) <= width {
-		cut++
+	low, high := 0, len(runes)
+	for low < high {
+		mid := (low + high + 1) / 2
+		if lipgloss.Width(string(runes[:mid])) <= width {
+			low = mid
+		} else {
+			high = mid - 1
+		}
 	}
-	if cut == 0 {
+	if low == 0 {
 		return 1
 	}
-	return cut
+	return low
 }
 
 func terminalSafeText(value string) string {

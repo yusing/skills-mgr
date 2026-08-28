@@ -30,10 +30,10 @@ func (m model) wrapSourceSubtab(subtab int) int {
 	return (subtab%count + count) % count
 }
 
-func (m *model) selectSourceSubtab(subtab int) tea.Cmd {
+func (m *model) selectSourceSubtab(subtab int) {
 	subtabs := sourceSubtabsFor(m.tab)
 	if subtab < 0 || subtab >= len(subtabs) || subtab == m.sourceSubtabs[m.tab] {
-		return nil
+		return
 	}
 	m.sourceSubtabs[m.tab] = subtab
 	m.cursor = 0
@@ -42,7 +42,6 @@ func (m *model) selectSourceSubtab(subtab int) tea.Cmd {
 	m.applyCatalog()
 	m.status = fmt.Sprintf("%d skills", len(m.skills))
 	m.syncViewport()
-	return nil
 }
 
 func (m *model) selectTab(tab int) tea.Cmd {
@@ -256,7 +255,7 @@ func (m model) debounceRegistrySearch() tea.Cmd {
 }
 
 func (m model) itemCount() int {
-	return m.currentList().count
+	return m.currentRowCount()
 }
 
 func remoteRefAtCursor(m model) (remoteSkillRef, bool) {

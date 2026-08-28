@@ -51,16 +51,13 @@ func skillVisibleInTUI(skill discoveredSkill, harnesses []listHarness) bool {
 	if agent == "" {
 		return false
 	}
-	return skillAllowedForAgent(skill, harnesses, false)
+	return skillAllowedForAgent(skill, harnesses)
 }
 
-func skillAllowedForAgent(skill discoveredSkill, harnesses []listHarness, unscopedIncludesPrivate bool) bool {
+func skillAllowedForAgent(skill discoveredSkill, harnesses []listHarness) bool {
 	agent := sourceAgent(skill.Source)
-	if agent == "" {
+	if agent == "" || len(harnesses) == 0 {
 		return true
-	}
-	if len(harnesses) == 0 {
-		return unscopedIncludesPrivate
 	}
 	for _, harness := range harnesses {
 		if harnessAgent(harness) != agent {
@@ -182,47 +179,40 @@ func grokLoadsClaudeSkills() bool {
 }
 
 func (m *manager) harnessVisibleSkillNames(project string, harnesses []listHarness) (map[string]bool, error) {
-	discovery := skillDiscovery{
-		seenPaths: make(map[string]struct{}),
-		seenNames: make(map[string]struct{}),
-	}
+	discovery := newSkillDiscovery()
 	for _, harness := range harnesses {
 		var roots []skillRoot
 		switch harness {
 		case listHarnessClaude:
 			roots = []skillRoot{
-				{path: filepath.Join(project, ".claude", "skills")},
+				{path: m.paths.projectSkills(project, ".claude")},
 				{path: m.paths.claudeSkills},
 			}
 		case listHarnessGrok:
 			roots = []skillRoot{
-				{path: filepath.Join(project, ".grok", "skills")},
+				{path: m.paths.projectSkills(project, ".grok")},
 				{path: m.paths.grokSkills},
 				// Grok scans the shared .agents/skills roots natively. Claude
 				// does not.
-				{path: filepath.Join(project, ".agents", "skills")},
+				{path: m.paths.projectSkills(project, ".agents")},
 				{path: m.paths.userSkills},
 			}
 			if grokLoadsClaudeSkills() {
 				roots = append(roots,
-					skillRoot{path: filepath.Join(project, ".claude", "skills")},
+					skillRoot{path: m.paths.projectSkills(project, ".claude")},
 					skillRoot{path: m.paths.claudeSkills},
 				)
 			}
 		case listHarnessCodex:
 			roots = []skillRoot{
-				{path: filepath.Join(project, ".codex", "skills"), includeSystem: true},
-				{path: filepath.Join(m.paths.codexHome, "skills"), includeSystem: true},
+				{path: m.paths.projectSkills(project, ".codex"), includeSystem: true},
+				{path: m.paths.codexSkills(), includeSystem: true},
 				{path: m.paths.adminSkills},
+				{path: m.paths.codexPluginCache(), pluginCache: true},
 			}
 		}
 		for _, root := range roots {
-			if err := discovery.discoverRoot(root); err != nil {
-				return nil, err
-			}
-		}
-		if harness == listHarnessCodex {
-			if err := discovery.discoverPluginCache(filepath.Join(m.paths.codexHome, "plugins", "cache")); err != nil {
+			if err := discovery.discover(root); err != nil {
 				return nil, err
 			}
 		}
@@ -247,7 +237,7 @@ func referenceFiles(skillRoot string) ([]string, error) {
 	var files []string
 	for _, entry := range entries {
 		if entry.IsDir() ||
-			entry.Name() == "SKILL.md" ||
+			entry.Name() == skillManifestName ||
 			filepath.Ext(entry.Name()) != ".md" ||
 			!listedReferenceName(entry.Name()) {
 			continue

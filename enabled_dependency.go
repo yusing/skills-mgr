@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -115,6 +116,15 @@ func loadDependencyIndex(
 	return index, nil
 }
 
+// dependencyManifestNames are the manifest filenames addManifest can parse. The
+// evidence scanner collects exactly these, so a manifest can never be collected
+// without a parser or routed to the wrong one.
+var dependencyManifestNames = []string{"go.mod", "Cargo.toml", "package.json"}
+
+func isDependencyManifest(name string) bool {
+	return slices.Contains(dependencyManifestNames, name)
+}
+
 func (index dependencyIndex) addManifest(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -151,6 +161,9 @@ func (index dependencyIndex) addManifest(path string) error {
 			}
 		}
 		return nil
+	case "Cargo.toml":
+	default:
+		return fmt.Errorf("unsupported dependency manifest %s", path)
 	}
 
 	var manifest cargoManifest
@@ -270,17 +283,7 @@ func versionFromMatch(parts []string) (dependencyVersion, int) {
 }
 
 func (c dependencyConstraint) matches(version dependencyVersion) bool {
-	comparison := 0
-	for index := range c.precision {
-		if version[index] != c.version[index] {
-			if version[index] < c.version[index] {
-				comparison = -1
-			} else {
-				comparison = 1
-			}
-			break
-		}
-	}
+	comparison := slices.Compare(version[:c.precision], c.version[:c.precision])
 	switch c.operator {
 	case ">=":
 		return comparison >= 0

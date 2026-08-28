@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 const (
@@ -85,16 +87,31 @@ func (s skillSelection) clone() skillSelection {
 	return cloned
 }
 
+// equal owns the rule for when two selections express the same enabled state,
+// so callers deciding whether a write is needed cannot drift from it as
+// enabledValue grows representations.
+func (v enabledValue) equal(other enabledValue) bool {
+	if v.Expression != other.Expression ||
+		(v.Boolean == nil) != (other.Boolean == nil) {
+		return false
+	}
+	return v.Boolean == nil || *v.Boolean == *other.Boolean
+}
+
+// wantsPlaceholder reports whether a configured selection should leave a
+// harness placeholder behind. A conditional expression counts as wanting one:
+// the stub is invisible to the model, so it cannot bypass a false condition;
+// list, get, and run all evaluate the expression before answering.
+func (v enabledValue) wantsPlaceholder() bool {
+	return v.Boolean == nil || *v.Boolean
+}
+
 func (s skillSelection) equal(other skillSelection) bool {
 	switch {
 	case (s.Enabled == nil) != (other.Enabled == nil),
 		(s.Remote == nil) != (other.Remote == nil):
 		return false
-	case s.Enabled != nil && (s.Enabled.Expression != other.Enabled.Expression ||
-		(s.Enabled.Boolean == nil) != (other.Enabled.Boolean == nil)):
-		return false
-	case s.Enabled != nil && s.Enabled.Boolean != nil &&
-		*s.Enabled.Boolean != *other.Enabled.Boolean:
+	case s.Enabled != nil && !s.Enabled.equal(*other.Enabled):
 		return false
 	case s.Remote != nil && *s.Remote != *other.Remote:
 		return false
@@ -197,16 +214,7 @@ func (l lock) clone() lock {
 }
 
 func (l lock) equal(other lock) bool {
-	if len(l.Skills) != len(other.Skills) {
-		return false
-	}
-	for name, selection := range l.Skills {
-		otherSelection, ok := other.Skills[name]
-		if !ok || !selection.equal(otherSelection) {
-			return false
-		}
-	}
-	return true
+	return maps.EqualFunc(l.Skills, other.Skills, skillSelection.equal)
 }
 
 func loadLock(project string) (lock, error) {
@@ -232,7 +240,7 @@ func loadLock(project string) (lock, error) {
 			SchemaRevision int             `json:"schema_revision"`
 			Skills         map[string]bool `json:"skills"`
 		}
-		if err := decodeLockJSON(data, &legacy); err != nil {
+		if err := decodeStrictJSON(data, &legacy); err != nil {
 			return lock{}, fmt.Errorf("decode %s: %w", path, err)
 		}
 		if legacy.Skills == nil {
@@ -244,7 +252,7 @@ func loadLock(project string) (lock, error) {
 		}
 	case previousLockSchemaRevision:
 		var previous previousDecodedLockFile
-		if err := decodeLockJSON(data, &previous); err != nil {
+		if err := decodeStrictJSON(data, &previous); err != nil {
 			return lock{}, fmt.Errorf("decode %s: %w", path, err)
 		}
 		if previous.Skills == nil {
@@ -270,7 +278,7 @@ func loadLock(project string) (lock, error) {
 		}
 	case lockSchemaRevision:
 		var current decodedLockFile
-		if err := decodeLockJSON(data, &current); err != nil {
+		if err := decodeStrictJSON(data, &current); err != nil {
 			return lock{}, fmt.Errorf("decode %s: %w", path, err)
 		}
 		if current.Skills == nil {
@@ -316,18 +324,6 @@ func loadSelection(path, name string, selection *skillSelection, result *lock) e
 		}
 	}
 	result.Skills[name] = *selection
-	return nil
-}
-
-func decodeLockJSON(data []byte, value any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("unexpected data after lock")
-	}
 	return nil
 }
 
@@ -391,16 +387,10 @@ func updateLock(project, coordinationDir string, update func(*lock) (bool, error
 		return fmt.Errorf("open %s: %w", lockPath, err)
 	}
 	defer file.Close()
-	for {
-		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
-		if !errors.Is(err, syscall.EINTR) {
-			break
-		}
+	if err := flockExclusive(file, lockPath); err != nil {
+		return err
 	}
-	if err != nil {
-		return fmt.Errorf("lock %s: %w", lockPath, err)
-	}
-	defer func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN) }()
+	defer unlockFlock(file)
 
 	value, err := loadLock(project)
 	if err != nil {
@@ -418,4 +408,49 @@ func newLock() lock {
 		SchemaRevision: lockSchemaRevision,
 		Skills:         make(map[string]skillSelection),
 	}
+}
+
+// flockExclusive waits in the kernel until the advisory lock is held, retrying
+// the EINTR that signal delivery causes. Callers that must stay cancellable use
+// flockExclusiveContext instead.
+func flockExclusive(file *os.File, label string) error {
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("lock %s: %w", label, err)
+		}
+		return nil
+	}
+}
+
+// flockExclusiveContext polls for the advisory lock so a caller carrying a
+// context stays cancellable while another process holds it, and reports the
+// context's own error on cancellation so callers can distinguish it.
+func flockExclusiveContext(ctx context.Context, file *os.File, label string) error {
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, syscall.EINTR):
+			continue
+		case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
+			timer := time.NewTimer(25 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		default:
+			return fmt.Errorf("lock %s: %w", label, err)
+		}
+	}
+}
+
+func unlockFlock(file *os.File) {
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 }

@@ -1659,18 +1659,12 @@ func TestInferHarnessFromEnv(t *testing.T) {
 	}
 }
 
-func TestResolveHarnessesPrefersFlags(t *testing.T) {
+func TestInferHarnessFromEnvReportsOneHarnessPerSignal(t *testing.T) {
 	clearHarnessEnv(t)
 	t.Setenv("GROK_AGENT", "1")
 	t.Setenv("GROK_SESSION_ID", "sess")
 
-	got := resolveHarnesses([]listHarness{listHarnessClaude})
-	if !slices.Equal(got, []listHarness{listHarnessClaude}) {
-		t.Fatalf("explicit flags = %v, want claude", got)
-	}
-
-	got = resolveHarnesses(nil)
-	if !slices.Equal(got, []listHarness{listHarnessGrok}) {
+	if got := inferHarnessFromEnv(); !slices.Equal(got, []listHarness{listHarnessGrok}) {
 		t.Fatalf("inferred = %v, want grok", got)
 	}
 }

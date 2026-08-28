@@ -70,7 +70,7 @@ func (m *manager) getContext(
 	}
 	var input io.Reader = file
 	var patchErr error
-	isSkillMarkdown := filepath.Clean(filepath.FromSlash(relative)) == "SKILL.md"
+	isSkillMarkdown := filepath.Clean(filepath.FromSlash(relative)) == skillManifestName
 	if discovered.RemoteKey != "" && isSkillMarkdown {
 		original, err := io.ReadAll(file)
 		if err != nil {
@@ -292,7 +292,7 @@ func splitTarget(target string) (skill, relative string, err error) {
 		return "", "", fmt.Errorf("invalid skill target %q", target)
 	}
 	if !hasRelative {
-		return skill, "SKILL.md", nil
+		return skill, skillManifestName, nil
 	}
 	if relative == "" || !filepath.IsLocal(filepath.FromSlash(relative)) {
 		return "", "", fmt.Errorf("invalid skill target %q", target)

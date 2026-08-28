@@ -17,8 +17,6 @@ import (
 	"strconv"
 	"strings"
 
-	"syscall"
-	"time"
 	"unicode"
 
 	"github.com/goccy/go-yaml"
@@ -26,6 +24,10 @@ import (
 	"github.com/goccy/go-yaml/parser"
 	yamlToken "github.com/goccy/go-yaml/token"
 )
+
+// skillManifestName is the filename every harness reads a skill's frontmatter
+// from, so it is fixed by those harnesses rather than chosen here.
+const skillManifestName = "SKILL.md"
 
 type skillFrontmatter struct {
 	Name                   string `yaml:"name"`
@@ -57,20 +59,28 @@ func parseSkill(path string) (discoveredSkill, bool, error) {
 	if status != frontmatterValid {
 		return discoveredSkill{}, false, nil
 	}
+	skill, ok := skillFromFrontmatter(frontmatter)
+	return skill, ok, nil
+}
+
+// skillFromFrontmatter converts frontmatter text into the skill it describes,
+// reporting false when the metadata does not name a usable skill. Callers that
+// already hold the frontmatter text use this instead of reopening the file.
+func skillFromFrontmatter(frontmatter string) (discoveredSkill, bool) {
 	var metadata skillFrontmatter
 	if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
-		return discoveredSkill{}, false, nil
+		return discoveredSkill{}, false
 	}
 	metadata.Name = strings.TrimSpace(metadata.Name)
 	metadata.Description = strings.Join(strings.Fields(metadata.Description), " ")
 	if !validSkillName(metadata.Name) || !validSkillDescription(metadata.Description) {
-		return discoveredSkill{}, false, nil
+		return discoveredSkill{}, false
 	}
 	return discoveredSkill{
 		Name:                   metadata.Name,
 		Description:            metadata.Description,
 		DisableModelInvocation: metadata.DisableModelInvocation,
-	}, true, nil
+	}, true
 }
 
 func toggleModelInvocationFrontmatter(data []byte) ([]byte, bool, error) {
@@ -289,28 +299,10 @@ func toggleModelInvocationFile(
 		return false, fmt.Errorf("open model invocation lock: %w", err)
 	}
 	defer lock.Close()
-acquire:
-	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		switch {
-		case err == nil:
-			break acquire
-		case errors.Is(err, syscall.EINTR):
-			continue
-		case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
-			timer := time.NewTimer(25 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return false, ctx.Err()
-			case <-timer.C:
-				continue
-			}
-		default:
-			return false, fmt.Errorf("lock model invocation update: %w", err)
-		}
+	if err := flockExclusiveContext(ctx, lock, "model invocation update"); err != nil {
+		return false, err
 	}
-	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	defer unlockFlock(lock)
 	info, err := os.Stat(path)
 	if err != nil {
 		return false, fmt.Errorf("inspect %s: %w", path, err)

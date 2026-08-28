@@ -16,6 +16,10 @@ import (
 // bytes, so changing it would orphan every placeholder already written.
 const remotePlaceholderMarker = "skills-mgr remote placeholder\n"
 
+// remotePlaceholderMarkerName is the sentinel file that proves skills-mgr
+// created a placeholder directory, so renaming it must stay a single edit.
+const remotePlaceholderMarkerName = ".skills-mgr-placeholder"
+
 type placeholderFrontmatter struct {
 	Name                   string `yaml:"name"`
 	Description            string `yaml:"description"`
@@ -105,7 +109,10 @@ func (m *manager) changeRemotePlaceholders(
 	if m.global {
 		base = m.paths.placeholderDir
 	}
-	return m.changeRemotePlaceholdersAt(base, name, frontmatter, enabled)
+	return m.changeRemotePlaceholdersAcross(
+		[]placeholderChange{{base: base, name: name, enabled: enabled}},
+		frontmatter,
+	)
 }
 
 type placeholderMutationKind uint8
@@ -133,7 +140,6 @@ type placeholderMutation struct {
 	previous    []byte
 	removed     *removedPlaceholder
 	missingDirs []string
-	createdDirs []string
 }
 
 type placeholderState struct {
@@ -159,8 +165,8 @@ func inspectRemotePlaceholder(
 	defer root.Close()
 
 	skillDir := filepath.Join(rootDir, name)
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	skillPath := filepath.Join(skillDir, skillManifestName)
+	markerPath := filepath.Join(skillDir, remotePlaceholderMarkerName)
 	state := placeholderState{}
 	current := ""
 	for component := range strings.SplitSeq(filepath.ToSlash(skillDir), "/") {
@@ -282,7 +288,7 @@ func planRemotePlaceholder(
 			if !state.skillMode.IsRegular() || !state.markerMode.IsRegular() {
 				return placeholderMutation{}, false, fmt.Errorf(
 					"update remote skill placeholder %s: managed files are not regular",
-					filepath.Join(rootDir, name, "SKILL.md"),
+					filepath.Join(rootDir, name, skillManifestName),
 				)
 			}
 			planned.kind = placeholderUpdate
@@ -291,7 +297,7 @@ func planRemotePlaceholder(
 		case !vacant:
 			return placeholderMutation{}, false, fmt.Errorf(
 				"create remote skill placeholder %s: path already exists",
-				filepath.Join(rootDir, name, "SKILL.md"),
+				filepath.Join(rootDir, name, skillManifestName),
 			)
 		default:
 			planned.kind = placeholderCreate
@@ -309,7 +315,7 @@ func planRemotePlaceholder(
 		!state.dirMode.IsDir() {
 		return placeholderMutation{}, false, fmt.Errorf(
 			"remove remote skill placeholder %s: managed paths changed",
-			filepath.Join(rootDir, name, "SKILL.md"),
+			filepath.Join(rootDir, name, skillManifestName),
 		)
 	}
 	planned.kind = placeholderRemove
@@ -400,8 +406,8 @@ func restorePlaceholderFile(
 
 func removePlaceholderDirs(root *os.Root, paths []string) error {
 	var result error
-	for index := len(paths) - 1; index >= 0; index-- {
-		result = errors.Join(result, removePlaceholderPath(root, paths[index]))
+	for _, path := range slices.Backward(paths) {
+		result = errors.Join(result, removePlaceholderPath(root, path))
 	}
 	return result
 }
@@ -412,8 +418,8 @@ func (mutation placeholderMutation) apply() (func() error, error) {
 		return nil, err
 	}
 	skillDir := filepath.Join(mutation.rootDir, mutation.name)
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	skillPath := filepath.Join(skillDir, skillManifestName)
+	markerPath := filepath.Join(skillDir, remotePlaceholderMarkerName)
 	managed := state.skillExists &&
 		state.markerExists &&
 		bytes.Equal(state.markerData, mutation.marker)
@@ -509,7 +515,6 @@ func (mutation placeholderMutation) apply() (func() error, error) {
 				cleanupErr,
 			)
 		}
-		mutation.createdDirs = createdDirs
 	case placeholderUpdate:
 		if err := root.WriteFile(skillPath, mutation.content, 0o644); err != nil {
 			restoreErr := root.WriteFile(skillPath, mutation.previous, 0o644)
@@ -550,8 +555,8 @@ func (mutation placeholderMutation) undo() error {
 		return err
 	}
 	skillDir := filepath.Join(mutation.rootDir, mutation.name)
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	markerPath := filepath.Join(skillDir, ".skills-mgr-placeholder")
+	skillPath := filepath.Join(skillDir, skillManifestName)
+	markerPath := filepath.Join(skillDir, remotePlaceholderMarkerName)
 	managed := state.skillExists &&
 		state.markerExists &&
 		bytes.Equal(state.markerData, mutation.marker)
@@ -589,7 +594,7 @@ func (mutation placeholderMutation) undo() error {
 				restoreErr,
 			)
 		}
-		return removePlaceholderDirs(root, mutation.createdDirs)
+		return removePlaceholderDirs(root, mutation.missingDirs)
 	case placeholderUpdate:
 		if state.skip ||
 			!managed ||
@@ -678,24 +683,6 @@ func applyRemotePlaceholderPlan(
 		journal.add(undo)
 	}
 	return nil
-}
-
-// changeRemotePlaceholdersAt applies a placeholder change at an explicit
-// harness root. Relocating authored content may need to update both the global
-// root and the current project, independently of the TUI's selection layer.
-func (m *manager) changeRemotePlaceholdersAt(
-	base, name, frontmatter string,
-	enabled bool,
-) (func() error, error) {
-	planned, err := planRemotePlaceholdersAt(base, name, frontmatter, enabled)
-	if err != nil {
-		return nil, err
-	}
-	journal := &mutationJournal{}
-	if err := applyRemotePlaceholderPlan(planned, journal); err != nil {
-		return nil, errors.Join(err, journal.rollback())
-	}
-	return journal.undo(), nil
 }
 
 func planRemotePlaceholdersAcross(

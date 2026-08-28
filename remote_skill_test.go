@@ -558,11 +558,9 @@ func TestRemotePlaceholderRollbackPreservesPreexistingEmptySkillDirectory(t *tes
 		t.Fatal(err)
 	}
 
-	undo, err := manager.changeRemotePlaceholdersAt(
-		project,
-		"alpha",
+	undo, err := manager.changeRemotePlaceholdersAcross(
+		[]placeholderChange{{base: project, name: "alpha", enabled: true}},
 		"name: alpha\ndescription: Remote alpha.\n",
-		true,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -3551,10 +3549,10 @@ func TestTUISkillsMPCloneUsesProgressPopup(t *testing.T) {
 
 func TestLocalToggleDoneReconcilesRemoteCatalogState(t *testing.T) {
 	const key = "remote-key"
+	catalog := []discoveredSkill{{Name: "alpha", RemoteKey: key}}
 	current := model{
-		skills: []discoveredSkill{{
-			Name: "alpha", RemoteKey: key,
-		}},
+		allSkills:      catalog,
+		skills:         catalog,
 		selected:       map[string]bool{"alpha": true},
 		remoteSelected: map[string]bool{key: true},
 		busy:           true,
@@ -3689,7 +3687,7 @@ func fakeGit(
 	}
 	bin := t.TempDir()
 	script := filepath.Join(bin, "git")
-	if err := os.WriteFile(script, []byte(`#!/bin/sh
+	writeExecutable(t, script, `#!/bin/sh
 if [ "$1" = "-C" ]; then
   while IFS= read -r path; do
     printf '%s\0' "$path"
@@ -3715,9 +3713,7 @@ if [ ! -f "$source/.tracked" ]; then
 fi
 mkdir -p "$destination"
 cp -R "$source/." "$destination/"
-`), 0o755); err != nil {
-		t.Fatal(err)
-	}
+`)
 	logPath := filepath.Join(t.TempDir(), "git.log")
 	t.Setenv("FAKE_GIT_ROOT", root)
 	t.Setenv("FAKE_GIT_LOG", logPath)

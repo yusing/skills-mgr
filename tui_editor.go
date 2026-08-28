@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -41,14 +40,9 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 		if err != nil {
 			return skillEdit{}, err
 		}
-		contents, err := m.manager.remoteStore.applyPatch(ref, original)
+		contents, err := m.manager.remoteStore.layeredContent(ref, original)
 		if err != nil {
-			if errors.Is(err, errRemoteSkillPatch) {
-				// Fall back to original content when patch no longer applies
-				contents = original
-			} else {
-				return skillEdit{}, err
-			}
+			return skillEdit{}, err
 		}
 		temporary, err := os.CreateTemp("", "skills-mgr-remote-skill-*.md")
 		if err != nil {
@@ -88,11 +82,10 @@ func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr er
 		return nil, "", fmt.Errorf("create enabled editor draft: %w", err)
 	}
 	draft = temp.Name()
-	draftPath := draft
 	defer func() {
 		if retErr != nil {
 			_ = temp.Close()
-			_ = os.Remove(draftPath)
+			_ = os.Remove(temp.Name())
 		}
 	}()
 	if err := temp.Chmod(0o600); err != nil {

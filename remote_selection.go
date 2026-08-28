@@ -36,17 +36,10 @@ func (m *manager) sync(
 	if m.remoteStore == nil {
 		return fmt.Errorf("remote skill store is unavailable")
 	}
-	var placeholderUndos []func() error
-	rollbackPlaceholders := func() error {
-		rollbackErr := error(nil)
-		for _, undo := range slices.Backward(placeholderUndos) {
-			rollbackErr = errors.Join(rollbackErr, undo())
-		}
-		return rollbackErr
-	}
+	var journal mutationJournal
 	defer func() {
 		if retErr != nil {
-			retErr = errors.Join(retErr, rollbackPlaceholders())
+			retErr = errors.Join(retErr, journal.rollback())
 		}
 	}()
 	changePlaceholders := func(name, frontmatter string, enabled bool) error {
@@ -54,9 +47,7 @@ func (m *manager) sync(
 		if err != nil {
 			return err
 		}
-		if undo != nil {
-			placeholderUndos = append(placeholderUndos, undo)
-		}
+		journal.add(undo)
 		return nil
 	}
 
@@ -113,12 +104,25 @@ func (m *manager) sync(
 		}
 	}
 	slices.Sort(names)
+	storeRecords, err := m.remoteStore.records()
+	if err != nil {
+		return err
+	}
+	recordsByKey := make(map[string]remoteSkillRecord, len(storeRecords))
+	for _, record := range storeRecords {
+		recordsByKey[record.ref().key()] = record
+	}
 
 	for _, name := range names {
 		ref, _ := projectLock.remote(name)
-		enabled, enabledExists := projectLock.enabled(name)
-		if !enabledExists || (enabled.Boolean != nil && !*enabled.Boolean) {
-			frontmatter, _ := m.remoteSkillFrontmatter(ref)
+		wantsPlaceholder := lockWantsPlaceholder(projectLock, name)
+		if !wantsPlaceholder {
+			// A missing or unreadable record leaves the frontmatter empty, which
+			// is what removing a placeholder needs anyway.
+			frontmatter := ""
+			if record, ok := recordsByKey[ref.key()]; ok {
+				frontmatter, _ = m.recordFrontmatter(record, ref)
+			}
 			if err := changePlaceholders(name, frontmatter, false); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
@@ -151,14 +155,15 @@ func (m *manager) sync(
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
 		provider := m.remoteContentProvider(ref.Provider)
-		if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
-			return fmt.Errorf("sync remote skill %q: %w", name, err)
-		}
-		frontmatter, err := m.remoteSkillFrontmatter(ref)
+		record, err := m.remoteStore.ensure(ctx, ref, provider)
 		if err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
-		if enabledExists && (enabled.Boolean == nil || *enabled.Boolean) {
+		frontmatter, err := m.recordFrontmatter(record, ref)
+		if err != nil {
+			return fmt.Errorf("sync remote skill %q: %w", name, err)
+		}
+		if wantsPlaceholder {
 			if err := changePlaceholders(name, frontmatter, true); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}

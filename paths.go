@@ -72,6 +72,23 @@ func defaultPaths() (paths, error) {
 	}, nil
 }
 
+// codexSkills and codexPluginCache are derived rather than stored so every
+// paths value agrees on Codex's layout from codexHome alone.
+func (p paths) codexSkills() string {
+	return filepath.Join(p.codexHome, "skills")
+}
+
+func (p paths) codexPluginCache() string {
+	return filepath.Join(p.codexHome, "plugins", "cache")
+}
+
+// projectSkills returns a project-local harness skills root, the layout twin of
+// the $HOME roots this type already owns. harness is the dot-directory name,
+// such as ".agents" or ".claude".
+func (paths) projectSkills(project, harness string) string {
+	return filepath.Join(project, harness, "skills")
+}
+
 // relocateGlobalLock moves a global selection file left in the legacy location
 // into the manager home. It leaves the legacy file alone once the manager home
 // holds one, so a downgrade cannot silently discard the newer selection.

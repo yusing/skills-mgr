@@ -30,10 +30,6 @@ type daemon struct {
 	mu      sync.Mutex
 }
 
-func runDaemon(ctx context.Context, manager *manager, logger *slog.Logger) error {
-	return runDaemonReady(ctx, manager, logger, nil)
-}
-
 func runDaemonReady(
 	ctx context.Context,
 	manager *manager,

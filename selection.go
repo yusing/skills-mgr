@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 
 	"errors"
 	"fmt"
@@ -57,7 +58,13 @@ func (m *manager) selectionState(
 	if err != nil {
 		return selectionState{}, err
 	}
-	selected, expressions := mergeSelectionLocks(global, projectLock)
+	globalSelected := configuredSelections(global)
+	globalExpressions := selectionExpressions(global)
+	selected, expressions := applyProjectSelections(
+		maps.Clone(globalSelected),
+		maps.Clone(globalExpressions),
+		projectLock,
+	)
 	var skills []discoveredSkill
 	if catalog == nil {
 		skills, err = m.skills(project)
@@ -74,10 +81,10 @@ func (m *manager) selectionState(
 	}
 	return selectionState{
 		selected:           selected,
-		globalSelected:     configuredSelections(global),
+		globalSelected:     globalSelected,
 		projectSelected:    configuredSelections(projectLock),
 		expressions:        expressions,
-		globalExpressions:  selectionExpressions(global),
+		globalExpressions:  globalExpressions,
 		projectExpressions: selectionExpressions(projectLock),
 	}, nil
 }
@@ -391,8 +398,21 @@ func selectionExpressions(value lock) map[string]string {
 }
 
 func mergeSelectionLocks(global, project lock) (map[string]bool, map[string]string) {
-	selected := configuredSelections(global)
-	expressions := selectionExpressions(global)
+	return applyProjectSelections(
+		configuredSelections(global),
+		selectionExpressions(global),
+		project,
+	)
+}
+
+// applyProjectSelections layers a project lock's selections over the global maps
+// it inherits, taking ownership of both maps rather than copying them, so a
+// caller that still needs the unmerged global view passes clones.
+func applyProjectSelections(
+	selected map[string]bool,
+	expressions map[string]string,
+	project lock,
+) (map[string]bool, map[string]string) {
 	for name, selection := range project.Skills {
 		if selection.Enabled == nil {
 			continue

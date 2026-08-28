@@ -48,7 +48,7 @@ func (m *manager) placeholderFrontmatter(
 
 func lockWantsPlaceholder(value lock, name string) bool {
 	enabled, exists := value.enabled(name)
-	return exists && (enabled.Boolean == nil || *enabled.Boolean)
+	return exists && enabled.wantsPlaceholder()
 }
 
 // adoptSkill moves a user skill into the manager home, where no harness scans
@@ -118,10 +118,7 @@ func (m *manager) adoptSkill(project string, skill discoveredSkill) (func() erro
 // transaction. Direct discovery keeps a same-named project skill from hiding
 // shared content that the command was asked to adopt.
 func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr error) {
-	discovery := skillDiscovery{
-		seenPaths: make(map[string]struct{}),
-		seenNames: make(map[string]struct{}),
-	}
+	discovery := newSkillDiscovery()
 	if err := discovery.discoverRoot(skillRoot{
 		path:     m.paths.userSkills,
 		source:   "user",
@@ -129,9 +126,7 @@ func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr er
 	}); err != nil {
 		return err
 	}
-	slices.SortFunc(discovery.skills, func(a, b discoveredSkill) int {
-		return strings.Compare(a.Name, b.Name)
-	})
+	slices.SortFunc(discovery.skills, compareDiscoveredSkills)
 
 	journal := &mutationJournal{}
 	defer func() {

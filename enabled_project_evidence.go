@@ -228,8 +228,7 @@ func newProjectEvidence() projectEvidence {
 func (evidence *projectEvidence) record(path, name string) {
 	recordLanguageFile(evidence.languages, name)
 	recordToolingFile(evidence.tooling, name)
-	switch name {
-	case "go.mod", "Cargo.toml", "package.json":
+	if isDependencyManifest(name) {
 		evidence.manifests = append(evidence.manifests, path)
 	}
 }

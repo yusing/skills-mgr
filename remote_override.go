@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 
 	"os"
 	"path/filepath"
@@ -22,19 +19,6 @@ func (s *remoteSkillStore) overridePath(ref remoteSkillRef) string {
 
 func (s *remoteSkillStore) patchPath(ref remoteSkillRef) string {
 	return filepath.Join(s.patchRoot, ref.key()+".patch")
-}
-
-func (s *remoteSkillStore) sidecars(ref remoteSkillRef) []struct {
-	path string
-	name string
-} {
-	return []struct {
-		path string
-		name string
-	}{
-		{path: s.overridePath(ref), name: "override"},
-		{path: s.patchPath(ref), name: "patch"},
-	}
 }
 
 func (s *remoteSkillStore) savePatch(
@@ -66,7 +50,7 @@ func (s *remoteSkillStore) savePatch(
 	if err != nil {
 		return err
 	}
-	currentPath := filepath.Join(root, "SKILL.md")
+	currentPath := filepath.Join(root, skillManifestName)
 	if filepath.Clean(currentPath) != filepath.Clean(basePath) {
 		return errRemoteSkillEditConflict
 	}
@@ -74,14 +58,9 @@ func (s *remoteSkillStore) savePatch(
 	if err != nil {
 		return fmt.Errorf("read remote skill: %w", err)
 	}
-	currentLayered, err := s.applyPatch(ref, original)
+	currentLayered, err := s.layeredContent(ref, original)
 	if err != nil {
-		if errors.Is(err, errRemoteSkillPatch) {
-			// Fall back to original content when patch no longer applies
-			currentLayered = original
-		} else {
-			return err
-		}
+		return err
 	}
 	if sha256.Sum256(currentLayered) != expectedLayeredDigest {
 		return errRemoteSkillEditConflict
@@ -113,6 +92,24 @@ func (s *remoteSkillStore) savePatch(
 		return fmt.Errorf("write remote skill patch: %w", err)
 	}
 	return nil
+}
+
+// layeredContent returns the patched view of a remote skill, substituting the
+// unpatched original once a stored patch no longer applies to it. A patch that
+// cannot be read at all stays a hard error. Callers that must report staleness
+// rather than absorb it use applyPatch directly.
+func (s *remoteSkillStore) layeredContent(
+	ref remoteSkillRef,
+	original []byte,
+) ([]byte, error) {
+	contents, err := s.applyPatch(ref, original)
+	if errors.Is(err, errRemoteSkillPatch) {
+		return original, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return contents, nil
 }
 
 func (s *remoteSkillStore) applyPatch(
@@ -189,13 +186,8 @@ func (s *remoteSkillStore) loadOverrideLocked(ref remoteSkillRef) (*bool, error)
 		return nil, fmt.Errorf("read remote skill override: %w", err)
 	}
 	var value remoteSkillOverride
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
+	if err := decodeStrictJSON(data, &value); err != nil {
 		return nil, fmt.Errorf("decode remote skill override: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("decode remote skill override: unexpected data")
 	}
 	if value.SchemaRevision != remoteSkillOverrideSchemaRevision {
 		return nil, fmt.Errorf(
