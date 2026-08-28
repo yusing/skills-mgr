@@ -73,6 +73,19 @@ func (m *manager) sync(
 	if err != nil {
 		return err
 	}
+	for name, selection := range globalLock.Skills {
+		if selection.Remote == nil {
+			continue
+		}
+		ref := *selection.Remote
+		if persisted, exists := persistedRefs[name]; exists && persisted != ref {
+			return fmt.Errorf(
+				"remote skill %q identity conflicts with persisted reference",
+				name,
+			)
+		}
+		persistedRefs[name] = ref
+	}
 	metadataChanged, err := reconcileRemoteMetadata(
 		globalLock,
 		&projectLock,
@@ -82,7 +95,9 @@ func (m *manager) sync(
 		return fmt.Errorf("reconcile remote metadata: %w", err)
 	}
 
-	selected, _ := mergeSelectionLocks(globalLock, projectLock)
+	selected, expressions := mergeSelectionLocks(globalLock, projectLock)
+	selection := selectionState{selected: selected, expressions: expressions}
+	evaluator := newEnabledEvaluator(project)
 	discovered, err := m.skills(project)
 	if err != nil {
 		return err
@@ -102,13 +117,17 @@ func (m *manager) sync(
 	for _, name := range names {
 		ref, _ := projectLock.remote(name)
 		enabled, enabledExists := projectLock.enabled(name)
-		if !enabledExists || enabled.Boolean == nil || !*enabled.Boolean {
+		if !enabledExists || (enabled.Boolean != nil && !*enabled.Boolean) {
 			frontmatter, _ := m.remoteSkillFrontmatter(ref)
 			if err := changePlaceholders(name, frontmatter, false); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
 		}
-		if !selected[name] {
+		effectivelyEnabled, err := selection.enabled(ctx, evaluator, name)
+		if err != nil {
+			return fmt.Errorf("sync remote skill %q: %w", name, err)
+		}
+		if !effectivelyEnabled {
 			continue
 		}
 		if ref.Name != name {
@@ -139,7 +158,7 @@ func (m *manager) sync(
 		if err != nil {
 			return fmt.Errorf("sync remote skill %q: %w", name, err)
 		}
-		if enabledExists && enabled.Boolean != nil && *enabled.Boolean {
+		if enabledExists && (enabled.Boolean == nil || *enabled.Boolean) {
 			if err := changePlaceholders(name, frontmatter, true); err != nil {
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}

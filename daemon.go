@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -185,7 +186,7 @@ func (d *daemon) serveConn(ctx context.Context, conn net.Conn) {
 	case daemonCommandRefresh:
 		err = refreshRemoteRegistry(ctx, registry, d.logger, "command")
 	case daemonCommandSync:
-		err = refreshPersistedRemoteSkills(ctx, d.manager, d.logger, "command")
+		err = syncDaemonRemoteSkills(ctx, d.manager, d.logger)
 	default:
 		err = fmt.Errorf("unknown command %q", command)
 		d.logger.Warn("rejected daemon command", "command", command)
@@ -204,6 +205,71 @@ func (d *daemon) serveConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	fmt.Fprintln(conn, "ok")
+}
+
+func syncDaemonRemoteSkills(
+	ctx context.Context,
+	manager *manager,
+	logger *slog.Logger,
+) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if manager == nil || manager.remoteStore == nil {
+		logger.Info("skipping remote skill synchronization", "reason", "no store")
+		return nil
+	}
+	globalLock, err := loadLock(manager.paths.globalLockDir)
+	if err != nil {
+		logger.Error("load global remote skills failed", "err", err)
+		return err
+	}
+	names := make([]string, 0, len(globalLock.Skills))
+	for name, selection := range globalLock.Skills {
+		if selection.Remote == nil || selection.Enabled == nil ||
+			selection.Enabled.Boolean == nil || !*selection.Enabled.Boolean {
+			continue
+		}
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	var syncErr error
+	for _, name := range names {
+		ref, _ := globalLock.remote(name)
+		logger.Info(
+			"synchronizing configured remote skill",
+			"provider", ref.Provider,
+			"id", ref.ID,
+			"name", ref.Name,
+		)
+		if _, err := manager.remoteStore.ensure(
+			ctx, ref, manager.remoteContentProvider(ref.Provider),
+		); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			logger.Error(
+				"configured remote skill synchronization failed",
+				"err", err,
+				"provider", ref.Provider,
+				"id", ref.ID,
+				"name", ref.Name,
+			)
+			syncErr = errors.Join(syncErr, fmt.Errorf("%s:%s: %w", ref.Provider, ref.ID, err))
+			continue
+		}
+		logger.Info(
+			"synchronized configured remote skill",
+			"provider", ref.Provider,
+			"id", ref.ID,
+			"name", ref.Name,
+		)
+	}
+	return errors.Join(
+		syncErr,
+		refreshPersistedRemoteSkills(ctx, manager, logger, "command"),
+	)
 }
 
 func triggerDaemon(ctx context.Context, socket, command string) error {

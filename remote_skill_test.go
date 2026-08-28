@@ -1462,7 +1462,7 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 	}
 }
 
-func TestEnabledExpressionRemovesRemotePlaceholders(t *testing.T) {
+func TestEnabledExpressionKeepsRemotePlaceholders(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	ref := remoteSkillRef{
@@ -2151,6 +2151,309 @@ func TestSyncFetchesEnabledInheritedRemote(t *testing.T) {
 	}
 	if output.Len() != 0 || gitCloneCount(t, gitLog) != 1 {
 		t.Fatalf("disabled sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+}
+
+func TestSyncFetchesEnabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(
+		manager.paths.globalLockDir,
+		testLock(
+			map[string]bool{"alpha": true},
+			nil,
+			map[string]remoteSkillRef{"alpha": ref},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, newLock()); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "alpha\n" || gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, overridden := projectLock.enabled("alpha"); overridden {
+		t.Fatalf("inherited synchronized enabled override = %#v", projectLock)
+	}
+	if current, exists := projectLock.remote("alpha"); !exists || current != ref {
+		t.Fatalf("inherited synchronized remote selection = %#v", projectLock)
+	}
+}
+
+func TestSyncSkipsDisabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Remote alpha.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(
+		manager.paths.globalLockDir,
+		testLock(
+			map[string]bool{"alpha": false},
+			nil,
+			map[string]remoteSkillRef{"alpha": ref},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLock(project, newLock()); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := manager.sync(t.Context(), project, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 || gitCloneCount(t, gitLog) != 0 {
+		t.Fatalf("disabled sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	projectLock, err := loadLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, overridden := projectLock.enabled("alpha"); overridden {
+		t.Fatalf("inherited synchronized enabled override = %#v", projectLock)
+	}
+	if current, exists := projectLock.remote("alpha"); !exists || current != ref {
+		t.Fatalf("inherited synchronized remote selection = %#v", projectLock)
+	}
+}
+
+func TestSyncRejectsGlobalMetadataConflictWithPersistedIdentity(t *testing.T) {
+	manager := newTestManager(t)
+	persisted := remoteSkillRef{
+		Provider: skillsShProvider,
+		ID:       "owner/repo/alpha",
+		Name:     "alpha",
+		Locator:  "owner/repo/alpha",
+	}
+	if _, err := manager.remoteStore.ensure(
+		t.Context(),
+		persisted,
+		&staticRemoteProvider{files: []remoteSkillFile{{
+			Path:     "SKILL.md",
+			Contents: []byte(skillFile("alpha", "Remote alpha.", "body")),
+		}}},
+	); err != nil {
+		t.Fatal(err)
+	}
+	configured := persisted
+	configured.Locator = "other/repo/alpha"
+	if err := saveLock(
+		manager.paths.globalLockDir,
+		testLock(
+			map[string]bool{"alpha": true},
+			nil,
+			map[string]remoteSkillRef{"alpha": configured},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := saveLock(project, newLock()); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err := manager.sync(t.Context(), project, &output)
+	if err == nil || !strings.Contains(err.Error(), "identity conflicts") {
+		t.Fatalf("global identity conflict error = %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("global identity conflict output = %q", output.String())
+	}
+	projectLock, loadErr := loadLock(project)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(projectLock.Skills) != 0 {
+		t.Fatalf("global identity conflict changed project lock = %#v", projectLock)
+	}
+}
+
+func TestSyncEvaluatesRemoteEnabledExpressions(t *testing.T) {
+	tests := []struct {
+		name            string
+		global          bool
+		condition       bool
+		seedPlaceholder bool
+		wantPlaceholder bool
+		wantClones      int
+	}{
+		{
+			name:            "project false",
+			seedPlaceholder: true,
+			wantPlaceholder: true,
+		},
+		{
+			name:            "project true",
+			condition:       true,
+			wantPlaceholder: true,
+			wantClones:      1,
+		},
+		{name: "global false", global: true, condition: false},
+		{name: "global true", global: true, condition: true, wantClones: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+				"main": {
+					"skills/alpha/SKILL.md": {
+						contents: skillFile("alpha", "Remote alpha.", "body"),
+						mode:     0o644,
+					},
+				},
+			})
+			manager := newTestManager(t)
+			manager.skillsMP = newSkillsMPRegistry("", "")
+			project := t.TempDir()
+			ref := remoteSkillRef{
+				Provider: skillsMPProvider,
+				ID:       "alpha-id",
+				Name:     "alpha",
+				Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+			}
+			conditional := testLock(
+				nil,
+				map[string]string{"alpha": "[[ -f enabled ]]"},
+				map[string]remoteSkillRef{"alpha": ref},
+			)
+			if test.global {
+				if err := saveLock(manager.paths.globalLockDir, conditional); err != nil {
+					t.Fatal(err)
+				}
+				if err := saveLock(project, newLock()); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := saveLock(project, conditional); err != nil {
+				t.Fatal(err)
+			}
+			if test.condition {
+				writeFile(t, filepath.Join(project, "enabled"), "")
+			}
+			if test.seedPlaceholder {
+				for _, root := range []string{".agents", ".claude"} {
+					writeFile(
+						t,
+						filepath.Join(project, root, "skills", ref.Name, "SKILL.md"),
+						wantPlaceholder(ref.Name, "Remote alpha."),
+					)
+				}
+			}
+
+			var output bytes.Buffer
+			if err := manager.sync(t.Context(), project, &output); err != nil {
+				t.Fatal(err)
+			}
+			wantOutput := ""
+			if test.wantClones != 0 {
+				wantOutput = "alpha\n"
+			}
+			if output.String() != wantOutput || gitCloneCount(t, gitLog) != test.wantClones {
+				t.Fatalf(
+					"sync output = %q, clones = %d",
+					output.String(),
+					gitCloneCount(t, gitLog),
+				)
+			}
+			projectLock, err := loadLock(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current, exists := projectLock.remote("alpha"); !exists || current != ref {
+				t.Fatalf("synchronized remote selection = %#v", projectLock)
+			}
+			for _, root := range []string{".agents", ".claude"} {
+				path := filepath.Join(project, root, "skills", ref.Name, "SKILL.md")
+				if test.wantPlaceholder {
+					assertFile(t, path, wantPlaceholder(ref.Name, "Remote alpha."))
+					continue
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unexpected placeholder under %s: %v", root, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSyncReportsEnabledExpressionErrorWithoutFetching(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	project := t.TempDir()
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(
+		project,
+		testLock(
+			nil,
+			map[string]string{"alpha": "exit 2"},
+			map[string]remoteSkillRef{"alpha": ref},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(project, lockName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	err = manager.sync(t.Context(), project, &output)
+	if err == nil || !strings.Contains(err.Error(), "status 2") {
+		t.Fatalf("enabled expression error = %v", err)
+	}
+	if output.Len() != 0 || gitCloneCount(t, gitLog) != 0 {
+		t.Fatalf("enabled expression output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
+	}
+	after, readErr := os.ReadFile(filepath.Join(project, lockName))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("enabled expression failure changed project lock")
 	}
 }
 

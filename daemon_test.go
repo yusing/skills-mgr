@@ -199,6 +199,102 @@ func TestDaemonSyncCommandUpdatesStaleRemoteSkills(t *testing.T) {
 	waitLog(t, logs, `msg="received daemon command" command=sync`)
 }
 
+func TestDaemonSyncCommandFetchesEnabledGlobalRemoteMetadata(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"main": {
+			"skills/alpha/SKILL.md": {
+				contents: skillFile("alpha", "Alpha.", "body"),
+				mode:     0o644,
+			},
+			"skills/beta/SKILL.md": {
+				contents: skillFile("beta", "Beta.", "body"),
+				mode:     0o644,
+			},
+		},
+	})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	alpha := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	beta := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "beta-id",
+		Name:     "beta",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/beta",
+	}
+	if err := saveLock(
+		manager.paths.globalLockDir,
+		testLock(
+			map[string]bool{"alpha": true, "beta": false},
+			nil,
+			map[string]remoteSkillRef{"alpha": alpha, "beta": beta},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := startTestDaemon(t, manager)
+	waitLog(t, logs, `msg="persisted remote skill update finished" trigger=startup`)
+	if gitCloneCount(t, gitLog) != 0 {
+		t.Fatalf("startup clones = %d, want 0", gitCloneCount(t, gitLog))
+	}
+	if err := triggerDaemon(t.Context(), manager.paths.daemonSocket, daemonCommandSync); err != nil {
+		t.Fatal(err)
+	}
+	if gitCloneCount(t, gitLog) != 1 {
+		t.Fatalf("sync clones = %d, want 1", gitCloneCount(t, gitLog))
+	}
+	records, err := manager.remoteStore.records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ref() != alpha {
+		t.Fatalf("synchronized records = %#v", records)
+	}
+}
+
+func TestDaemonSyncCommandReportsGlobalRemoteFailure(t *testing.T) {
+	t.Setenv("FAKE_GIT_ERROR", "offline")
+	fakeGit(t, map[string]map[string]gitTestFile{})
+	manager := newTestManager(t)
+	manager.skillsMP = newSkillsMPRegistry("", "")
+	ref := remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}
+	if err := saveLock(
+		manager.paths.globalLockDir,
+		testLock(
+			map[string]bool{"alpha": true},
+			nil,
+			map[string]remoteSkillRef{"alpha": ref},
+		),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := startTestDaemon(t, manager)
+	waitLog(t, logs, `msg="persisted remote skill update finished" trigger=startup`)
+	err := triggerDaemon(t.Context(), manager.paths.daemonSocket, daemonCommandSync)
+	if err == nil || !strings.Contains(err.Error(), "alpha-id") ||
+		!strings.Contains(err.Error(), "offline") {
+		t.Fatalf("daemon sync error = %v", err)
+	}
+	records, recordsErr := manager.remoteStore.records()
+	if recordsErr != nil {
+		t.Fatal(recordsErr)
+	}
+	if len(records) != 0 {
+		t.Fatalf("failed daemon sync persisted records = %#v", records)
+	}
+}
+
 func TestDaemonCommandReportsWhenDaemonIsNotRunning(t *testing.T) {
 	err := triggerDaemon(
 		t.Context(),

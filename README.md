@@ -654,11 +654,12 @@ machine:
 skills-mgr sync
 ```
 
-`sync` matches project and inherited global names against the local store,
-fills in any missing identity metadata, fetches every effectively enabled
-remote that is absent or stale, and prints one line per skill synchronized. It
-never fetches a disabled entry, and a failure names the skill, returns non-zero,
-and leaves both selection files unchanged.
+`sync` matches project and inherited global names against identities in the
+global selection and local store, fills in any missing project identity
+metadata, fetches every effectively enabled remote that is absent or stale,
+and prints one line per skill synchronized. It never fetches a disabled entry,
+and a failure names the skill, returns non-zero, and leaves both selection files
+unchanged.
 
 Nothing else downloads on your behalf. `list`, `get`, `run`, and TUI startup
 will not fetch a referenced remote skill they have never seen.
@@ -672,10 +673,14 @@ installed remote content once it passes three hours old. Structured text logs go
 to stderr for start, stop, inbound commands, cache refresh, and each
 remote-skill update; a failure is logged and does not stop later cycles.
 
-`skills-mgr daemon refresh` and `skills-mgr daemon sync` ask that process to
-refresh the registry cache or update stale remote skills right now. Both wait
-for the work to finish, both fail if no daemon is running, and neither
-downloads a remote identity the store has not seen.
+`skills-mgr daemon refresh` asks that process to refresh the registry cache
+right now. `skills-mgr daemon sync` downloads any missing, unconditionally
+enabled remote identity recorded in `$HOME/.skills-mgr/.skills-mgr.json`, then
+updates stale remote skills. It does not inspect project selections, so use
+`skills-mgr sync` in the project for inherited conditions or project-only
+identities. Both commands wait for the work to finish and fail if no daemon is
+running. Startup and timed daemon cycles continue to refresh only identities
+already present in the store.
 
 To install it as a systemd user unit:
 
