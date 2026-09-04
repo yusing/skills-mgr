@@ -69,7 +69,7 @@ func newSkillsMPRegistry(cachePath, apiKey string) *skillsMPRegistry {
 func (r *skillsMPRegistry) catalog(ctx context.Context) ([]skillsMPSkill, error) {
 	skills, err := r.fetch(ctx, "/api/skills", url.Values{
 		"page":   {"1"},
-		"limit":  {"50"},
+		"limit":  {"48"},
 		"sortBy": {"stars"},
 	}, false)
 	if err != nil {
