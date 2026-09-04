@@ -17,7 +17,7 @@ func TestSkillsMPRefreshesDefaultCatalogWithoutAPIKey(t *testing.T) {
 			t.Errorf("request path = %q", request.URL.Path)
 		}
 		query := request.URL.Query()
-		if query.Get("page") != "1" || query.Get("limit") != "200" ||
+		if query.Get("page") != "1" || query.Get("limit") != "50" ||
 			query.Get("sortBy") != "stars" {
 			t.Errorf("request query = %q", request.URL.RawQuery)
 		}
@@ -107,7 +107,7 @@ func TestSkillsMPSearchUsesAPIAndProvidedKey(t *testing.T) {
 		}
 		query := request.URL.Query()
 		if query.Get("q") != "go testing" || query.Get("page") != "1" ||
-			query.Get("limit") != "100" || query.Get("sortBy") != "stars" {
+			query.Get("limit") != "50" || query.Get("sortBy") != "stars" {
 			t.Errorf("request query = %q", request.URL.RawQuery)
 		}
 		if authorization := request.Header.Get("Authorization"); authorization != "Bearer secret" {
