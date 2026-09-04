@@ -304,8 +304,9 @@ read, so turning it off there means a skill is named to the agent twice rather
 than withheld from it. Because Grok claims the shared roots too,
 `skills-mgr list --grok` reports little more than the installed remote skills.
 
-Codex is the one harness that needs its own loader turned off, because it ships
-skill instructions of its own that would compete with the text above. In
+Codex is the only harness that provides options both to replace its base
+instructions and to disable its built-in skills instructions and catalog. To
+use the instruction above and let `skills-mgr` supply the catalog, set both in
 `config.toml`:
 
 ```toml
