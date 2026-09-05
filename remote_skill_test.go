@@ -2306,6 +2306,105 @@ func TestSyncRejectsGlobalMetadataConflictWithPersistedIdentity(t *testing.T) {
 	}
 }
 
+func TestSyncPreservesSharedGlobalPlaceholders(t *testing.T) {
+	tests := []struct {
+		name               string
+		global             enabledValue
+		projectOverride    *bool
+		separateRoot       bool
+		aliasRoot          bool
+		missingPlaceholder bool
+		wantPlaceholder    bool
+		wantOutput         string
+	}{
+		{name: "inherited", global: enabledValue{Boolean: new(true)}, wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "restore missing", global: enabledValue{Boolean: new(true)}, missingPlaceholder: true, wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "false global condition", global: enabledValue{Expression: "false"}, wantPlaceholder: true},
+		{name: "project disable", global: enabledValue{Boolean: new(true)}, projectOverride: new(false), wantPlaceholder: true},
+		{name: "disabled by both", global: enabledValue{Boolean: new(false)}, projectOverride: new(false)},
+		{name: "project enable", global: enabledValue{Boolean: new(false)}, projectOverride: new(true), wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "separate project", global: enabledValue{Boolean: new(true)}, separateRoot: true, wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "aliased home", global: enabledValue{Boolean: new(true)}, aliasRoot: true, wantPlaceholder: true, wantOutput: "alpha\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := newTestManager(t)
+			project := manager.paths.placeholderDir
+			if test.separateRoot {
+				project = t.TempDir()
+			} else if test.aliasRoot {
+				project = filepath.Join(t.TempDir(), "home-link")
+				if err := os.Symlink(manager.paths.placeholderDir, project); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ref := remoteSkillRef{Provider: skillsShProvider, ID: "owner/repo/alpha", Name: "alpha", Locator: "owner/repo/alpha"}
+			if _, err := manager.remoteStore.ensure(t.Context(), ref, &staticRemoteProvider{files: []remoteSkillFile{{
+				Path: "SKILL.md", Contents: []byte(skillFile(ref.Name, "Remote alpha.", "body")),
+			}}}); err != nil {
+				t.Fatal(err)
+			}
+			global := newLock()
+			global.setEnabled(ref.Name, test.global)
+			global.setRemote(ref.Name, ref)
+			if err := saveLock(manager.paths.globalLockDir, global); err != nil {
+				t.Fatal(err)
+			}
+			local := newLock()
+			local.setRemote(ref.Name, ref)
+			if test.projectOverride != nil {
+				local.setEnabled(ref.Name, enabledValue{Boolean: test.projectOverride})
+			}
+			if err := saveLock(project, local); err != nil {
+				t.Fatal(err)
+			}
+			if !test.missingPlaceholder {
+				for _, root := range []string{".agents", ".claude"} {
+					dir := filepath.Join(manager.paths.placeholderDir, root, "skills", ref.Name)
+					writeFile(t, filepath.Join(dir, "SKILL.md"), wantPlaceholder(ref.Name, "Remote alpha."))
+					writeFile(t, filepath.Join(dir, remotePlaceholderMarkerName), remotePlaceholderMarker)
+				}
+			}
+			var output bytes.Buffer
+			if err := manager.sync(t.Context(), project, &output); err != nil {
+				t.Fatal(err)
+			}
+			if output.String() != test.wantOutput {
+				t.Fatalf("sync output = %q, want %q", output.String(), test.wantOutput)
+			}
+			for _, root := range []string{".agents", ".claude"} {
+				dir := filepath.Join(manager.paths.placeholderDir, root, "skills", ref.Name)
+				if test.wantPlaceholder {
+					assertFile(t, filepath.Join(dir, "SKILL.md"), wantPlaceholder(ref.Name, "Remote alpha."))
+					assertFile(t, filepath.Join(dir, remotePlaceholderMarkerName), remotePlaceholderMarker)
+				} else if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("disabled placeholder remains at %s: %v", dir, err)
+				}
+				if test.separateRoot {
+					dir = filepath.Join(project, root, "skills", ref.Name)
+					if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("inherited project placeholder at %s: %v", dir, err)
+					}
+				}
+			}
+			got, err := loadLock(project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.equal(local) {
+				t.Fatalf("sync changed project selection: %#v", got)
+			}
+			got, err = loadLock(manager.paths.globalLockDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.equal(global) {
+				t.Fatalf("sync changed global selection: %#v", got)
+			}
+		})
+	}
+}
+
 func TestSyncEvaluatesRemoteEnabledExpressions(t *testing.T) {
 	tests := []struct {
 		name            string

@@ -104,6 +104,13 @@ func (m *manager) sync(
 		}
 	}
 	slices.Sort(names)
+	sharedPlaceholderRoot := false
+	if !m.global && len(names) != 0 {
+		sharedPlaceholderRoot, err = samePlaceholderRoot(project, m.paths.placeholderDir)
+		if err != nil {
+			return err
+		}
+	}
 	storeRecords, err := m.remoteStore.records()
 	if err != nil {
 		return err
@@ -116,6 +123,10 @@ func (m *manager) sync(
 	for _, name := range names {
 		ref, _ := projectLock.remote(name)
 		wantsPlaceholder := lockWantsPlaceholder(projectLock, name)
+		if sharedPlaceholderRoot {
+			// Project cleanup must not remove a placeholder still owned globally.
+			wantsPlaceholder = wantsPlaceholder || lockWantsPlaceholder(globalLock, name)
+		}
 		if !wantsPlaceholder {
 			// A missing or unreadable record leaves the frontmatter empty, which
 			// is what removing a placeholder needs anyway.
