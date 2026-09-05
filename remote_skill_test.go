@@ -126,7 +126,7 @@ func TestRemoteToggleCreatesProjectPlaceholdersAndReusesFreshContent(t *testing.
 	}
 }
 
-func TestRemoteSkillPatchLayersGetWithoutChangingFetchedContent(t *testing.T) {
+func TestRemoteSkillPatchLayersDescriptionAndGetWithoutChangingFetchedContent(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	ref := remoteSkillRef{
@@ -153,13 +153,30 @@ func TestRemoteSkillPatchLayersGetWithoutChangingFetchedContent(t *testing.T) {
 	if !discovered.Editable {
 		t.Fatal("remote skill is not editable")
 	}
-	edited := skillFile("alpha", "Remote alpha.", "after\n")
+	edited := strings.Replace(
+		skillFile("renamed", "Patched alpha.", "after\n"),
+		"description: Patched alpha.\n", "description: Patched alpha.\ndisable-model-invocation: true\n", 1,
+	)
 	if err := manager.remoteStore.savePatch(
 		t.Context(), ref, discovered.Path, sha256.Sum256([]byte(original)), []byte(edited),
 	); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, discovered.Path, original)
+	patched, err := manager.findSkill(project, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if patched.Description != "Patched alpha." || patched.Name != ref.Name || patched.DisableModelInvocation {
+		t.Fatalf("patched discovery must change only the description: %#v", patched)
+	}
+	var inventory strings.Builder
+	if err := manager.listContext(t.Context(), project, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(inventory.String(), `name="alpha" description="Patched alpha."`) {
+		t.Fatalf("inventory does not expose patched description: %s", inventory.String())
+	}
 	patchContents, err := os.ReadFile(manager.remoteStore.patchPath(ref))
 	if err != nil {
 		t.Fatalf("stored patch: %v", err)
@@ -201,6 +218,10 @@ func TestRemoteSkillPatchLayersGetWithoutChangingFetchedContent(t *testing.T) {
 	}
 	if output.String() != "after\n" {
 		t.Fatalf("patch after compatible refresh = %q", output.String())
+	}
+	patched, err = manager.findSkill(project, ref.Name)
+	if err != nil || patched.Description != "Patched alpha." {
+		t.Fatalf("description after compatible refresh = %#v, %v", patched, err)
 	}
 	output.Reset()
 	if err := manager.getContext(
@@ -311,6 +332,10 @@ func TestRemoteSkillPatchFailureReturnsUpgradedOriginal(t *testing.T) {
 	if _, err := os.Stat(manager.remoteStore.patchPath(ref)); err != nil {
 		t.Fatalf("refresh discarded patch: %v", err)
 	}
+	discovered, err = manager.findSkill(project, ref.Name)
+	if err != nil || discovered.Description != "Upgraded." {
+		t.Fatalf("stale patch discovery = %#v, %v", discovered, err)
+	}
 
 	writeFile(t, manager.remoteStore.patchPath(ref), "not a patch\n")
 	output.Reset()
@@ -320,6 +345,10 @@ func TestRemoteSkillPatchFailureReturnsUpgradedOriginal(t *testing.T) {
 	}
 	if output.String() != "upstream\n" {
 		t.Fatalf("malformed patch fallback = %q", output.String())
+	}
+	discovered, err = manager.findSkill(project, ref.Name)
+	if err != nil || discovered.Description != "Upgraded." {
+		t.Fatalf("malformed patch discovery = %#v, %v", discovered, err)
 	}
 
 	baseDigest := sha256.Sum256(provider.files[0].Contents)

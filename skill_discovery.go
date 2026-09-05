@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -92,6 +93,7 @@ func (m *manager) discoverSkills(
 			if err != nil {
 				return nil, err
 			}
+			before := len(discovery.skills)
 			if err := discovery.addSkill(skillRoot{
 				source:                         record.Provider,
 				editable:                       true,
@@ -99,6 +101,28 @@ func (m *manager) discoverSkills(
 				disableModelInvocationOverride: record.disableModelInvocationOverride,
 			}, root); err != nil {
 				return nil, err
+			}
+			if len(discovery.skills) == before {
+				continue
+			}
+			skill := &discovery.skills[before]
+			original, err := os.ReadFile(skill.Path)
+			if err != nil {
+				return nil, err
+			}
+			contents, err := m.remoteStore.layeredContent(record.ref(), original)
+			if err != nil {
+				return nil, err
+			}
+			frontmatter, _, status, err := readFrontmatter(bytes.NewReader(contents))
+			if err != nil {
+				return nil, err
+			}
+			patched, valid := skillFromFrontmatter(frontmatter)
+			if status == frontmatterValid && valid {
+				// Local wording controls discovery; remote identity and the separate
+				// invocation override remain owned by the validated provider record.
+				skill.Description = patched.Description
 			}
 		}
 	}

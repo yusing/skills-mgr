@@ -21,8 +21,12 @@ The `get` owner applies the sidecar only to a remote skill's `SKILL.md` before
 frontmatter stripping and line-range selection. Patch parsing or application
 is all-or-nothing: failure discards any partial result, writes the original
 provider content through the normal output path, and returns an error for the
-CLI to report on stderr with nonzero status. Discovery, placeholders, and
-script execution continue to use validated provider content. Refresh preserves
-the sidecar, while uninstall removes it with the remote entry.
+CLI to report on stderr with nonzero status. Discovery and the inventory layer
+valid patched descriptions over provider metadata, falling back to the provider
+description when the patch is stale, malformed, or has invalid frontmatter.
+Remote identity and model-invocation policy retain their existing provider and
+separate-override owners. Placeholders and script execution continue to use
+validated provider content. Refresh preserves the sidecar, while uninstall
+removes it with the remote entry.
 
 This contract supports `REQ-LAYER-001`.

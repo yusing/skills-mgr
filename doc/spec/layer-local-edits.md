@@ -17,10 +17,16 @@ after a provider refresh, `get` shall write the unmodified requested provider
 content to standard output, report a compact diagnostic to standard error, and
 exit nonzero.
 
+Discovery and `skills-mgr list` shall expose a valid patched description without
+changing the remote skill's identity or separate model-invocation policy.
+An unusable patch shall leave the provider description in the inventory.
+
 Acceptance examples:
 
 - Saving a remote edit creates a patch while the fetched `SKILL.md` remains
   byte-for-byte unchanged.
+- Editing the description changes discovery and inventory wording as well as
+  the content available through `get`, without renaming the remote skill.
 - The patch shows literal context, removed lines, and added lines rather than an
   encoded patch payload.
 - A second edit opens the first edit's patched result.
