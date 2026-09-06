@@ -2,29 +2,67 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"mvdan.cc/sh/v3/interp"
 )
 
+type logBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (l *logBuffer) Write(data []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(data)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func testLogger() (*slog.Logger, *logBuffer) {
+	logs := &logBuffer{}
+	return slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})), logs
+}
+
+func testLoggerSink() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
+}
+
 func enabledCallHandler(project string) interp.CallHandlerFunc {
 	return enabledCallHandlerWithEvidence(newProjectEvidenceIndex(project))
+}
+
+func ignoreBackgroundRefresh(*manager, *os.File) error { return nil }
+
+func ignoreRefreshRunner(*manager) error { return nil }
+
+func TestMain(m *testing.M) {
+	startBackgroundRefresh = ignoreBackgroundRefresh
+	executeRefreshRunner = ignoreRefreshRunner
+	os.Exit(m.Run())
+}
+
+func restoreRefreshHooks(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		startBackgroundRefresh = ignoreBackgroundRefresh
+		executeRefreshRunner = ignoreRefreshRunner
+	})
 }
 
 func newTestManager(t *testing.T) *manager {
 	t.Helper()
 	root := t.TempDir()
-	socketDir, err := os.MkdirTemp("", "smgr")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(socketDir); err != nil {
-			t.Errorf("remove daemon socket directory: %v", err)
-		}
-	})
 	cache := filepath.Join(root, "cache", "skills-mgr")
 	home := filepath.Join(root, "home")
 	managerHome := filepath.Join(home, ".skills-mgr")
@@ -46,7 +84,9 @@ func newTestManager(t *testing.T) *manager {
 		remoteRegistry: filepath.Join(cache, "skills-sh.json"),
 		skillsMP:       filepath.Join(cache, "skillsmp.json"),
 		remoteSkills:   filepath.Join(cache, "remote-skills"),
-		daemonSocket:   filepath.Join(socketDir, "skills-mgr.sock"),
+		refreshLock:    filepath.Join(cache, "refresh.lock"),
+		refreshLog:     filepath.Join(cache, "refresh.log"),
+		refreshSuccess: filepath.Join(cache, "refresh.success"),
 	}}
 	for _, dir := range []string{manager.paths.globalLockDir, manager.paths.placeholderDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

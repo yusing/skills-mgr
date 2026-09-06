@@ -455,7 +455,7 @@ func TestRemoteSkillsExpandProviderMetadata(t *testing.T) {
 	})
 }
 
-func TestRemoteTabReloadsDaemonCache(t *testing.T) {
+func TestRemoteTabReloadsRegistryCache(t *testing.T) {
 	manager := newTestManager(t)
 	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")
 	if err := saveRemoteCache(manager.paths.remoteRegistry, remoteRegistryCache{

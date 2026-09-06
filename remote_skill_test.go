@@ -3412,7 +3412,7 @@ func TestRemoteFetchTTLStartsAtSuccessfulCompletion(t *testing.T) {
 	}
 }
 
-func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
+func TestRefreshPersistedRemoteSkillsRefreshesStaleAndRetainsFailures(t *testing.T) {
 	t.Setenv("FAKE_GIT_ERROR", "")
 	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
 		"default": {
@@ -3453,7 +3453,7 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 	}
 	ageRemoteRecord(t, manager.remoteStore, beta)
 
-	if err := refreshPersistedRemoteSkills(t.Context(), manager, testLoggerSink(), "timer"); err != nil {
+	if err := refreshPersistedRemoteSkills(t.Context(), manager, testLoggerSink()); err != nil {
 		t.Fatal(err)
 	}
 	logged, err := os.ReadFile(gitLog)
@@ -3461,23 +3461,23 @@ func TestDaemonRefreshesStaleRemoteSkillsAndRetainsFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Count(string(logged), "\n") != 4 {
-		t.Fatalf("daemon clones = %d, want 4", strings.Count(string(logged), "\n"))
+		t.Fatalf("refresh clones = %d, want 4", strings.Count(string(logged), "\n"))
 	}
 	alphaRecord := ageRemoteRecord(t, manager.remoteStore, alpha)
 	t.Setenv("FAKE_GIT_ERROR", "still offline")
 	logger, diagnostic := testLogger()
-	err = refreshPersistedRemoteSkills(t.Context(), manager, logger, "timer")
+	err = refreshPersistedRemoteSkills(t.Context(), manager, logger)
 	if err == nil || !strings.Contains(err.Error(), "owner/repo/alpha") ||
 		!strings.Contains(err.Error(), "still offline") {
 		t.Fatalf("refresh error = %v", err)
 	}
 	if !strings.Contains(diagnostic.String(), "owner/repo/alpha") ||
 		!strings.Contains(diagnostic.String(), "still offline") {
-		t.Fatalf("daemon diagnostic = %q", diagnostic.String())
+		t.Fatalf("refresh diagnostic = %q", diagnostic.String())
 	}
 	current := loadRemoteRecord(t, manager.remoteStore, alpha)
 	if current.Content != alphaRecord.Content || !current.FetchedAt.Equal(alphaRecord.FetchedAt) {
-		t.Fatalf("failed daemon refresh replaced alpha: %#v", current)
+		t.Fatalf("failed refresh replaced alpha: %#v", current)
 	}
 }
 

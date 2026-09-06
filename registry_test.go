@@ -456,7 +456,7 @@ func TestSkillsShFetchSkillSearchesFromCatalogSourcePath(t *testing.T) {
 	}
 }
 
-func TestDaemonRefreshFailureIsReportedWithoutReturning(t *testing.T) {
+func TestRefreshRemoteRegistryReportsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		http.Error(response, `{"error":"unavailable","message":"try later"}`, http.StatusServiceUnavailable)
 	}))
@@ -466,13 +466,13 @@ func TestDaemonRefreshFailureIsReportedWithoutReturning(t *testing.T) {
 		client: server.Client(),
 	}
 	logger, logs := testLogger()
-	err := refreshRemoteRegistry(t.Context(), registry, logger, "command")
+	err := refreshRemoteRegistry(t.Context(), registry, logger)
 	if err == nil || !strings.Contains(err.Error(), "try later") {
 		t.Fatalf("refresh error = %v", err)
 	}
 	if !strings.Contains(logs.String(), "try later") ||
 		!strings.Contains(logs.String(), "registry cache refresh failed") {
-		t.Fatalf("daemon diagnostic = %q", logs.String())
+		t.Fatalf("refresh diagnostic = %q", logs.String())
 	}
 }
 

@@ -152,7 +152,7 @@ func (m *model) setRemoteStatus() {
 	case m.remoteError != "":
 		m.status = "error: " + m.remoteError
 	case len(m.remoteTopics) == 0:
-		m.status = "remote cache is empty; run skills-mgr daemon"
+		m.status = "remote cache is empty; switch back to this tab after refresh"
 	default:
 		m.status = fmt.Sprintf("%d remote skills in %d topics", count, len(m.remoteTopics))
 	}

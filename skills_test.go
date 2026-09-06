@@ -2337,7 +2337,6 @@ func TestHelpCommand(t *testing.T) {
   skills-mgr sync
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
-  skills-mgr daemon [refresh|sync]
 `)
 
 	if err := run([]string{"help", "get"}); err == nil || err.Error() != "usage: skills-mgr help" {

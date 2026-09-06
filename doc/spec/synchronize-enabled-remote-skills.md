@@ -18,11 +18,9 @@ for the skill in a catalog. It shall not fetch effectively disabled records.
 Existing commands and TUI startup shall not perform this synchronization
 implicitly.
 
-`skills-mgr daemon sync` shall obtain missing remote identities that are
-recorded as unconditionally enabled in the global selection, then refresh stale
-persisted records. It shall not inspect project selections. Daemon startup and
-timed cycles shall continue to refresh only identities already present in the
-store.
+The on-demand background runner shall refresh only identities already present
+in the store. It shall not inspect project selections or fetch a remote skill
+merely because its identity appears in configuration.
 
 Acceptance examples:
 
@@ -30,9 +28,9 @@ Acceptance examples:
   effectively enabled project remote record and makes it available to existing
   `list`, `get`, and `run` behavior.
 - With an empty remote store, an enabled remote identity recorded only in the
-  global selection is fetched by either explicit synchronization command.
-- A disabled global remote identity is not fetched by either explicit
-  synchronization command.
+  global selection is fetched by `skills-mgr sync` when the current project
+  inherits it.
+- A disabled global remote identity is not fetched by `skills-mgr sync`.
 - A fresh persisted copy causes no provider request.
 - A stale persisted copy is refreshed using existing refresh semantics.
 - A project whose prior v2 migration omitted identities is repaired from its
