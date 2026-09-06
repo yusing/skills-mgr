@@ -17,6 +17,8 @@ const (
 	remoteRefreshInterval = 5 * time.Minute
 	refreshRunnerCommand  = "refresh-runner"
 	refreshRunnerTrigger  = "ondemand"
+	refreshRunnerLockEnv  = "SKILLS_MGR_REFRESH_LOCK_FD"
+	refreshRunnerLockFD   = 3
 )
 
 var (
@@ -26,8 +28,8 @@ var (
 
 // maybeStartRefreshRunner starts a detached refresh child when the last
 // successful cycle is outside the registry interval and no runner currently
-// holds the lock. The parent only probes the lock; the child holds it for the
-// duration of the work.
+// holds the lock. The parent transfers its launch lock to the child, which
+// keeps it for the duration of the work.
 func maybeStartRefreshRunner(manager *manager) {
 	if manager == nil || !refreshSpawnDue(manager.paths.refreshSuccess, time.Now()) {
 		return
@@ -39,15 +41,22 @@ func maybeStartRefreshRunner(manager *manager) {
 		}
 		return
 	}
-	closeExclusiveLock(file)
-	if err := startBackgroundRefresh(manager); err != nil {
+	if err := startBackgroundRefresh(manager, file); err != nil {
+		closeExclusiveLock(file)
 		logRefreshRunnerSpawnError(manager.paths.refreshLog, err)
+		return
 	}
+	// The child inherited the same open file description. Closing without an
+	// explicit unlock preserves its ownership of the lock.
+	_ = file.Close()
 }
 
-func startDetachedRefreshRunner(manager *manager) error {
+func startDetachedRefreshRunner(manager *manager, lockFile *os.File) error {
 	if manager == nil {
 		return fmt.Errorf("refresh runner manager is unavailable")
+	}
+	if lockFile == nil {
+		return fmt.Errorf("refresh runner lock is unavailable")
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -62,6 +71,8 @@ func startDetachedRefreshRunner(manager *manager) error {
 	cmd.Stdin = nil
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", refreshRunnerLockEnv, refreshRunnerLockFD))
+	cmd.ExtraFiles = []*os.File{lockFile}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start refresh runner: %w", err)
@@ -80,7 +91,45 @@ func runRefreshRunnerCommand(manager *manager) error {
 	}
 	defer logFile.Close()
 	logger := slog.New(slog.NewTextHandler(logFile, nil))
-	return runRefreshRunner(context.Background(), manager, logger)
+	lockFile, err := inheritedRefreshRunnerLock(manager)
+	if err != nil {
+		return err
+	}
+	return runRefreshRunnerWithLock(context.Background(), manager, logger, lockFile)
+}
+
+func inheritedRefreshRunnerLock(manager *manager) (*os.File, error) {
+	value, ok := os.LookupEnv(refreshRunnerLockEnv)
+	if !ok {
+		return nil, nil
+	}
+	if value != fmt.Sprint(refreshRunnerLockFD) {
+		return nil, fmt.Errorf("invalid inherited refresh lock descriptor %q", value)
+	}
+	_ = os.Unsetenv(refreshRunnerLockEnv)
+	file := os.NewFile(uintptr(refreshRunnerLockFD), manager.paths.refreshLock)
+	if file == nil {
+		return nil, fmt.Errorf("open inherited refresh lock descriptor")
+	}
+	actual, actualErr := file.Stat()
+	expected, expectedErr := os.Stat(manager.paths.refreshLock)
+	if actualErr != nil || expectedErr != nil || !os.SameFile(actual, expected) {
+		_ = file.Close()
+		return nil, fmt.Errorf("inherited refresh lock does not match %s", manager.paths.refreshLock)
+	}
+	for {
+		err := syscall.Flock(refreshRunnerLockFD, syscall.LOCK_EX|syscall.LOCK_NB)
+		if errors.Is(err, syscall.EINTR) {
+			continue
+		}
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("claim inherited refresh lock: %w", err)
+		}
+		break
+	}
+	syscall.CloseOnExec(refreshRunnerLockFD)
+	return file, nil
 }
 
 func openRefreshLog(path string) (*os.File, error) {
@@ -111,6 +160,18 @@ func runRefreshRunner(
 	manager *manager,
 	logger *slog.Logger,
 ) error {
+	return runRefreshRunnerWithLock(ctx, manager, logger, nil)
+}
+
+func runRefreshRunnerWithLock(
+	ctx context.Context,
+	manager *manager,
+	logger *slog.Logger,
+	lockFile *os.File,
+) error {
+	if lockFile != nil {
+		defer closeExclusiveLock(lockFile)
+	}
 	if ctx.Err() != nil {
 		return nil
 	}
@@ -120,14 +181,17 @@ func runRefreshRunner(
 	if manager == nil {
 		return nil
 	}
-	lockFile, err := tryFlockExclusive(manager.paths.refreshLock)
-	if err != nil {
-		if errors.Is(err, errAlreadyLocked) {
-			return nil
+	if lockFile == nil {
+		var err error
+		lockFile, err = tryFlockExclusive(manager.paths.refreshLock)
+		if err != nil {
+			if errors.Is(err, errAlreadyLocked) {
+				return nil
+			}
+			return err
 		}
-		return err
+		defer closeExclusiveLock(lockFile)
 	}
-	defer closeExclusiveLock(lockFile)
 	var cycleErr error
 	if registryRefreshDue(manager.remote, time.Now()) {
 		cycleErr = refreshRemoteRegistry(ctx, manager.remote, logger)

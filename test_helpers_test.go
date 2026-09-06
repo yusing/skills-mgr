@@ -42,10 +42,12 @@ func enabledCallHandler(project string) interp.CallHandlerFunc {
 	return enabledCallHandlerWithEvidence(newProjectEvidenceIndex(project))
 }
 
+func ignoreBackgroundRefresh(*manager, *os.File) error { return nil }
+
 func ignoreRefreshRunner(*manager) error { return nil }
 
 func TestMain(m *testing.M) {
-	startBackgroundRefresh = ignoreRefreshRunner
+	startBackgroundRefresh = ignoreBackgroundRefresh
 	executeRefreshRunner = ignoreRefreshRunner
 	os.Exit(m.Run())
 }
@@ -53,7 +55,7 @@ func TestMain(m *testing.M) {
 func restoreRefreshHooks(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		startBackgroundRefresh = ignoreRefreshRunner
+		startBackgroundRefresh = ignoreBackgroundRefresh
 		executeRefreshRunner = ignoreRefreshRunner
 	})
 }

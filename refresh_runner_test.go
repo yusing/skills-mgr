@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -281,7 +282,7 @@ func TestMaybeStartRefreshRunnerLogsLockProbeError(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -305,7 +306,7 @@ func TestMaybeStartRefreshRunnerRespectsLock(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -324,7 +325,7 @@ func TestMaybeStartRefreshRunnerStartsWhenLockIsFree(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -334,6 +335,44 @@ func TestMaybeStartRefreshRunnerStartsWhenLockIsFree(t *testing.T) {
 	}
 }
 
+func TestMaybeStartRefreshRunnerTransfersLaunchLock(t *testing.T) {
+	restoreRefreshHooks(t)
+	current := newTestManager(t)
+	var childLock *os.File
+	startBackgroundRefresh = func(_ *manager, lockFile *os.File) error {
+		fd, err := syscall.Dup(int(lockFile.Fd()))
+		if err != nil {
+			return err
+		}
+		childLock = os.NewFile(uintptr(fd), current.paths.refreshLock)
+		return nil
+	}
+	maybeStartRefreshRunner(current)
+	if childLock == nil {
+		t.Fatal("refresh lock was not transferred")
+	}
+	t.Cleanup(func() { closeExclusiveLock(childLock) })
+	competitor, err := tryFlockExclusive(current.paths.refreshLock)
+	if !errors.Is(err, errAlreadyLocked) {
+		closeExclusiveLock(competitor)
+		t.Fatalf("competing lock error = %v, want %v", err, errAlreadyLocked)
+	}
+}
+
+func TestMaybeStartRefreshRunnerReleasesLaunchLockAfterStartError(t *testing.T) {
+	restoreRefreshHooks(t)
+	current := newTestManager(t)
+	startBackgroundRefresh = func(*manager, *os.File) error {
+		return errors.New("start failed")
+	}
+	maybeStartRefreshRunner(current)
+	file, err := tryFlockExclusive(current.paths.refreshLock)
+	if err != nil {
+		t.Fatalf("lock after failed start: %v", err)
+	}
+	closeExclusiveLock(file)
+}
+
 func TestMaybeStartRefreshRunnerSkipsRecentSuccess(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
@@ -341,7 +380,7 @@ func TestMaybeStartRefreshRunnerSkipsRecentSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -361,7 +400,7 @@ func TestMaybeStartRefreshRunnerStartsAfterSuccessInterval(t *testing.T) {
 		t.Fatal(err)
 	}
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -374,7 +413,7 @@ func TestMaybeStartRefreshRunnerStartsAfterSuccessInterval(t *testing.T) {
 func TestRunStartsRefreshRunner(t *testing.T) {
 	restoreRefreshHooks(t)
 	var started atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
 		return nil
 	}
@@ -402,7 +441,7 @@ func TestRunStartsRefreshRunner(t *testing.T) {
 func TestRefreshRunnerDispatchDoesNotSpawn(t *testing.T) {
 	restoreRefreshHooks(t)
 	var spawned, executed atomic.Int32
-	startBackgroundRefresh = func(*manager) error {
+	startBackgroundRefresh = func(*manager, *os.File) error {
 		spawned.Add(1)
 		return nil
 	}
