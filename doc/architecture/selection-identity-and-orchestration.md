@@ -21,9 +21,7 @@ enabled reference to the existing store ensure path. After all ensures succeed,
 it atomically persists the staged project metadata without changing enabled
 overrides.
 
-The explicit daemon sync command loads the global lock, sorts its
-unconditionally enabled remote identities by skill name, and passes each to the
-same store ensure path before refreshing all stale persisted records. Startup
-and timed cycles retain the stale-record-only path.
+The on-demand background runner refreshes only stale persisted store records
+and does not inspect project or global selection locks.
 
 This contract supports `REQ-SYNC-001`, `REQ-SYNC-002`, and `REQ-SYNC-003`.

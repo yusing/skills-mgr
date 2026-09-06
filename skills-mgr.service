@@ -1,9 +1,0 @@
-[Unit]
-Description=Skill Manager daemon
-
-[Service]
-ExecStart=%h/go/bin/skills-mgr daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target

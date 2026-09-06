@@ -339,9 +339,6 @@ Every command uses the current working directory as the project.
 | `skills-mgr get <skill>/<path> <start>:<end>` | Write an inclusive, 1-based line range |
 | `skills-mgr run <skill>/<script> [args...]` | Run a script from the skill, passing through its standard streams and exit status |
 | `skills-mgr sync` | Fetch the enabled remote skills this project references but this machine does not have |
-| `skills-mgr daemon` | Refresh registry metadata and stale remote content until interrupted |
-| `skills-mgr daemon refresh` | Ask the running daemon to refresh the skills.sh registry cache now |
-| `skills-mgr daemon sync` | Ask the running daemon to update stale persisted remote skills now |
 
 `get` and `run` reject a skill that is not effectively enabled in this project.
 For Grok plugin and bundled skills, that status is the one shown in the TUI and
@@ -670,34 +667,25 @@ unchanged.
 Nothing else downloads on your behalf. `list`, `get`, `run`, and TUI startup
 will not fetch a referenced remote skill they have never seen.
 
-## Remote Refresh Daemon
+## Remote Refresh
 
-`skills-mgr daemon` listens on `$XDG_RUNTIME_DIR/skills-mgr.sock`, falling back
-to `skills-mgr.sock` in the user cache `skills-mgr` directory. It refreshes
-skills.sh registry metadata at startup and every five minutes, and refreshes
-installed remote content once it passes three hours old. Structured text logs go
-to stderr for start, stop, inbound commands, cache refresh, and each
-remote-skill update; a failure is logged and does not stop later cycles.
+Each `skills-mgr` invocation starts a detached background runner if one is not
+already running. The runner refreshes skills.sh registry metadata when that
+cache is missing or at least five minutes old, and refreshes installed remote
+content once it passes three hours old. It only updates identities already
+present in the store. Structured text logs append to `refresh.log` in the user
+cache `skills-mgr` directory for cache refresh and each remote-skill update; a
+failure is logged and does not skip later skills in the same run.
 
-`skills-mgr daemon refresh` asks that process to refresh the registry cache
-right now. `skills-mgr daemon sync` downloads any missing, unconditionally
-enabled remote identity recorded in `$HOME/.skills-mgr/.skills-mgr.json`, then
-updates stale remote skills. It does not inspect project selections, so use
-`skills-mgr sync` in the project for inherited conditions or project-only
-identities. Both commands wait for the work to finish and fail if no daemon is
-running. Startup and timed daemon cycles continue to refresh only identities
-already present in the store.
+Use `skills-mgr sync` in the project for missing enabled remotes, including
+inherited global identities.
 
-To install it as a systemd user unit:
+If an older checkout installed the systemd user unit, disable it:
 
 ```sh
-shadowtree install-systemd
+systemctl --user disable --now skills-mgr.service
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/skills-mgr.service"
 ```
-
-That recipe runs `shadowtree install` first, so the binary lands wherever
-`GOBIN` points, defaulting to `$HOME/go/bin`. That is the path
-[`skills-mgr.service`](skills-mgr.service) names in `ExecStart`. If you set
-`GOBIN` somewhere else, edit `ExecStart` to match before enabling the unit.
 
 ## Documentation
 
@@ -726,7 +714,6 @@ shadowtree check
 | Format | `shadowtree fmt` | Format Go source in the checkout |
 | Tidy | `shadowtree tidy` | Tidy `go.mod` and `go.sum` |
 | Install checkout | `shadowtree install` | Install the main package with debug information stripped |
-| Install service | `shadowtree install-systemd` | Install to `GOBIN` and enable the systemd user unit |
 
 ## License
 

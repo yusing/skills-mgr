@@ -25,7 +25,8 @@ type paths struct {
 	remoteRegistry string
 	skillsMP       string
 	remoteSkills   string
-	daemonSocket   string
+	refreshLock    string
+	refreshLog     string
 }
 
 func defaultPaths() (paths, error) {
@@ -41,10 +42,7 @@ func defaultPaths() (paths, error) {
 	if codexHome == "" {
 		codexHome = filepath.Join(home, ".codex")
 	}
-	socketDir := os.Getenv("XDG_RUNTIME_DIR")
-	if socketDir == "" {
-		socketDir = filepath.Join(cache, "skills-mgr")
-	}
+	cacheDir := filepath.Join(cache, "skills-mgr")
 	managerHome := filepath.Join(home, ".skills-mgr")
 	return paths{
 		userSkills:     filepath.Join(home, ".agents", "skills"),
@@ -64,11 +62,12 @@ func defaultPaths() (paths, error) {
 		globalLockDir:  managerHome,
 		legacyLockDir:  home,
 		placeholderDir: home,
-		selectionLocks: filepath.Join(cache, "skills-mgr", "selection-locks"),
-		remoteRegistry: filepath.Join(cache, "skills-mgr", "skills-sh.json"),
-		skillsMP:       filepath.Join(cache, "skills-mgr", "skillsmp.json"),
-		remoteSkills:   filepath.Join(cache, "skills-mgr", "remote-skills"),
-		daemonSocket:   filepath.Join(socketDir, "skills-mgr.sock"),
+		selectionLocks: filepath.Join(cacheDir, "selection-locks"),
+		remoteRegistry: filepath.Join(cacheDir, "skills-sh.json"),
+		skillsMP:       filepath.Join(cacheDir, "skillsmp.json"),
+		remoteSkills:   filepath.Join(cacheDir, "remote-skills"),
+		refreshLock:    filepath.Join(cacheDir, "refresh.lock"),
+		refreshLog:     filepath.Join(cacheDir, "refresh.log"),
 	}, nil
 }
 

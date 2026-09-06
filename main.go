@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -46,6 +45,9 @@ func run(args []string) error {
 		),
 		global: global,
 	}
+	if len(args) == 0 || args[0] != refreshRunnerCommand {
+		maybeStartRefreshRunner(manager)
+	}
 
 	switch {
 	case len(args) == 0 || global:
@@ -67,7 +69,6 @@ func run(args []string) error {
   skills-mgr sync
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
-  skills-mgr daemon [refresh|sync]
 `)
 		return err
 	case args[0] == "adopt":
@@ -149,18 +150,11 @@ func run(args []string) error {
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
 		return command.Run()
-	case args[0] == "daemon":
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		switch {
-		case len(args) == 1:
-			logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-			return runDaemonReady(ctx, manager, logger, nil)
-		case len(args) == 2 && (args[1] == daemonCommandRefresh || args[1] == daemonCommandSync):
-			return triggerDaemon(ctx, manager.paths.daemonSocket, args[1])
-		default:
-			return fmt.Errorf("usage: skills-mgr daemon [refresh|sync]")
+	case args[0] == refreshRunnerCommand:
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr %s", refreshRunnerCommand)
 		}
+		return executeRefreshRunner(manager)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

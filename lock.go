@@ -410,6 +410,47 @@ func newLock() lock {
 	}
 }
 
+var errAlreadyLocked = errors.New("already locked")
+
+// tryFlockExclusive takes the advisory lock without waiting. Callers that lost
+// the race receive errAlreadyLocked and must not treat it as a failure of the
+// protected work.
+func tryFlockExclusive(path string) (*os.File, error) {
+	if path == "" {
+		return nil, fmt.Errorf("lock path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create lock directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		switch {
+		case err == nil:
+			return file, nil
+		case errors.Is(err, syscall.EINTR):
+			continue
+		case errors.Is(err, syscall.EWOULDBLOCK), errors.Is(err, syscall.EAGAIN):
+			_ = file.Close()
+			return nil, errAlreadyLocked
+		default:
+			_ = file.Close()
+			return nil, fmt.Errorf("lock %s: %w", path, err)
+		}
+	}
+}
+
+func closeExclusiveLock(file *os.File) {
+	if file == nil {
+		return
+	}
+	unlockFlock(file)
+	_ = file.Close()
+}
+
 // flockExclusive waits in the kernel until the advisory lock is held, retrying
 // the EINTR that signal delivery causes. Callers that must stay cancellable use
 // flockExclusiveContext instead.
