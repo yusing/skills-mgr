@@ -344,9 +344,11 @@ Every command uses the current working directory as the project.
 | `skills-mgr daemon sync` | Ask the running daemon to update stale persisted remote skills now |
 
 `get` and `run` reject a skill that is not effectively enabled in this project.
-`list`, `get`, and `run` accept the `--claude`, `--grok`, and `--codex` flags
-described under [Agent Integration](#agent-integration), though only `list`
-filters on them.
+For Grok plugin and bundled skills, that status is the one shown in the TUI and
+owned by `$HOME/.grok/config.toml`. For Claude plugin skills, it is Claude's
+`enabledPlugins` value. `list`, `get`, and `run` accept the `--claude`,
+`--grok`, and `--codex` flags described under [Agent Integration](#agent-integration),
+though only `list` filters on them.
 
 `get` omits YAML frontmatter from Markdown files, and a line range applies to
 that frontmatter-free content.
@@ -410,8 +412,11 @@ rows. Claude Plugin rows read their status from `enabledPlugins` in
 The interactive interface also reads installed Claude plugin skill directories
 from `$HOME/.claude/plugins/installed_plugins.json` and Grok Plugin and Bundled
 skills from `grok inspect --json`. These harness-owned catalogs are displayed
-only in their nested TUI tabs. They are never emitted by `skills-mgr list`,
-regardless of their displayed status.
+in their nested TUI tabs and are never emitted by `skills-mgr list`, regardless
+of their displayed status. `get` and `run` still serve an enabled native skill
+when named, using that harness's own enabled status rather than the manager
+selection. A disabled skill with the same name is skipped in favor of a later
+enabled owner.
 
 Roots 4 through 9 belong to a specific harness. Under a `--claude`, `--grok`,
 or `--codex` scope, roots owned by a different harness are dropped from the

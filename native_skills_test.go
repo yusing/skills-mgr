@@ -375,6 +375,13 @@ func TestToggleGrokSkillLeavesMalformedConfigUntouched(t *testing.T) {
 	}
 }
 
+func writeFailingGrokCommand(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "grok")
+	writeExecutable(t, path, "#!/bin/sh\nexit 1\n")
+	return path
+}
+
 func writeGrokInspectCommand(t *testing.T, output string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "grok")

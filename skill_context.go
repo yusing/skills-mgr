@@ -189,26 +189,90 @@ func (m *manager) openSkillContext(
 	ctx context.Context,
 	project, skill string,
 ) (*os.Root, discoveredSkill, error) {
-	discovered, err := m.findSkill(project, skill)
+	discovered, err := m.findAccessibleSkill(ctx, project, skill)
 	if err != nil {
 		return nil, discoveredSkill{}, err
-	}
-	selection, err := m.selectionState(project, []discoveredSkill{discovered})
-	if err != nil {
-		return nil, discoveredSkill{}, err
-	}
-	enabled, err := selection.enabled(ctx, newEnabledEvaluator(project), skill)
-	if err != nil {
-		return nil, discoveredSkill{}, err
-	}
-	if !enabled {
-		return nil, discoveredSkill{}, fmt.Errorf("skill %q is not enabled", skill)
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
 		return nil, discoveredSkill{}, fmt.Errorf("open skill %q: %w", skill, err)
 	}
 	return root, discovered, nil
+}
+
+// findAccessibleSkill returns the first enabled skill of this name, searching
+// filesystem discovery, then Claude plugins, then Grok native skills. A catalog
+// that fails to load is skipped when another catalog can serve the name; its
+// error is returned only when the name is absent from every catalog that loaded.
+func (m *manager) findAccessibleSkill(
+	ctx context.Context,
+	project, name string,
+) (discoveredSkill, error) {
+	inaccessible := false
+	try := func(skills []discoveredSkill) (discoveredSkill, bool, error) {
+		for _, discovered := range skills {
+			if discovered.Name != name {
+				continue
+			}
+			enabled, err := m.skillAccessible(ctx, project, discovered)
+			if err != nil {
+				return discoveredSkill{}, false, err
+			}
+			if enabled {
+				return discovered, true, nil
+			}
+			inaccessible = true
+		}
+		return discoveredSkill{}, false, nil
+	}
+
+	skills, err := m.skills(project)
+	if err != nil {
+		return discoveredSkill{}, err
+	}
+	if discovered, ok, err := try(skills); err != nil || ok {
+		return discovered, err
+	}
+
+	var catalogErr error
+	claude, err := m.claudePluginSkills()
+	if err != nil {
+		catalogErr = err
+	} else if discovered, ok, err := try(claude); err != nil || ok {
+		return discovered, err
+	}
+
+	grok, err := m.grokNativeSkills(project)
+	if err != nil {
+		if catalogErr == nil {
+			catalogErr = err
+		}
+	} else if discovered, ok, err := try(grok); err != nil || ok {
+		return discovered, err
+	}
+
+	if inaccessible {
+		return discoveredSkill{}, fmt.Errorf("skill %q is not enabled", name)
+	}
+	if catalogErr != nil {
+		return discoveredSkill{}, catalogErr
+	}
+	return discoveredSkill{}, fmt.Errorf("skill %q was not discovered", name)
+}
+
+func (m *manager) skillAccessible(
+	ctx context.Context,
+	project string,
+	discovered discoveredSkill,
+) (bool, error) {
+	if isNativeSkill(discovered) {
+		return discovered.ExternalEnabled, nil
+	}
+	selection, err := m.selectionState(project, []discoveredSkill{discovered})
+	if err != nil {
+		return false, err
+	}
+	return selection.enabled(ctx, newEnabledEvaluator(project), discovered.Name)
 }
 
 func (m *manager) findSkill(project, name string) (discoveredSkill, error) {

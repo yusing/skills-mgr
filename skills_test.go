@@ -1514,6 +1514,274 @@ func TestGetAndRunResolveSkillsFromAnyAgentSource(t *testing.T) {
 	}
 }
 
+func TestGetAndRunResolveEnabledNativeSkills(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	bundledRoot := filepath.Join(t.TempDir(), "review")
+	writeFile(
+		t,
+		filepath.Join(bundledRoot, "SKILL.md"),
+		skillFile("review", "Review skill.", "review body\n"),
+	)
+	writeExecutable(
+		t,
+		filepath.Join(bundledRoot, "scripts", "echo.sh"),
+		"#!/bin/sh\nprintf reviewed\n",
+	)
+	pluginRoot := filepath.Join(manager.paths.claudePlugins, "cache", "market", "sample", "1.0.0")
+	writeFile(
+		t,
+		filepath.Join(pluginRoot, "skills", "claude-tool", "SKILL.md"),
+		skillFile("claude-tool", "Claude plugin skill.", "claude plugin body\n"),
+	)
+	writeJSONFile(t, manager.paths.claudeSettings, claudeSettingsFile{
+		EnabledPlugins: map[string]bool{"sample@market": true},
+	})
+	writeJSONFile(t, filepath.Join(manager.paths.claudePlugins, "installed_plugins.json"), claudeInstalledPluginsFile{
+		Plugins: map[string][]struct {
+			InstallPath string `json:"installPath"`
+		}{"sample@market": {{InstallPath: pluginRoot}}},
+	})
+	inspectPath, err := json.Marshal(filepath.Join(bundledRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.paths.grokCommand = writeGrokInspectCommand(t, fmt.Sprintf(`{
+  "skills": [{
+    "name": "review",
+    "description": "Review skill.",
+    "source": {"type": "bundled", "path": %s},
+    "userInvocable": true
+  }]
+}`, inspectPath))
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "review body\n" {
+		t.Fatalf("Grok bundled output = %q", output.String())
+	}
+
+	command, err := manager.scriptCommandContext(t.Context(), project, "review/scripts/echo.sh", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptOutput, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(scriptOutput) != "reviewed" {
+		t.Fatalf("Grok bundled script output = %q", scriptOutput)
+	}
+
+	output.Reset()
+	if err := manager.getContext(t.Context(), project, "claude-tool", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "claude plugin body\n" {
+		t.Fatalf("Claude plugin output = %q", output.String())
+	}
+
+	writeFile(t, manager.paths.grokConfig, "[skills]\ndisabled = [\"review\"]\n")
+	if err := manager.getContext(t.Context(), project, "review", "", &bytes.Buffer{}); err == nil ||
+		!strings.Contains(err.Error(), `skill "review" is not enabled`) {
+		t.Fatalf("disabled Grok bundled error = %v", err)
+	}
+
+	writeJSONFile(t, manager.paths.claudeSettings, claudeSettingsFile{
+		EnabledPlugins: map[string]bool{"sample@market": false},
+	})
+	if err := manager.getContext(t.Context(), project, "claude-tool", "", &bytes.Buffer{}); err == nil ||
+		!strings.Contains(err.Error(), `skill "claude-tool" is not enabled`) {
+		t.Fatalf("disabled Claude plugin error = %v", err)
+	}
+}
+
+func TestGetPrefersDiscoveredSkillOverNativeSkill(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "review", "SKILL.md"),
+		skillFile("review", "User review.", "user body\n"),
+	)
+	if err := saveLock(project, testLock(map[string]bool{"review": true}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	bundledRoot := filepath.Join(t.TempDir(), "review")
+	writeFile(
+		t,
+		filepath.Join(bundledRoot, "SKILL.md"),
+		skillFile("review", "Bundled review.", "bundled body\n"),
+	)
+	inspectPath, err := json.Marshal(filepath.Join(bundledRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.paths.grokCommand = writeGrokInspectCommand(t, fmt.Sprintf(`{
+  "skills": [{
+    "name": "review",
+    "description": "Bundled review.",
+    "source": {"type": "bundled", "path": %s},
+    "userInvocable": true
+  }]
+}`, inspectPath))
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "user body\n" {
+		t.Fatalf("output = %q, want user skill over native", output.String())
+	}
+}
+
+func TestGetUsesEnabledNativeSkillWhenFilesystemSkillIsDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(
+		t,
+		filepath.Join(manager.paths.userSkills, "review", "SKILL.md"),
+		skillFile("review", "User review.", "user body\n"),
+	)
+	bundledRoot := filepath.Join(t.TempDir(), "review")
+	writeFile(
+		t,
+		filepath.Join(bundledRoot, "SKILL.md"),
+		skillFile("review", "Bundled review.", "bundled body\n"),
+	)
+	inspectPath, err := json.Marshal(filepath.Join(bundledRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.paths.grokCommand = writeGrokInspectCommand(t, fmt.Sprintf(`{
+  "skills": [{
+    "name": "review",
+    "description": "Bundled review.",
+    "source": {"type": "bundled", "path": %s},
+    "userInvocable": true
+  }]
+}`, inspectPath))
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "bundled body\n" {
+		t.Fatalf("output = %q, want enabled bundled skill", output.String())
+	}
+}
+
+func TestGetUsesEnabledGrokSkillWhenClaudePluginWithSameNameIsDisabled(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	pluginRoot := filepath.Join(manager.paths.claudePlugins, "cache", "market", "sample", "1.0.0")
+	writeFile(
+		t,
+		filepath.Join(pluginRoot, "skills", "review", "SKILL.md"),
+		skillFile("review", "Claude review.", "claude body\n"),
+	)
+	writeJSONFile(t, manager.paths.claudeSettings, claudeSettingsFile{
+		EnabledPlugins: map[string]bool{"sample@market": false},
+	})
+	writeJSONFile(t, filepath.Join(manager.paths.claudePlugins, "installed_plugins.json"), claudeInstalledPluginsFile{
+		Plugins: map[string][]struct {
+			InstallPath string `json:"installPath"`
+		}{"sample@market": {{InstallPath: pluginRoot}}},
+	})
+	bundledRoot := filepath.Join(t.TempDir(), "review")
+	writeFile(
+		t,
+		filepath.Join(bundledRoot, "SKILL.md"),
+		skillFile("review", "Bundled review.", "bundled body\n"),
+	)
+	inspectPath, err := json.Marshal(filepath.Join(bundledRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.paths.grokCommand = writeGrokInspectCommand(t, fmt.Sprintf(`{
+  "skills": [{
+    "name": "review",
+    "description": "Bundled review.",
+    "source": {"type": "bundled", "path": %s},
+    "userInvocable": true
+  }]
+}`, inspectPath))
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "bundled body\n" {
+		t.Fatalf("output = %q, want enabled bundled skill", output.String())
+	}
+}
+
+func TestGetResolvesClaudePluginWhenGrokInspectFails(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	pluginRoot := filepath.Join(manager.paths.claudePlugins, "cache", "market", "sample", "1.0.0")
+	writeFile(
+		t,
+		filepath.Join(pluginRoot, "skills", "claude-tool", "SKILL.md"),
+		skillFile("claude-tool", "Claude plugin skill.", "claude plugin body\n"),
+	)
+	writeJSONFile(t, manager.paths.claudeSettings, claudeSettingsFile{
+		EnabledPlugins: map[string]bool{"sample@market": true},
+	})
+	writeJSONFile(t, filepath.Join(manager.paths.claudePlugins, "installed_plugins.json"), claudeInstalledPluginsFile{
+		Plugins: map[string][]struct {
+			InstallPath string `json:"installPath"`
+		}{"sample@market": {{InstallPath: pluginRoot}}},
+	})
+	manager.paths.grokCommand = writeFailingGrokCommand(t)
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "claude-tool", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "claude plugin body\n" {
+		t.Fatalf("Claude plugin output = %q", output.String())
+	}
+	err := manager.getContext(t.Context(), project, "missing", "", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "run grok inspect --json") {
+		t.Fatalf("missing skill error = %v", err)
+	}
+}
+
+func TestGetResolvesGrokBundledWhenClaudeSettingsAreInvalid(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	writeFile(t, manager.paths.claudeSettings, "{not json")
+	bundledRoot := filepath.Join(t.TempDir(), "review")
+	writeFile(
+		t,
+		filepath.Join(bundledRoot, "SKILL.md"),
+		skillFile("review", "Bundled review.", "bundled body\n"),
+	)
+	inspectPath, err := json.Marshal(filepath.Join(bundledRoot, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.paths.grokCommand = writeGrokInspectCommand(t, fmt.Sprintf(`{
+  "skills": [{
+    "name": "review",
+    "description": "Bundled review.",
+    "source": {"type": "bundled", "path": %s},
+    "userInvocable": true
+  }]
+}`, inspectPath))
+
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "bundled body\n" {
+		t.Fatalf("Grok bundled output = %q", output.String())
+	}
+}
+
 func TestListHarnessFilteringChoosesRemoteSkillOverOtherAgentSkill(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()

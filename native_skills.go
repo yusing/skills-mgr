@@ -58,8 +58,9 @@ type grokConfigSnapshot struct {
 }
 
 // nativeSkills supplies harness-owned catalogs that are intentionally absent
-// from manager.skills: Claude controls plugin status, while Grok owns its
-// plugin and bundled skill metadata and selection policy.
+// from manager.skills so list does not advertise them: Claude controls plugin
+// status, while Grok owns its plugin and bundled skill metadata and selection
+// policy. get and run still resolve an enabled native skill by name.
 func (m *manager) nativeSkills(project string) ([]discoveredSkill, error) {
 	claude, err := m.claudePluginSkills()
 	if err != nil {
