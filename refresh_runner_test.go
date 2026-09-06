@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -470,5 +471,140 @@ func TestUnknownDaemonCommand(t *testing.T) {
 	err := run([]string{"daemon"})
 	if err == nil || err.Error() != `unknown command "daemon"` {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestTruncateRefreshLogIfNeeded(t *testing.T) {
+	t.Run("no file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "refresh.log")
+		if err := truncateRefreshLogIfNeeded(path); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected file to not exist, got err = %v", err)
+		}
+	})
+
+	t.Run("under limit", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "refresh.log")
+		content := strings.Repeat("log line\n", 100)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := truncateRefreshLogIfNeeded(path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != content {
+			t.Fatalf("content changed when under limit")
+		}
+	})
+
+	t.Run("over limit truncates", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "refresh.log")
+		// Create a file larger than refreshLogMaxBytes
+		lineCount := (refreshLogMaxBytes / 10) + 1000
+		var builder strings.Builder
+		for i := range lineCount {
+			builder.WriteString("line ")
+			builder.WriteString(strings.Repeat("X", 4))
+			builder.WriteString(fmt.Sprintf(" %d\n", i))
+		}
+		content := builder.String()
+		if len(content) <= refreshLogMaxBytes {
+			t.Fatalf("test content too small: %d <= %d", len(content), refreshLogMaxBytes)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := truncateRefreshLogIfNeeded(path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) > refreshLogKeepBytes {
+			t.Fatalf("truncated size = %d, want <= %d", len(data), refreshLogKeepBytes)
+		}
+		if len(data) == 0 {
+			t.Fatal("truncated to empty file")
+		}
+		// Verify line boundary alignment - should not start with partial line
+		if !strings.HasPrefix(string(data), "line ") {
+			t.Fatalf("truncation broke line boundary, starts with: %q", string(data[:min(50, len(data))]))
+		}
+		// Verify we kept the most recent content (high line numbers)
+		lastLine := strings.TrimSpace(string(data[strings.LastIndex(string(data[:len(data)-1]), "\n")+1:]))
+		if !strings.HasPrefix(lastLine, "line ") || !strings.Contains(lastLine, fmt.Sprintf(" %d", lineCount-1)) {
+			t.Fatalf("did not keep most recent content, last line = %q", lastLine)
+		}
+	})
+
+	t.Run("preserves line boundaries", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "refresh.log")
+		// Create content where truncation point lands mid-line
+		var builder strings.Builder
+		for range (refreshLogMaxBytes / 50) + 100 {
+			builder.WriteString(strings.Repeat("ABCDEFGHIJ", 5))
+			builder.WriteString("\n")
+		}
+		content := builder.String()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := truncateRefreshLogIfNeeded(path); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Every line should be complete (50 chars + newline)
+		lines := strings.Split(string(data), "\n")
+		for i, line := range lines {
+			if line == "" && i == len(lines)-1 {
+				continue // trailing newline
+			}
+			if len(line) != 50 {
+				t.Fatalf("line %d has length %d, want 50", i, len(line))
+			}
+		}
+	})
+}
+
+func TestOpenRefreshLogTruncatesOnOpen(t *testing.T) {
+	manager := newTestManager(t)
+	// Create an oversized log file
+	var builder strings.Builder
+	for i := range (refreshLogMaxBytes / 10) + 1000 {
+		builder.WriteString(fmt.Sprintf("log entry %d\n", i))
+	}
+	if err := os.MkdirAll(filepath.Dir(manager.paths.refreshLog), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manager.paths.refreshLog, []byte(builder.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalSize, _ := os.Stat(manager.paths.refreshLog)
+	if originalSize.Size() <= refreshLogMaxBytes {
+		t.Fatalf("test file too small: %d", originalSize.Size())
+	}
+
+	file, err := openRefreshLog(manager.paths.refreshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Close()
+
+	info, err := os.Stat(manager.paths.refreshLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > refreshLogKeepBytes {
+		t.Fatalf("log size after open = %d, want <= %d", info.Size(), refreshLogKeepBytes)
 	}
 }

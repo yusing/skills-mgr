@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -19,6 +20,12 @@ const (
 	refreshRunnerTrigger  = "ondemand"
 	refreshRunnerLockEnv  = "SKILLS_MGR_REFRESH_LOCK_FD"
 	refreshRunnerLockFD   = 3
+
+	// refreshLogMaxBytes bounds the on-disk refresh log so repeated failures
+	// cannot exhaust the cache filesystem. When exceeded, the log is truncated
+	// to refreshLogKeepBytes, preserving the most recent entries.
+	refreshLogMaxBytes  = 64 * 1024
+	refreshLogKeepBytes = 32 * 1024
 )
 
 var (
@@ -139,11 +146,45 @@ func openRefreshLog(path string) (*os.File, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create refresh log directory: %w", err)
 	}
+	if err := truncateRefreshLogIfNeeded(path); err != nil {
+		return nil, err
+	}
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open refresh log %s: %w", path, err)
 	}
 	return file, nil
+}
+
+// truncateRefreshLogIfNeeded checks the refresh log size and truncates it
+// when it exceeds refreshLogMaxBytes, keeping the most recent entries.
+func truncateRefreshLogIfNeeded(path string) error {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat refresh log: %w", err)
+	}
+	if info.Size() <= refreshLogMaxBytes {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read refresh log for truncation: %w", err)
+	}
+	keep := data
+	if len(data) > refreshLogKeepBytes {
+		keep = data[len(data)-refreshLogKeepBytes:]
+		// Align to a line boundary to avoid partial log entries.
+		if idx := bytes.IndexByte(keep, '\n'); idx >= 0 && idx < len(keep)-1 {
+			keep = keep[idx+1:]
+		}
+	}
+	if err := os.WriteFile(path, keep, 0o600); err != nil {
+		return fmt.Errorf("truncate refresh log: %w", err)
+	}
+	return nil
 }
 
 func logRefreshRunnerSpawnError(path string, err error) {
