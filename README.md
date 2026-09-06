@@ -670,9 +670,10 @@ will not fetch a referenced remote skill they have never seen.
 ## Remote Refresh
 
 Each `skills-mgr` invocation starts a detached background runner if one is not
-already running. The runner refreshes skills.sh registry metadata when that
-cache is missing or at least five minutes old, and refreshes installed remote
-content once it passes three hours old. It only updates identities already
+already running and the last successful cycle is at least five minutes old. The
+runner refreshes skills.sh registry metadata when that cache is missing or at
+least five minutes old, and refreshes installed remote content once it passes
+three hours old. It only updates identities already
 present in the store. Structured text logs append to `refresh.log` in the user
 cache `skills-mgr` directory for cache refresh and each remote-skill update; a
 failure is logged and does not skip later skills in the same run.

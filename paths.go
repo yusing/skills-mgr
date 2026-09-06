@@ -27,6 +27,7 @@ type paths struct {
 	remoteSkills   string
 	refreshLock    string
 	refreshLog     string
+	refreshSuccess string
 }
 
 func defaultPaths() (paths, error) {
@@ -68,6 +69,7 @@ func defaultPaths() (paths, error) {
 		remoteSkills:   filepath.Join(cacheDir, "remote-skills"),
 		refreshLock:    filepath.Join(cacheDir, "refresh.lock"),
 		refreshLog:     filepath.Join(cacheDir, "refresh.log"),
+		refreshSuccess: filepath.Join(cacheDir, "refresh.success"),
 	}, nil
 }
 

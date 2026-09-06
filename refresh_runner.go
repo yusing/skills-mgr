@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -23,11 +24,12 @@ var (
 	executeRefreshRunner   = runRefreshRunnerCommand
 )
 
-// maybeStartRefreshRunner starts a detached refresh child when no runner
-// currently holds the lock. The parent only probes the lock; the child holds
-// it for the duration of the work.
+// maybeStartRefreshRunner starts a detached refresh child when the last
+// successful cycle is outside the registry interval and no runner currently
+// holds the lock. The parent only probes the lock; the child holds it for the
+// duration of the work.
 func maybeStartRefreshRunner(manager *manager) {
-	if manager == nil {
+	if manager == nil || !refreshSpawnDue(manager.paths.refreshSuccess, time.Now()) {
 		return
 	}
 	file, err := tryFlockExclusive(manager.paths.refreshLock)
@@ -126,8 +128,9 @@ func runRefreshRunner(
 		return err
 	}
 	defer closeExclusiveLock(lockFile)
+	var cycleErr error
 	if registryRefreshDue(manager.remote, time.Now()) {
-		_ = refreshRemoteRegistry(ctx, manager.remote, logger)
+		cycleErr = refreshRemoteRegistry(ctx, manager.remote, logger)
 	} else if manager.remote != nil {
 		logger.Debug(
 			"skipping registry cache refresh",
@@ -138,8 +141,56 @@ func runRefreshRunner(
 	if ctx.Err() != nil {
 		return nil
 	}
-	_ = refreshPersistedRemoteSkills(ctx, manager, logger)
+	cycleErr = errors.Join(cycleErr, refreshPersistedRemoteSkills(ctx, manager, logger))
+	if cycleErr != nil || ctx.Err() != nil {
+		return nil
+	}
+	if err := recordRefreshSuccess(manager.paths.refreshSuccess); err != nil {
+		logger.Error("record refresh success", "err", err)
+	}
 	return nil
+}
+
+func refreshSpawnDue(path string, now time.Time) bool {
+	at, err := lastRefreshSuccess(path)
+	if err != nil || at.IsZero() || at.After(now) {
+		return true
+	}
+	return !now.Before(at.Add(remoteRefreshInterval))
+}
+
+func lastRefreshSuccess(path string) (time.Time, error) {
+	if path == "" {
+		return time.Time{}, fmt.Errorf("refresh success path is empty")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	value := strings.TrimSpace(string(data))
+	at, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		at, err = time.Parse(time.RFC3339, value)
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	return at, nil
+}
+
+func recordRefreshSuccess(path string) error {
+	return recordRefreshSuccessAt(path, time.Now().UTC())
+}
+
+func recordRefreshSuccessAt(path string, at time.Time) error {
+	if path == "" {
+		return fmt.Errorf("refresh success path is empty")
+	}
+	return writeAtomicFile(
+		path,
+		"refresh success",
+		[]byte(at.UTC().Format(time.RFC3339Nano)+"\n"),
+	)
 }
 
 func registryRefreshDue(registry *remoteRegistry, now time.Time) bool {

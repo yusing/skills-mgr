@@ -84,6 +84,7 @@ func newTestManager(t *testing.T) *manager {
 		remoteSkills:   filepath.Join(cache, "remote-skills"),
 		refreshLock:    filepath.Join(cache, "refresh.lock"),
 		refreshLog:     filepath.Join(cache, "refresh.log"),
+		refreshSuccess: filepath.Join(cache, "refresh.success"),
 	}}
 	for _, dir := range []string{manager.paths.globalLockDir, manager.paths.placeholderDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

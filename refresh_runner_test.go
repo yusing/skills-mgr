@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,6 +125,9 @@ func TestRefreshRunnerReportsRegistryFailure(t *testing.T) {
 	if !strings.Contains(logs.String(), "registry cache refresh failed") ||
 		!strings.Contains(logs.String(), "try later") {
 		t.Fatalf("log = %s", logs.String())
+	}
+	if _, err := os.Stat(manager.paths.refreshSuccess); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("refresh success after failure: %v", err)
 	}
 }
 
@@ -247,6 +251,9 @@ func TestRefreshRunnerCommandWritesLog(t *testing.T) {
 	if !strings.Contains(string(data), `msg="refreshed registry cache" trigger=ondemand`) {
 		t.Fatalf("refresh log = %s", data)
 	}
+	if _, err := lastRefreshSuccess(manager.paths.refreshSuccess); err != nil {
+		t.Fatalf("refresh success = %v", err)
+	}
 }
 
 func TestRefreshRunnerCommandSilentWhenFresh(t *testing.T) {
@@ -264,6 +271,9 @@ func TestRefreshRunnerCommandSilentWhenFresh(t *testing.T) {
 	}
 	if len(data) != 0 {
 		t.Fatalf("refresh log = %s", data)
+	}
+	if _, err := lastRefreshSuccess(current.paths.refreshSuccess); err != nil {
+		t.Fatalf("refresh success = %v", err)
 	}
 }
 
@@ -313,6 +323,43 @@ func TestMaybeStartRefreshRunnerRespectsLock(t *testing.T) {
 func TestMaybeStartRefreshRunnerStartsWhenLockIsFree(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
+	var started atomic.Int32
+	startBackgroundRefresh = func(*manager) error {
+		started.Add(1)
+		return nil
+	}
+	maybeStartRefreshRunner(current)
+	if started.Load() != 1 {
+		t.Fatalf("started = %d, want 1", started.Load())
+	}
+}
+
+func TestMaybeStartRefreshRunnerSkipsRecentSuccess(t *testing.T) {
+	restoreRefreshHooks(t)
+	current := newTestManager(t)
+	if err := recordRefreshSuccessAt(current.paths.refreshSuccess, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var started atomic.Int32
+	startBackgroundRefresh = func(*manager) error {
+		started.Add(1)
+		return nil
+	}
+	maybeStartRefreshRunner(current)
+	if started.Load() != 0 {
+		t.Fatalf("started = %d, want 0", started.Load())
+	}
+}
+
+func TestMaybeStartRefreshRunnerStartsAfterSuccessInterval(t *testing.T) {
+	restoreRefreshHooks(t)
+	current := newTestManager(t)
+	if err := recordRefreshSuccessAt(
+		current.paths.refreshSuccess,
+		time.Now().UTC().Add(-remoteRefreshInterval-time.Second),
+	); err != nil {
+		t.Fatal(err)
+	}
 	var started atomic.Int32
 	startBackgroundRefresh = func(*manager) error {
 		started.Add(1)
