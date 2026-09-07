@@ -166,3 +166,12 @@ func assertFile(t *testing.T, path, want string) {
 		t.Fatalf("%s = %q, want %q", path, data, want)
 	}
 }
+
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
+}

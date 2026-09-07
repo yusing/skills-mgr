@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"strings"
 )
@@ -264,6 +265,11 @@ func (m *manager) refreshEditedSkill(
 	skills, err := m.skills(project)
 	if err != nil {
 		return nil, selectionState{}, err
+	}
+	// Discovery stores resolved paths; editor inputs may retain ancestor aliases.
+	// A deleted or otherwise undiscoverable file still follows the no-match path.
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
 	}
 	var edited discoveredSkill
 	for _, skill := range skills {

@@ -2204,8 +2204,11 @@ func TestRunSkillScripts(t *testing.T) {
 	root := filepath.Join(manager.paths.userSkills, "alpha")
 	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", ""))
 	interpreter := filepath.Join(t.TempDir(), "interpreter")
-	writeExecutable(t, interpreter, "#!/bin/sh\nprintf 'shebang|%s|%s' \"$PWD\" \"$2\"")
-	writeExecutable(t, filepath.Join(root, "scripts", "echo.sh"), "#!"+interpreter+"\n")
+	// Use a binary interpreter: recursive script shebangs are not portable.
+	if err := os.Symlink("/bin/sh", interpreter); err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(root, "scripts", "echo.sh"), "#!"+interpreter+"\nprintf 'shebang|%s|%s' \"$PWD\" \"$1\"")
 	writeFile(t, filepath.Join(root, "scripts", "echo.py"), "import os, sys\nprint(f'{os.getcwd()}|{sys.argv[1]}', end='')")
 	if _, err := manager.toggle(project, "alpha"); err != nil {
 		t.Fatal(err)
@@ -2227,7 +2230,7 @@ func TestRunSkillScripts(t *testing.T) {
 			if err := command.Run(); err != nil {
 				t.Fatal(err)
 			}
-			want := root + "|argument"
+			want := resolvedPath(t, root) + "|argument"
 			if filepath.Ext(target) == ".sh" {
 				want = "shebang|" + want
 			}
@@ -2608,7 +2611,7 @@ func TestRunRejectsDisabledAndEscapingScripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if command.Path != filepath.Join(root, "future.jsx") {
+	if command.Path != resolvedPath(t, filepath.Join(root, "future.jsx")) {
 		t.Fatalf("unknown extension command = %q, want direct execution", command.Path)
 	}
 }

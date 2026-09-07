@@ -239,6 +239,11 @@ func validateRelocationEntry(skill discoveredSkill) error {
 	if skill.EntryPath == "" {
 		return fmt.Errorf("skill %q has no relocatable directory entry", skill.Name)
 	}
+	// Rollback moves back into this collection, so it must satisfy the same
+	// destination checks before any content is moved.
+	if err := validateRelocationParent(filepath.Dir(skill.EntryPath)); err != nil {
+		return err
+	}
 	resolved, err := filepath.EvalSymlinks(skill.EntryPath)
 	if err != nil {
 		return fmt.Errorf("resolve skill directory %s: %w", skill.EntryPath, err)
@@ -246,7 +251,11 @@ func validateRelocationEntry(skill discoveredSkill) error {
 	if filepath.Clean(resolved) != filepath.Clean(skill.Root) {
 		return fmt.Errorf("skill directory %s changed before relocation", skill.EntryPath)
 	}
-	if filepath.Clean(skill.EntryPath) != filepath.Clean(resolved) {
+	info, err := os.Lstat(skill.EntryPath)
+	if err != nil {
+		return fmt.Errorf("inspect skill directory %s: %w", skill.EntryPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("skill directory %s contains a symbolic link", skill.EntryPath)
 	}
 	return nil
@@ -275,31 +284,20 @@ func moveSkillDirectory(source, destination string) error {
 }
 
 func validateRelocationParent(path string) error {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("resolve relocation destination parent %s: %w", path, err)
+	// The collection root itself must be a real directory. Ancestors can be
+	// normal filesystem aliases, such as /var on macOS or a symlinked home.
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	volume := filepath.VolumeName(absolute)
-	current := volume + string(filepath.Separator)
-	relative := strings.TrimPrefix(absolute, current)
-	for component := range strings.SplitSeq(filepath.ToSlash(relative), "/") {
-		if component == "" {
-			continue
-		}
-		current = filepath.Join(current, filepath.FromSlash(component))
-		info, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("inspect relocation destination parent %s: %w", current, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("relocation destination parent %s contains a symbolic link", current)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("relocation destination parent %s is not a directory", current)
-		}
+	if err != nil {
+		return fmt.Errorf("inspect relocation destination parent %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("relocation destination parent %s contains a symbolic link", path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("relocation destination parent %s is not a directory", path)
 	}
 	return nil
 }

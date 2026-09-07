@@ -78,7 +78,7 @@ func TestDiscoverSkillsUsesSourcePrecedence(t *testing.T) {
 	if len(skills) != 1 {
 		t.Fatalf("skills = %#v, want one preferred skill", skills)
 	}
-	if skills[0].Name != "same-name" || skills[0].Root != projectRoot {
+	if skills[0].Name != "same-name" || skills[0].Root != resolvedPath(t, projectRoot) {
 		t.Fatalf("skill = %#v, want project source at %s", skills[0], projectRoot)
 	}
 }
@@ -151,7 +151,7 @@ func TestDiscoverSkillsFollowsSkillDirectorySymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skills) != 1 || skills[0].Name != "linked" || skills[0].Root != target {
+	if len(skills) != 1 || skills[0].Name != "linked" || skills[0].Root != resolvedPath(t, target) {
 		t.Fatalf("skills = %#v, want linked skill rooted at %s", skills, target)
 	}
 }
