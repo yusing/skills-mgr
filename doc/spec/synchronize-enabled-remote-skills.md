@@ -11,10 +11,15 @@ state. Inherited records shall omit enabled state so they continue following
 the global selection. Normal discovery precedence shall not suppress this
 metadata reconciliation.
 
-After reconciliation, each effectively enabled remote reference shall exist as
-a fresh, valid copy in the current user's remote-skill store. The command shall
+After reconciliation, every remote reference listed in the global selection,
+regardless of enabled state or conditions, and each effectively enabled
+project-only remote reference shall exist as a fresh, valid copy in the current
+user's remote-skill store. Downloading global references shall not evaluate their
+conditions or change their enabled state. Running from the user's home or manager
+home shall use the global selection rather than create a home-directory project
+selection. The command shall
 use the provider named by the record directly rather than discover or search
-for the skill in a catalog. It shall not fetch effectively disabled records.
+for the skill in a catalog. It shall not fetch effectively disabled project-only records.
 Existing commands and TUI startup shall not perform this synchronization
 implicitly.
 
@@ -28,16 +33,17 @@ Acceptance examples:
   effectively enabled project remote record and makes it available to existing
   `list`, `get`, and `run` behavior.
 - With an empty remote store, an enabled remote identity recorded only in the
-  global selection is fetched by `skills-mgr sync` when the current project
-  inherits it.
-- A disabled global remote identity is not fetched by `skills-mgr sync`.
+  global selection is fetched by `skills-mgr sync`.
+- A disabled or conditional global remote identity is fetched by `skills-mgr sync`,
+  including when the current project disables it.
+- Running `skills-mgr sync` from home does not create `$HOME/.skills-mgr.json`.
 - A fresh persisted copy causes no provider request.
 - A stale persisted copy is refreshed using existing refresh semantics.
 - A project whose prior v2 migration omitted identities is repaired from its
   persisted remote store.
 - An inherited remote record receives metadata without an enabled override and
   follows global enablement.
-- Effectively disabled remote records receive metadata but cause no provider
-  request.
+- Effectively disabled project-only remote records receive metadata but cause no
+  provider request.
 - Running `list`, `get`, `run`, or the TUI against a missing referenced remote
   skill does not download it.

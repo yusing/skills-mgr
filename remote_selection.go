@@ -8,6 +8,7 @@ import (
 	"io"
 
 	"maps"
+	"os"
 
 	"slices"
 )
@@ -36,6 +37,21 @@ func (m *manager) sync(
 	if m.remoteStore == nil {
 		return fmt.Errorf("remote skill store is unavailable")
 	}
+	// Home is not a project: keep its selection in the manager home and its
+	// harness placeholders in the shared home roots.
+	atHome, err := samePlaceholderRoot(project, m.paths.placeholderDir)
+	if err != nil {
+		return err
+	}
+	atManagerHome, err := samePlaceholderRoot(project, m.paths.globalLockDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	selectionDir, placeholderBase := project, project
+	if m.global || atHome || atManagerHome {
+		selectionDir = m.paths.globalLockDir
+		placeholderBase = m.paths.placeholderDir
+	}
 	var journal mutationJournal
 	defer func() {
 		if retErr != nil {
@@ -43,7 +59,10 @@ func (m *manager) sync(
 		}
 	}()
 	changePlaceholders := func(name, frontmatter string, enabled bool) error {
-		undo, err := m.changeRemotePlaceholders(project, name, frontmatter, enabled)
+		undo, err := m.changeRemotePlaceholdersAcross(
+			[]placeholderChange{{base: placeholderBase, name: name, enabled: enabled}},
+			frontmatter,
+		)
 		if err != nil {
 			return err
 		}
@@ -55,7 +74,7 @@ func (m *manager) sync(
 	if err != nil {
 		return err
 	}
-	projectLock, err := loadLock(project)
+	projectLock, err := loadLock(selectionDir)
 	if err != nil {
 		return err
 	}
@@ -103,6 +122,14 @@ func (m *manager) sync(
 			names = append(names, name)
 		}
 	}
+	for name, entry := range globalLock.Skills {
+		if entry.Remote == nil {
+			continue
+		}
+		if _, exists := projectLock.remote(name); !exists {
+			names = append(names, name)
+		}
+	}
 	slices.Sort(names)
 	sharedPlaceholderRoot := false
 	if !m.global && len(names) != 0 {
@@ -121,7 +148,13 @@ func (m *manager) sync(
 	}
 
 	for _, name := range names {
-		ref, _ := projectLock.remote(name)
+		ref, hasProjectRef := projectLock.remote(name)
+		globalRef, globallyListed := globalLock.remote(name)
+		if !hasProjectRef {
+			ref = globalRef
+		} else if globallyListed && ref != globalRef {
+			return fmt.Errorf("sync remote skill %q: project identity conflicts with global reference", name)
+		}
 		wantsPlaceholder := lockWantsPlaceholder(projectLock, name)
 		if sharedPlaceholderRoot {
 			// Project cleanup must not remove a placeholder still owned globally.
@@ -138,12 +171,16 @@ func (m *manager) sync(
 				return fmt.Errorf("sync remote skill %q: %w", name, err)
 			}
 		}
-		effectivelyEnabled, err := selection.enabled(ctx, evaluator, name)
-		if err != nil {
-			return fmt.Errorf("sync remote skill %q: %w", name, err)
-		}
-		if !effectivelyEnabled {
-			continue
+		// Global references are a portable download list. Conditions govern
+		// exposure to a project, not whether this machine has the content.
+		if !globallyListed {
+			effectivelyEnabled, err := selection.enabled(ctx, evaluator, name)
+			if err != nil {
+				return fmt.Errorf("sync remote skill %q: %w", name, err)
+			}
+			if !effectivelyEnabled {
+				continue
+			}
 		}
 		if ref.Name != name {
 			return fmt.Errorf(
@@ -186,7 +223,7 @@ func (m *manager) sync(
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("reconcile remote metadata: %w", err)
 	}
-	err = updateLock(project, m.paths.selectionLocks, func(current *lock) (bool, error) {
+	err = updateLock(selectionDir, m.paths.selectionLocks, func(current *lock) (bool, error) {
 		if !current.equal(originalLock) {
 			return false, fmt.Errorf("project selection changed during sync")
 		}

@@ -15,11 +15,12 @@ override.
 The `sync` command first matches project and inherited global skill names to
 remote identities in the global selection and canonical persisted records,
 independently of discovery precedence. A disagreement between those identity
-sources fails as a conflict. It stages missing project metadata, filters
-effectively enabled entries through the global/project overlay, and passes each
-enabled reference to the existing store ensure path. After all ensures succeed,
-it atomically persists the staged project metadata without changing enabled
-overrides.
+sources fails as a conflict. It stages missing project metadata and passes every
+globally listed remote to the existing store ensure path without evaluating
+conditions. Project-only references pass through the effective enablement filter.
+After all ensures succeed, it atomically persists the staged metadata without
+changing enabled overrides. From the user's home or manager home, it uses the
+global selection and shared placeholders, not a home-directory project selection.
 
 The on-demand background runner refreshes only stale persisted store records
 and does not inspect project or global selection locks.

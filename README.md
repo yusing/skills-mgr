@@ -338,7 +338,7 @@ Every command uses the current working directory as the project.
 | `skills-mgr get <skill>/<path>` | Write a file from the skill to stdout |
 | `skills-mgr get <skill>/<path> <start>:<end>` | Write an inclusive, 1-based line range |
 | `skills-mgr run <skill>/<script> [args...]` | Run a script from the skill, passing through its standard streams and exit status |
-| `skills-mgr sync` | Fetch the enabled remote skills this project references but this machine does not have |
+| `skills-mgr sync` | Download all globally listed remotes and enabled project remotes |
 
 `get` and `run` reject a skill that is not effectively enabled in this project.
 For Grok plugin and bundled skills, that status is the one shown in the TUI and
@@ -659,10 +659,16 @@ skills-mgr sync
 
 `sync` matches project and inherited global names against identities in the
 global selection and local store, fills in any missing project identity
-metadata, fetches every effectively enabled remote that is absent or stale,
-and prints one line per skill synchronized. It never fetches a disabled entry,
-and a failure names the skill, returns non-zero, and leaves both selection files
-unchanged.
+metadata, and downloads every remote listed in `$HOME/.skills-mgr/.skills-mgr.json`,
+regardless of enabled state or conditions. Project-only remotes are downloaded
+only when effectively enabled. Fresh cached content is reused, and the command
+prints one line per skill synchronized. Conditions still control skill exposure;
+downloading a skill does not enable it.
+
+Running from `$HOME` or `$HOME/.skills-mgr` synchronizes the global selection
+without creating `$HOME/.skills-mgr.json`. Running from a project also reconciles
+its remote metadata. A failure names the skill, returns non-zero, and leaves
+selection files unchanged.
 
 Nothing else downloads on your behalf. `list`, `get`, `run`, and TUI startup
 will not fetch a referenced remote skill they have never seen.
@@ -678,8 +684,8 @@ present in the store. Structured text logs append to a bounded `refresh.log` in
 the user cache `skills-mgr` directory for cache refresh and each remote-skill
 update; a failure is logged and does not skip later skills in the same run.
 
-Use `skills-mgr sync` in the project for missing enabled remotes, including
-inherited global identities.
+Use `skills-mgr sync` to download all globally listed remotes and effectively
+enabled project-only remotes.
 
 If an older checkout installed the systemd user unit, disable it:
 

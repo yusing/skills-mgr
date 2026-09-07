@@ -2232,7 +2232,7 @@ func TestSyncFetchesEnabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
 	}
 }
 
-func TestSyncSkipsDisabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
+func TestSyncFetchesDisabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
 	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
 		"main": {
 			"skills/alpha/SKILL.md": {
@@ -2268,7 +2268,7 @@ func TestSyncSkipsDisabledInheritedRemoteFromGlobalMetadata(t *testing.T) {
 	if err := manager.sync(t.Context(), project, &output); err != nil {
 		t.Fatal(err)
 	}
-	if output.Len() != 0 || gitCloneCount(t, gitLog) != 0 {
+	if output.String() != "alpha\n" || gitCloneCount(t, gitLog) != 1 {
 		t.Fatalf("disabled sync output = %q, clones = %d", output.String(), gitCloneCount(t, gitLog))
 	}
 	projectLock, err := loadLock(project)
@@ -2348,10 +2348,10 @@ func TestSyncPreservesSharedGlobalPlaceholders(t *testing.T) {
 	}{
 		{name: "inherited", global: enabledValue{Boolean: new(true)}, wantPlaceholder: true, wantOutput: "alpha\n"},
 		{name: "restore missing", global: enabledValue{Boolean: new(true)}, missingPlaceholder: true, wantPlaceholder: true, wantOutput: "alpha\n"},
-		{name: "false global condition", global: enabledValue{Expression: "false"}, wantPlaceholder: true},
-		{name: "project disable", global: enabledValue{Boolean: new(true)}, projectOverride: new(false), wantPlaceholder: true},
-		{name: "disabled by both", global: enabledValue{Boolean: new(false)}, projectOverride: new(false)},
-		{name: "project enable", global: enabledValue{Boolean: new(false)}, projectOverride: new(true), wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "false global condition", global: enabledValue{Expression: "false"}, wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "home override ignored", global: enabledValue{Boolean: new(true)}, projectOverride: new(false), wantPlaceholder: true, wantOutput: "alpha\n"},
+		{name: "globally disabled", global: enabledValue{Boolean: new(false)}, wantOutput: "alpha\n"},
+		{name: "home enable ignored", global: enabledValue{Boolean: new(false)}, projectOverride: new(true), wantOutput: "alpha\n"},
 		{name: "separate project", global: enabledValue{Boolean: new(true)}, separateRoot: true, wantPlaceholder: true, wantOutput: "alpha\n"},
 		{name: "aliased home", global: enabledValue{Boolean: new(true)}, aliasRoot: true, wantPlaceholder: true, wantOutput: "alpha\n"},
 	}
@@ -2454,7 +2454,7 @@ func TestSyncEvaluatesRemoteEnabledExpressions(t *testing.T) {
 			wantPlaceholder: true,
 			wantClones:      1,
 		},
-		{name: "global false", global: true, condition: false},
+		{name: "global false", global: true, condition: false, wantClones: 1},
 		{name: "global true", global: true, condition: true, wantClones: 1},
 	}
 	for _, test := range tests {
@@ -2771,46 +2771,70 @@ func TestLocalToggleClearsStaleRemoteIdentity(t *testing.T) {
 }
 
 func TestRunSyncFetchesCommittedRemoteIdentity(t *testing.T) {
-	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
-		"main": {
-			"skills/alpha/SKILL.md": {
-				contents: skillFile("alpha", "Remote alpha.", "body"),
-				mode:     0o644,
-			},
-		},
-	})
-	home := t.TempDir()
-	cache := filepath.Join(home, "cache")
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", cache)
-	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
-	project := t.TempDir()
-	t.Chdir(project)
-	ref := remoteSkillRef{
-		Provider: skillsMPProvider,
-		ID:       "alpha-id",
-		Name:     "alpha",
-		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
-	}
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, map[string]remoteSkillRef{"alpha": ref})); err != nil {
-		t.Fatal(err)
-	}
+	for _, atHome := range []bool{false, true} {
+		t.Run(fmt.Sprintf("home=%t", atHome), func(t *testing.T) {
+			gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+				"main": {
+					"skills/alpha/SKILL.md": {
+						contents: skillFile("alpha", "Remote alpha.", "body"),
+						mode:     0o644,
+					},
+				},
+			})
+			home := t.TempDir()
+			cache := filepath.Join(home, "cache")
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CACHE_HOME", cache)
+			t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+			project := t.TempDir()
+			if atHome {
+				project = home
+			}
+			t.Chdir(project)
+			paths, err := defaultPaths()
+			if err != nil {
+				t.Fatal(err)
+			}
+			selectionDir := project
+			if atHome {
+				selectionDir = paths.globalLockDir
+				if err := os.MkdirAll(selectionDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ref := remoteSkillRef{
+				Provider: skillsMPProvider,
+				ID:       "alpha-id",
+				Name:     "alpha",
+				Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+			}
+			if err := saveLock(selectionDir, testLock(nil, map[string]string{"alpha": "exit 0"}, map[string]remoteSkillRef{"alpha": ref})); err != nil {
+				t.Fatal(err)
+			}
 
-	if err := run([]string{"sync"}); err != nil {
-		t.Fatal(err)
-	}
-	if gitCloneCount(t, gitLog) != 1 {
-		t.Fatalf("sync clones = %d, want 1", gitCloneCount(t, gitLog))
-	}
-	records, err := newRemoteSkillStore(
-		filepath.Join(cache, "skills-mgr", "remote-skills"),
-		filepath.Join(home, ".skills-mgr", "skills", remoteSkillPatchDir),
-	).records()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 || records[0].ref() != ref {
-		t.Fatalf("synchronized records = %#v", records)
+			if err := run([]string{"sync"}); err != nil {
+				t.Fatal(err)
+			}
+			if gitCloneCount(t, gitLog) != 1 {
+				t.Fatalf("sync clones = %d, want 1", gitCloneCount(t, gitLog))
+			}
+			records, err := newRemoteSkillStore(
+				paths.remoteSkills,
+				filepath.Join(home, ".skills-mgr", "skills", remoteSkillPatchDir),
+			).records()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 1 || records[0].ref() != ref {
+				t.Fatalf("synchronized records = %#v", records)
+			}
+
+			if atHome {
+				if _, err := os.Stat(filepath.Join(home, lockName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unexpected home selection: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -3909,4 +3933,83 @@ func writeGitTestFiles(t *testing.T, root string, files map[string]gitTestFile) 
 	}
 	slices.Sort(paths)
 	writeFile(t, filepath.Join(root, ".tracked"), strings.Join(paths, "\n")+"\n")
+}
+
+func TestSyncGlobalDownloadList(t *testing.T) {
+	for _, directory := range []string{"home", "home alias", "manager home", "manager home alias", "project"} {
+		for _, state := range []string{"disabled", "conditional", "metadata only", "project override"} {
+			t.Run(directory+"/"+state, func(t *testing.T) {
+				gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+					"main": {"skills/alpha/SKILL.md": {
+						contents: skillFile("alpha", "Remote alpha.", "body"), mode: 0o644,
+					}},
+				})
+				manager := newTestManager(t)
+				manager.skillsMP = newSkillsMPRegistry("", "")
+				ref := remoteSkillRef{
+					Provider: skillsMPProvider, ID: "alpha-id", Name: "alpha",
+					Locator: "https://github.com/owner/repo/tree/main/skills/alpha",
+				}
+				global := testLock(nil, nil, map[string]remoteSkillRef{"alpha": ref})
+				switch state {
+				case "disabled":
+					global.setEnabled("alpha", enabledValue{Boolean: new(false)})
+				case "conditional":
+					// A download must not execute even a failing condition.
+					global.setEnabled("alpha", enabledValue{Expression: "exit 2"})
+				case "project override":
+					global.setEnabled("alpha", enabledValue{Boolean: new(true)})
+				}
+				if err := saveLock(manager.paths.globalLockDir, global); err != nil {
+					t.Fatal(err)
+				}
+				globalPath := filepath.Join(manager.paths.globalLockDir, lockName)
+				original, err := os.ReadFile(globalPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				project := manager.paths.placeholderDir
+				switch directory {
+				case "home alias":
+					project = filepath.Join(t.TempDir(), "home")
+					if err := os.Symlink(manager.paths.placeholderDir, project); err != nil {
+						t.Fatal(err)
+					}
+				case "manager home":
+					project = manager.paths.globalLockDir
+				case "manager home alias":
+					project = filepath.Join(t.TempDir(), "manager")
+					if err := os.Symlink(manager.paths.globalLockDir, project); err != nil {
+						t.Fatal(err)
+					}
+				case "project":
+					project = t.TempDir()
+					if state == "project override" {
+						if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				for range 2 {
+					var output bytes.Buffer
+					if err := manager.sync(t.Context(), project, &output); err != nil {
+						t.Fatal(err)
+					}
+					if output.String() != "alpha\n" {
+						t.Fatalf("output = %q", output.String())
+					}
+				}
+				if got := gitCloneCount(t, gitLog); got != 1 {
+					t.Fatalf("clones = %d, want 1", got)
+				}
+				assertFile(t, globalPath, string(original))
+				if _, err := os.Stat(filepath.Join(manager.paths.placeholderDir, lockName)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unexpected home selection: %v", err)
+				}
+				if manager.global {
+					t.Fatal("sync changed the caller's selection mode")
+				}
+			})
+		}
+	}
 }
