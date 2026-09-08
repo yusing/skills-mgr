@@ -684,6 +684,14 @@ present in the store. Structured text logs append to a bounded `refresh.log` in
 the user cache `skills-mgr` directory for cache refresh and each remote-skill
 update; a failure is logged and does not skip later skills in the same run.
 
+The background cycle also repairs locally managed skill placeholders under
+`$HOME` and in the invoking project. It restores selected placeholders and removes
+unselected ones without changing skill content or selection files. Conditional
+selections keep their placeholders regardless of the condition's current result;
+inherited global selections do not create project-local placeholders. Repair
+runs independently of remote refresh failures and logs failures for retry on a
+later invocation. The same five-minute cycle throttle applies.
+
 Use `skills-mgr sync` to download all globally listed remotes and effectively
 enabled project-only remotes.
 

@@ -97,6 +97,12 @@ func (m *manager) lockDir(project string) string {
 }
 
 func (m *manager) toggle(project, skill string, remoteKey ...string) (bool, error) {
+	guard, guardErr := m.lockManagedMutation(context.Background())
+	if guardErr != nil {
+		return false, guardErr
+	}
+	defer closeExclusiveLock(guard)
+
 	var remoteRef *remoteSkillRef
 	if len(remoteKey) > 0 && remoteKey[0] != "" {
 		ref, err := m.persistedRemoteRef(remoteKey[0], skill)

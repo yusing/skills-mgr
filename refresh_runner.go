@@ -234,8 +234,15 @@ func runRefreshRunnerWithLock(
 		defer closeExclusiveLock(lockFile)
 	}
 	var cycleErr error
+	project, err := currentProject()
+	if err != nil {
+		logger.Error("resolve managed placeholder repair project", "err", err)
+		cycleErr = err
+	} else {
+		cycleErr = manager.repairManagedPlaceholders(ctx, project, logger)
+	}
 	if registryRefreshDue(manager.remote, time.Now()) {
-		cycleErr = refreshRemoteRegistry(ctx, manager.remote, logger)
+		cycleErr = errors.Join(cycleErr, refreshRemoteRegistry(ctx, manager.remote, logger))
 	} else if manager.remote != nil {
 		logger.Debug(
 			"skipping registry cache refresh",

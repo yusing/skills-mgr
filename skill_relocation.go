@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -118,6 +119,12 @@ func (m *manager) adoptSkill(project string, skill discoveredSkill) (func() erro
 // transaction. Direct discovery keeps a same-named project skill from hiding
 // shared content that the command was asked to adopt.
 func (m *manager) adoptSharedSkills(project string, output io.Writer) (retErr error) {
+	guard, guardErr := m.lockManagedMutation(context.Background())
+	if guardErr != nil {
+		return guardErr
+	}
+	defer closeExclusiveLock(guard)
+
 	discovery := newSkillDiscovery()
 	if err := discovery.discoverRoot(skillRoot{
 		path:     m.paths.userSkills,
@@ -206,6 +213,12 @@ func (m *manager) relocateSkill(
 	project string,
 	skill discoveredSkill,
 ) (skillLocationResult, error) {
+	guard, guardErr := m.lockManagedMutation(context.Background())
+	if guardErr != nil {
+		return skillLocationResult{}, guardErr
+	}
+	defer closeExclusiveLock(guard)
+
 	adopt := skill.Source != managedSkillSource
 	var undo func() error
 	var err error

@@ -262,6 +262,12 @@ func (m *manager) refreshEditedSkill(
 	oldName string,
 	path string,
 ) ([]discoveredSkill, selectionState, error) {
+	guard, guardErr := m.lockManagedMutation(context.Background())
+	if guardErr != nil {
+		return nil, selectionState{}, guardErr
+	}
+	defer closeExclusiveLock(guard)
+
 	skills, err := m.skills(project)
 	if err != nil {
 		return nil, selectionState{}, err
@@ -311,6 +317,12 @@ func (m *manager) applyEnabledDraft(
 	skill discoveredSkill,
 	draft string,
 ) (selectionState, error) {
+	guard, guardErr := m.lockManagedMutation(context.Background())
+	if guardErr != nil {
+		return selectionState{}, guardErr
+	}
+	defer closeExclusiveLock(guard)
+
 	defer os.Remove(draft)
 	data, err := os.ReadFile(draft)
 	if err != nil {

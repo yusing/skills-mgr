@@ -71,8 +71,9 @@ func TestToggleUpdatesOnlyProjectLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(coordinationLocks) != 1 {
-		t.Fatalf("coordination lock count = %d, want 1", len(coordinationLocks))
+	// One selection lock plus the shared managed-mutation transaction lock.
+	if len(coordinationLocks) != 2 {
+		t.Fatalf("coordination lock count = %d, want 2", len(coordinationLocks))
 	}
 	assertLock(t, project, map[string]bool{"alpha": true})
 	assertFile(t, skill, skillFile("alpha", "Alpha description.", "body"))
@@ -107,8 +108,9 @@ func TestProjectAliasesShareCoordinationLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(coordinationLocks) != 1 {
-		t.Fatalf("coordination lock count = %d, want 1", len(coordinationLocks))
+	// One selection lock plus the shared managed-mutation transaction lock.
+	if len(coordinationLocks) != 2 {
+		t.Fatalf("coordination lock count = %d, want 2", len(coordinationLocks))
 	}
 	assertLock(t, project, map[string]bool{"alpha": true, "beta": true})
 }
