@@ -2336,16 +2336,29 @@ func TestHelpCommand(t *testing.T) {
 				t.Fatal(helpErr)
 			}
 			assertFile(t, stdout.Name(), `Usage:
-  skills-mgr
-  skills-mgr -g
-  skills-mgr help
-  skills-mgr --help
+  skills-mgr [-g]
+    Open the project skill selection interface, or global with -g.
+
+  skills-mgr help | --help
+    Show commands and their usage.
+
   skills-mgr info
+    Show metadata and skill paths; mark missing paths.
+
   skills-mgr adopt
+    Move shared user skills into the managed skill store.
+
   skills-mgr list [--claude] [--grok] [--codex]
+    Print enabled skill metadata as XML.
+
   skills-mgr sync
+    Fetch missing enabled remote skills for this project.
+
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
+    Print an enabled skill or file, optionally limited to a line range.
+
   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
+    Run a script from an enabled skill, forwarding arguments.
 `)
 
 			if err := run([]string{command, "get"}); err == nil || err.Error() != "usage: skills-mgr help" {

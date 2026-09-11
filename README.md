@@ -331,7 +331,7 @@ Every command uses the current working directory as the project.
 | --- | --- |
 | `skills-mgr` | Open the project selection interface |
 | `skills-mgr -g` | Open the global selection interface |
-| `skills-mgr help` or `skills-mgr --help` | Print every accepted invocation form |
+| `skills-mgr help` or `skills-mgr --help` | Print every accepted invocation form with a short description |
 | `skills-mgr info` | Show metadata files, local skill directories, and remote store/patch paths; mark absent paths `[MISSING]`, without fetching or changing files |
 | `skills-mgr adopt` | Move all valid shared skills from `$HOME/.agents/skills` into the manager home |
 | `skills-mgr list` | Write the enabled skills to stdout as XML: name, description, and reference-file tree |
