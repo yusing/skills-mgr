@@ -56,7 +56,7 @@ func run(args []string) error {
 			return err
 		}
 		return runTUI(manager, project)
-	case args[0] == "help":
+	case args[0] == "help" || args[0] == "--help":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr help")
 		}
@@ -64,6 +64,7 @@ func run(args []string) error {
   skills-mgr
   skills-mgr -g
   skills-mgr help
+  skills-mgr --help
   skills-mgr adopt
   skills-mgr list [--claude] [--grok] [--codex]
   skills-mgr sync
