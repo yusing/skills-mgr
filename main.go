@@ -31,6 +31,16 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(args) > 0 && args[0] == "info" {
+		if len(args) != 1 {
+			return fmt.Errorf("usage: skills-mgr info")
+		}
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		return printInfo(os.Stdout, paths, project)
+	}
 	if err := paths.relocateGlobalLock(); err != nil {
 		return err
 	}
@@ -65,6 +75,7 @@ func run(args []string) error {
   skills-mgr -g
   skills-mgr help
   skills-mgr --help
+  skills-mgr info
   skills-mgr adopt
   skills-mgr list [--claude] [--grok] [--codex]
   skills-mgr sync

@@ -332,6 +332,7 @@ Every command uses the current working directory as the project.
 | `skills-mgr` | Open the project selection interface |
 | `skills-mgr -g` | Open the global selection interface |
 | `skills-mgr help` or `skills-mgr --help` | Print every accepted invocation form |
+| `skills-mgr info` | Show metadata files, local skill directories, and remote store/patch paths; mark absent paths `[MISSING]`, without fetching or changing files |
 | `skills-mgr adopt` | Move all valid shared skills from `$HOME/.agents/skills` into the manager home |
 | `skills-mgr list` | Write the enabled skills to stdout as XML: name, description, and reference-file tree |
 | `skills-mgr get <skill>` | Write the body of the skill's `SKILL.md` to stdout |
@@ -339,6 +340,8 @@ Every command uses the current working directory as the project.
 | `skills-mgr get <skill>/<path> <start>:<end>` | Write an inclusive, 1-based line range |
 | `skills-mgr run <skill>/<script> [args...]` | Run a script from the skill, passing through its standard streams and exit status |
 | `skills-mgr sync` | Download all globally listed remotes and enabled project remotes |
+
+`info` abbreviates the home directory as `~` on Unix.
 
 `get` and `run` reject a skill that is not effectively enabled in this project.
 For Grok plugin and bundled skills, that status is the one shown in the TUI and
@@ -675,7 +678,7 @@ will not fetch a referenced remote skill they have never seen.
 
 ## Remote Refresh
 
-Each `skills-mgr` invocation starts a detached background runner if one is not
+Each `skills-mgr` invocation except `info` starts a detached background runner if one is not
 already running and the last successful cycle is at least five minutes old. The
 runner refreshes skills.sh registry metadata when that cache is missing or at
 least five minutes old, and refreshes installed remote content once it passes

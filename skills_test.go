@@ -2340,6 +2340,7 @@ func TestHelpCommand(t *testing.T) {
   skills-mgr -g
   skills-mgr help
   skills-mgr --help
+  skills-mgr info
   skills-mgr adopt
   skills-mgr list [--claude] [--grok] [--codex]
   skills-mgr sync
