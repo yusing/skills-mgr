@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -212,6 +213,32 @@ func TestEnabledHasDependencyBuiltin(t *testing.T) {
 				t.Fatalf("has_dependency = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestEnabledHasDependencyBuiltinIgnoresEmptyPackageFixtures(t *testing.T) {
+	for _, contents := range []string{"", " \t\r\n"} {
+		t.Run(fmt.Sprintf("%q", contents), func(t *testing.T) {
+			project := t.TempDir()
+			writeFile(t, filepath.Join(project, "test", "Unit tests", "mocks", "package.json"), contents)
+			writeFile(t, filepath.Join(project, "app", "package.json"), `{"dependencies":{"react":"19"}}`)
+			for _, expression := range []string{"has_dependency react", "! has_dependency juststore"} {
+				enabled, err := evaluateEnabled(t.Context(), project, "example", expression)
+				if err != nil || !enabled {
+					t.Fatalf("%s = %v, %v; want true", expression, enabled, err)
+				}
+			}
+		})
+	}
+}
+
+func TestEnabledHasDependencyBuiltinRejectsMalformedNonemptyPackage(t *testing.T) {
+	project := t.TempDir()
+	path := filepath.Join(project, "Unit tests", "package.json")
+	writeFile(t, path, `{"dependencies":`)
+	_, err := evaluateEnabled(t.Context(), project, "example", "has_dependency react")
+	if err == nil || !strings.Contains(err.Error(), "decode dependency manifest "+path) {
+		t.Fatalf("malformed dependency manifest error = %v", err)
 	}
 }
 

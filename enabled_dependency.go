@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -147,6 +148,10 @@ func (index dependencyIndex) addManifest(path string) error {
 		}
 		return nil
 	case "package.json":
+		// Project-discovery fixtures may only need the filename to exist.
+		if len(bytes.TrimSpace(data)) == 0 {
+			return nil
+		}
 		var manifest packageManifest
 		if err := json.Unmarshal(data, &manifest); err != nil {
 			return fmt.Errorf("decode dependency manifest %s: %w", path, err)

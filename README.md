@@ -479,6 +479,10 @@ tighter, and every comparison in an `&&` group must match the same declaration.
 Comparisons use the precision you supply, so `==2` matches any version in major
 `2`, while `==2.1` also compares the minor version.
 
+Empty or whitespace-only `package.json` files, such as project-discovery test
+fixtures, contribute no dependencies. Malformed non-empty manifests still report
+an error.
+
 Indirect Go requirements are ignored. Cargo dependency, dev-dependency,
 optional-dependency, and `[workspace.dependencies]` catalog entries all count,
 even when no member inherits them. A declaration with no version, such as a
