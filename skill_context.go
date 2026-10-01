@@ -14,6 +14,8 @@ import (
 
 	"strconv"
 	"strings"
+
+	"github.com/goccy/go-yaml"
 )
 
 type skillLocationResult struct {
@@ -90,13 +92,29 @@ func (m *manager) getContext(
 		}
 	}
 	if strings.EqualFold(filepath.Ext(relative), ".md") {
-		_, body, status, err := readFrontmatter(input)
+		frontmatter, body, status, err := readFrontmatter(input)
 		if err != nil {
 			return fmt.Errorf("read %s frontmatter: %w", target, err)
 		}
 		switch status {
 		case frontmatterValid:
 			input = body
+			if isSkillMarkdown && discovered.DisableModelInvocation {
+				var metadata struct {
+					Name        string `yaml:"name"`
+					Description string `yaml:"description"`
+				}
+				if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
+					return fmt.Errorf("decode %s frontmatter: %w", target, err)
+				}
+				rendered, err := yaml.Marshal(metadata)
+				if err != nil {
+					return fmt.Errorf("render %s frontmatter: %w", target, err)
+				}
+				if _, err := fmt.Fprintf(output, "---\n%s---\n", rendered); err != nil {
+					return errors.Join(err, patchErr)
+				}
+			}
 		case frontmatterAbsent:
 			if isSkillMarkdown {
 				return fmt.Errorf("%s has invalid frontmatter", target)

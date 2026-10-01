@@ -232,6 +232,16 @@ func TestRemoteSkillPatchLayersDescriptionAndGetWithoutChangingFetchedContent(t 
 	if output.String() != "# Updated guide\n" {
 		t.Fatalf("unpatched reference = %q", output.String())
 	}
+	if _, err := manager.toggleModelInvocation(t.Context(), project, patched); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := manager.getContext(t.Context(), project, "alpha/SKILL.md", "1:1", &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "---\nname: renamed\ndescription: Patched alpha.\n---\nafter\n"; output.String() != want {
+		t.Fatalf("user-invoked patched skill output = %q, want %q", output.String(), want)
+	}
 }
 
 func TestGlobalRemoteSkillPatchSurvivesFreshCacheInstall(t *testing.T) {
@@ -1406,6 +1416,13 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 		!result.Skills[0].DisableModelInvocation {
 		t.Fatalf("remote model invocation result = %#v", result)
 	}
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if want := "---\nname: alpha\ndescription: Remote alpha.\n---\nbody"; output.String() != want {
+		t.Fatalf("user-invoked remote skill output = %q, want %q", output.String(), want)
+	}
 	otherProjectSkill, err := manager.findSkill(t.TempDir(), ref.Name)
 	if err != nil {
 		t.Fatal(err)
@@ -1473,6 +1490,13 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 	}
 	if result.Disabled || result.Skills[0].DisableModelInvocation {
 		t.Fatalf("second toggle result = %#v", result)
+	}
+	output.Reset()
+	if err := manager.getContext(t.Context(), project, "alpha", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "body" {
+		t.Fatalf("model-invocable remote skill output = %q", output.String())
 	}
 	override, err := manager.remoteStore.loadOverrideLocked(ref)
 	if err != nil {

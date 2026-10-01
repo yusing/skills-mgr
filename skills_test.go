@@ -685,7 +685,7 @@ func TestListHidesModelInvocationDisabledSkillButGetAllowsIt(t *testing.T) {
 	if err := manager.getContext(t.Context(), project, "manual", "", &output); err != nil {
 		t.Fatal(err)
 	}
-	if want := "manual body\n"; output.String() != want {
+	if want := "---\nname: manual\ndescription: Invoke only when explicitly requested.\n---\nmanual body\n"; output.String() != want {
 		t.Fatalf("manual skill output = %q, want %q", output.String(), want)
 	}
 
@@ -2072,6 +2072,56 @@ func TestGetSkillAndReferenceRange(t *testing.T) {
 	}
 	if output.String() != "two\nthree\n" {
 		t.Fatalf("range output = %q", output.String())
+	}
+}
+
+func TestGetUserInvokedSkillFiltersFrontmatter(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	const description = "Use when asked: \"quoted\" text.\nSecond line.\n"
+	writeFile(t, filepath.Join(manager.paths.userSkills, "manual", "SKILL.md"),
+		"---\nname: manual\ndescription: |\n  Use when asked: \"quoted\" text.\n  Second line.\n"+
+			"disable-model-invocation: true\nallowed-tools: [Read]\nmetadata:\n  hidden: value\n---\nfirst\nsecond\nthird\n")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "manual", "references", "SKILL.md"),
+		"---\nname: reference\ndescription: Reference metadata.\n---\nreference body\n")
+
+	for _, tt := range []struct {
+		target    string
+		lineRange string
+		body      string
+	}{
+		{target: "manual", body: "first\nsecond\nthird\n"},
+		{target: "manual/SKILL.md", body: "first\nsecond\nthird\n"},
+		{target: "manual/SKILL.md", lineRange: "2:2", body: "second\n"},
+	} {
+		t.Run(tt.target+tt.lineRange, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := manager.getContext(t.Context(), project, tt.target, tt.lineRange, &output); err != nil {
+				t.Fatal(err)
+			}
+			frontmatter, body, status, err := readFrontmatter(&output)
+			if err != nil || status != frontmatterValid {
+				t.Fatalf("output frontmatter status = %v, error = %v", status, err)
+			}
+			var metadata map[string]string
+			if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if len(metadata) != 2 || metadata["name"] != "manual" || metadata["description"] != description {
+				t.Fatalf("filtered metadata = %#v", metadata)
+			}
+			contents, err := io.ReadAll(body)
+			if err != nil || string(contents) != tt.body {
+				t.Fatalf("body = %q, error = %v; want %q", contents, err, tt.body)
+			}
+		})
+	}
+	var output bytes.Buffer
+	if err := manager.getContext(t.Context(), project, "manual/references/SKILL.md", "", &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "reference body\n" {
+		t.Fatalf("reference output = %q", output.String())
 	}
 }
 

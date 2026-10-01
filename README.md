@@ -335,7 +335,7 @@ Every command uses the current working directory as the project.
 | `skills-mgr info` | Show metadata files, local skill directories, and remote store/patch paths; mark absent paths `[MISSING]`, without fetching or changing files |
 | `skills-mgr adopt` | Move all valid shared skills from `$HOME/.agents/skills` into the manager home |
 | `skills-mgr list` | Write the enabled skills to stdout as XML: name, description, and reference-file tree |
-| `skills-mgr get <skill>` | Write the body of the skill's `SKILL.md` to stdout |
+| `skills-mgr get <skill>` | Write the skill's `SKILL.md` body, plus name and description frontmatter for user-invoked skills, to stdout |
 | `skills-mgr get <skill>/<path>` | Write a file from the skill to stdout |
 | `skills-mgr get <skill>/<path> <start>:<end>` | Write an inclusive, 1-based line range |
 | `skills-mgr run <skill>/<script> [args...]` | Run a script from the skill, passing through its standard streams and exit status |
@@ -350,8 +350,12 @@ owned by `$HOME/.grok/config.toml`. For Claude plugin skills, it is Claude's
 `--grok`, and `--codex` flags described under [Agent Integration](#agent-integration),
 though only `list` filters on them.
 
-`get` omits YAML frontmatter from Markdown files, and a line range applies to
-that frontmatter-free content.
+`get` omits YAML frontmatter from Markdown files, except for the root `SKILL.md`
+of a user-invoked skill (`disable-model-invocation: true`, including remote
+overrides). For those skills, it prepends filtered YAML frontmatter containing
+only `name` and `description`. A line range always selects body lines, excluding
+frontmatter; user-invoked skills still include the filtered header before the
+selected lines.
 
 For an installed remote skill, `get` applies its local `SKILL.md` patch before
 writing the requested body or range. If a provider refresh makes the patch no

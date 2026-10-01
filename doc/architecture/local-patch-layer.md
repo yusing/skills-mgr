@@ -18,7 +18,7 @@ editors cannot overwrite an intervening edit. It never writes into provider
 content.
 
 The `get` owner applies the sidecar only to a remote skill's `SKILL.md` before
-frontmatter stripping and line-range selection. Patch parsing or application
+frontmatter filtering and body-line range selection. Patch parsing or application
 is all-or-nothing: failure discards any partial result, writes the original
 provider content through the normal output path, and returns an error for the
 CLI to report on stderr with nonzero status. Discovery and the inventory layer
