@@ -244,7 +244,7 @@ func (m *manager) findAccessibleSkill(
 		return discoveredSkill{}, false, nil
 	}
 
-	skills, err := m.skills(project)
+	skills, err := m.discoverSkillsNamed(project, "", name)
 	if err != nil {
 		return discoveredSkill{}, err
 	}

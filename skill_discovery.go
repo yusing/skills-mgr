@@ -30,10 +30,11 @@ type discoveredSkill struct {
 }
 
 type skillDiscovery struct {
-	skills    []discoveredSkill
-	seenPaths map[string]struct{}
-	seenNames map[string]struct{}
-	harnesses []listHarness
+	skills     []discoveredSkill
+	seenPaths  map[string]struct{}
+	seenNames  map[string]struct{}
+	targetName string
+	harnesses  []listHarness
 }
 
 func newSkillDiscovery(harnesses ...listHarness) skillDiscovery {
@@ -66,7 +67,18 @@ func (m *manager) discoverSkills(
 	excludedRemoteKey string,
 	harnesses ...listHarness,
 ) ([]discoveredSkill, error) {
+	return m.discoverSkillsNamed(project, excludedRemoteKey, "", harnesses...)
+}
+
+// discoverSkillsNamed stops at the first filesystem owner when a name is given.
+// Directory names need not match frontmatter names, so each preceding entry is
+// still inspected in the same order as full discovery.
+func (m *manager) discoverSkillsNamed(
+	project, excludedRemoteKey, name string,
+	harnesses ...listHarness,
+) ([]discoveredSkill, error) {
 	discovery := newSkillDiscovery(harnesses...)
+	discovery.targetName = name
 	roots := []skillRoot{
 		{path: m.paths.projectSkills(project, ".agents"), source: projectSkillSource, editable: true},
 		{path: m.paths.userSkills, source: "user", editable: true},
@@ -82,9 +94,12 @@ func (m *manager) discoverSkills(
 		if err := discovery.discover(root); err != nil {
 			return nil, err
 		}
+		if name != "" && len(discovery.skills) > 0 {
+			return discovery.skills, nil
+		}
 	}
 	if m.remoteStore != nil {
-		records, err := m.remoteStore.recordsForDiscovery(excludedRemoteKey)
+		records, err := m.remoteStore.recordsForDiscoveryNamed(excludedRemoteKey, name)
 		if err != nil {
 			return nil, err
 		}
@@ -94,16 +109,21 @@ func (m *manager) discoverSkills(
 				return nil, err
 			}
 			before := len(discovery.skills)
-			if err := discovery.addSkill(skillRoot{
+			if err := discovery.addResolvedSkill(skillRoot{
 				source:                         record.Provider,
 				editable:                       true,
 				remoteKey:                      record.ref().key(),
 				disableModelInvocationOverride: record.disableModelInvocationOverride,
-			}, root); err != nil {
+			}, root, root); err != nil {
 				return nil, err
 			}
 			if len(discovery.skills) == before {
 				continue
+			}
+			if name != "" {
+				// Access applies the patch when it reads the requested SKILL.md;
+				// it does not need the catalog's patched description.
+				return discovery.skills, nil
 			}
 			skill := &discovery.skills[before]
 			original, err := os.ReadFile(skill.Path)
@@ -113,6 +133,9 @@ func (m *manager) discoverSkills(
 			contents, err := m.remoteStore.layeredContent(record.ref(), original)
 			if err != nil {
 				return nil, err
+			}
+			if bytes.Equal(contents, original) {
+				continue
 			}
 			frontmatter, _, status, err := readFrontmatter(bytes.NewReader(contents))
 			if err != nil {
@@ -131,6 +154,10 @@ func (m *manager) discoverSkills(
 }
 
 func (d *skillDiscovery) discover(root skillRoot) error {
+	if !skillAllowedForAgent(discoveredSkill{Source: root.source}, d.harnesses) ||
+		(root.pluginCache && !skillAllowedForAgent(discoveredSkill{Source: "plugin"}, d.harnesses)) {
+		return nil
+	}
 	if root.pluginCache {
 		return d.discoverPluginCache(root.path)
 	}
@@ -159,16 +186,32 @@ func (d *skillDiscovery) scanDirectSkillRoot(root skillRoot) error {
 		}
 		return fmt.Errorf("read skill root %s: %w", root.path, err)
 	}
+	resolvedParent, err := filepath.EvalSymlinks(root.path)
+	if err != nil {
+		return nil //nolint:nilerr // Ignore roots that disappeared during discovery.
+	}
 	for _, entry := range entries {
 		path := filepath.Join(root.path, entry.Name())
 		if entry.Name() == ".system" && root.includeSystem {
 			if err := d.scanDirectSkillRoot(skillRoot{path: path, source: "bundled"}); err != nil {
 				return err
 			}
+			if d.targetName != "" && len(d.skills) > 0 {
+				return nil
+			}
 			continue
 		}
-		if err := d.addSkill(root, path); err != nil {
+		var err error
+		if entry.IsDir() {
+			err = d.addResolvedSkill(root, path, filepath.Join(resolvedParent, entry.Name()))
+		} else if entry.Type()&os.ModeSymlink != 0 {
+			err = d.addSkill(root, path)
+		}
+		if err != nil {
 			return err
+		}
+		if d.targetName != "" && len(d.skills) > 0 {
+			return nil
 		}
 	}
 	return nil
@@ -185,7 +228,7 @@ func (d *skillDiscovery) discoverPluginCache(root string) error {
 	if !info.IsDir() {
 		return nil
 	}
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrPermission) {
 				return filepath.SkipDir
@@ -208,8 +251,12 @@ func (d *skillDiscovery) discoverPluginCache(root string) error {
 		if err := d.scanDirectSkillRoot(skillRoot{path: path, source: "plugin"}); err != nil {
 			return err
 		}
+		if d.targetName != "" && len(d.skills) > 0 {
+			return fs.SkipAll
+		}
 		return filepath.SkipDir
 	})
+	return err
 }
 
 func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
@@ -217,21 +264,36 @@ func (d *skillDiscovery) addSkill(root skillRoot, candidateRoot string) error {
 	if err != nil {
 		return nil //nolint:nilerr // Ignore entries that are not usable skill roots.
 	}
+	return d.addResolvedSkill(root, candidateRoot, resolvedRoot)
+}
+
+func (d *skillDiscovery) addResolvedSkill(root skillRoot, candidateRoot, resolvedRoot string) error {
 	if marker, err := os.ReadFile(filepath.Join(resolvedRoot, remotePlaceholderMarkerName)); err == nil &&
 		string(marker) == remotePlaceholderMarker {
 		return nil
 	}
-	resolvedSkill, err := filepath.EvalSymlinks(filepath.Join(resolvedRoot, skillManifestName))
+	manifest := filepath.Join(resolvedRoot, skillManifestName)
+	info, err := os.Lstat(manifest)
 	if err != nil {
 		return nil //nolint:nilerr // Ignore roots without a usable SKILL.md.
 	}
-	relative, err := filepath.Rel(resolvedRoot, resolvedSkill)
-	if err != nil || !filepath.IsLocal(relative) {
-		return nil //nolint:nilerr // Ignore skill files outside their candidate root.
+	resolvedSkill := manifest
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolvedSkill, err = filepath.EvalSymlinks(manifest)
+		if err != nil {
+			return nil //nolint:nilerr // Ignore roots without a usable SKILL.md.
+		}
+		relative, err := filepath.Rel(resolvedRoot, resolvedSkill)
+		if err != nil || !filepath.IsLocal(relative) {
+			return nil //nolint:nilerr // Ignore skill files outside their candidate root.
+		}
 	}
 	skill, ok, err := parseSkill(resolvedSkill)
 	if err != nil || !ok {
 		return err
+	}
+	if d.targetName != "" && skill.Name != d.targetName {
+		return nil
 	}
 	skill.Path = resolvedSkill
 	skill.Root = resolvedRoot

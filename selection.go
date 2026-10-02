@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"maps"
+	"os"
 
 	"errors"
 	"fmt"
@@ -297,28 +298,25 @@ func (m *manager) persistedRemoteRef(
 	if m.remoteStore == nil {
 		return remoteSkillRef{}, fmt.Errorf("remote skill store is unavailable")
 	}
-	records, err := m.remoteStore.records()
+	if len(key) != 64 || strings.Trim(key, "0123456789abcdef") != "" {
+		return remoteSkillRef{}, fmt.Errorf("invalid remote skill metadata key")
+	}
+	m.remoteStore.mu.Lock()
+	defer m.remoteStore.mu.Unlock()
+	record, err := m.remoteStore.loadRecordLocked(key)
+	if errors.Is(err, os.ErrNotExist) {
+		return remoteSkillRef{}, fmt.Errorf("remote skill metadata for %q is unavailable", name)
+	}
 	if err != nil {
 		return remoteSkillRef{}, err
 	}
-	for _, record := range records {
-		ref := record.ref()
-		if ref.key() != key {
-			continue
-		}
-		if ref.Name != name {
-			return remoteSkillRef{}, fmt.Errorf(
-				"remote skill metadata for %q belongs to skill %q",
-				key,
-				ref.Name,
-			)
-		}
-		return ref, nil
+	ref := record.ref()
+	if ref.Name != name {
+		return remoteSkillRef{}, fmt.Errorf(
+			"remote skill metadata for %q belongs to skill %q", key, ref.Name,
+		)
 	}
-	return remoteSkillRef{}, fmt.Errorf(
-		"remote skill metadata for %q is unavailable",
-		name,
-	)
+	return ref, nil
 }
 
 func (m *manager) validatePersistedRemoteRef(expected remoteSkillRef) error {

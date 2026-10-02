@@ -1475,7 +1475,7 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 		manager.remoteStore.root,
 		manager.remoteStore.patchRoot,
 	)
-	records, err := secondStore.recordsForDiscovery("")
+	records, err := secondStore.recordsForDiscoveryNamed("", "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -90,12 +90,12 @@ func (s *remoteSkillStore) records() ([]remoteSkillRecord, error) {
 	return s.recordsLocked()
 }
 
-func (s *remoteSkillStore) recordsForDiscovery(
-	excludedRemoteKey string,
+func (s *remoteSkillStore) recordsForDiscoveryNamed(
+	excludedRemoteKey, name string,
 ) ([]remoteSkillRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	records, err := s.recordsLocked()
+	records, err := s.recordsNamedLocked(name)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +115,10 @@ func (s *remoteSkillStore) recordsForDiscovery(
 }
 
 func (s *remoteSkillStore) recordsLocked() ([]remoteSkillRecord, error) {
+	return s.recordsNamedLocked("")
+}
+
+func (s *remoteSkillStore) recordsNamedLocked(name string) ([]remoteSkillRecord, error) {
 	if s == nil || s.root == "" {
 		return nil, nil
 	}
@@ -132,8 +136,14 @@ func (s *remoteSkillStore) recordsLocked() ([]remoteSkillRecord, error) {
 			continue
 		}
 		key := strings.TrimSuffix(item.Name(), ".json")
-		record, err := s.loadRecordLocked(key)
+		record, err := s.loadRecordMetadataLocked(key)
 		if err != nil {
+			return nil, err
+		}
+		if name != "" && record.Name != name {
+			continue
+		}
+		if _, err := s.contentRoot(record); err != nil {
 			return nil, err
 		}
 		records = append(records, record)
@@ -148,6 +158,19 @@ func (s *remoteSkillStore) recordsLocked() ([]remoteSkillRecord, error) {
 }
 
 func (s *remoteSkillStore) loadRecordLocked(key string) (remoteSkillRecord, error) {
+	record, err := s.loadRecordMetadataLocked(key)
+	if err != nil {
+		return remoteSkillRecord{}, err
+	}
+	if _, err := s.contentRoot(record); err != nil {
+		return remoteSkillRecord{}, err
+	}
+	return record, nil
+}
+
+// loadRecordMetadataLocked validates identity without resolving content. Named
+// discovery only needs to inspect content for records that can own that name.
+func (s *remoteSkillStore) loadRecordMetadataLocked(key string) (remoteSkillRecord, error) {
 	path := filepath.Join(s.root, "entries", key+".json")
 	file, err := os.Open(path)
 	if err != nil {
@@ -173,9 +196,6 @@ func (s *remoteSkillStore) loadRecordLocked(key string) (remoteSkillRecord, erro
 	}
 	if record.ref().key() != key || record.FetchedAt.IsZero() {
 		return remoteSkillRecord{}, fmt.Errorf("remote skill metadata identity is invalid")
-	}
-	if _, err := s.contentRoot(record); err != nil {
-		return remoteSkillRecord{}, err
 	}
 	return record, nil
 }

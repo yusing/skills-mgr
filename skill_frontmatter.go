@@ -358,7 +358,9 @@ func toggleModelInvocationFile(
 }
 
 func readFrontmatter(input io.Reader) (string, io.Reader, frontmatterStatus, error) {
-	reader := bufio.NewReader(input)
+	// Discovery usually needs only a short header, not a whole instruction
+	// body. Keep per-candidate buffering small while retaining streaming reads.
+	reader := bufio.NewReaderSize(input, 1024)
 	line, err := reader.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", nil, frontmatterMalformed, err
