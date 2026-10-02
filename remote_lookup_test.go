@@ -81,8 +81,8 @@ func TestGetNamedRemoteDiscoverySkipsUnrelatedContentAndOverrides(t *testing.T) 
 			case "invalid-override":
 				writeFile(t, manager.remoteStore.overridePath(unrelated), "{invalid JSON")
 			}
-			if _, err := manager.discoverSkills(project, ""); err == nil {
-				t.Fatalf("full discovery accepted unrelated %s", kind)
+			if _, err := manager.discoverSkills(project, ""); (err != nil) != (kind == "invalid-override") {
+				t.Fatalf("full discovery of unrelated %s: %v", kind, err)
 			}
 			records, err := manager.remoteStore.recordsForDiscoveryNamed("", "selected")
 			if err != nil || len(records) != 1 || records[0].ref() != selected {

@@ -251,5 +251,5 @@ func loadRemoteCache(path string) (remoteRegistryCache, error) {
 }
 
 func saveRemoteCache(path string, cache remoteRegistryCache) error {
-	return writeAtomicJSONFile(path, "remote registry cache", cache)
+	return writeBoundedAtomicJSONFile(path, "remote registry cache", cache, remoteResponseLimit)
 }

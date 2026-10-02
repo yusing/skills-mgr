@@ -161,17 +161,17 @@ func (m *manager) scriptCommandContext(
 	var command *exec.Cmd
 	switch {
 	case info.Mode()&0o111 != 0:
-		command = exec.Command(script, args...)
+		command = exec.CommandContext(ctx, script, args...)
 	case extension == ".py":
-		command = exec.Command("python3", append([]string{script}, args...)...)
+		command = exec.CommandContext(ctx, "python3", append([]string{script}, args...)...)
 	case isJavaScript(extension):
 		runtime, err := m.cachedJavaScriptRuntime()
 		if err != nil {
 			return nil, err
 		}
-		command = exec.Command(runtime, append([]string{script}, args...)...)
+		command = exec.CommandContext(ctx, runtime, append([]string{script}, args...)...)
 	default:
-		command = exec.Command(script, args...)
+		command = exec.CommandContext(ctx, script, args...)
 	}
 	if command.Err != nil {
 		return nil, fmt.Errorf("run %s: %w", target, command.Err)
@@ -349,7 +349,7 @@ func (m *manager) toggleModelInvocation(
 		}
 	}
 
-	skills, err := m.skills(project)
+	skills, err := m.managementSkills(project, "")
 	if err != nil {
 		return modelInvocationResult{}, err
 	}

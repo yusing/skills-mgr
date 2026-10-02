@@ -42,7 +42,7 @@ func (m *manager) completeSkillEdit(
 	); err != nil {
 		return nil, selectionState{}, err
 	}
-	skills, err := m.skills(project)
+	skills, err := m.managementSkills(project, "")
 	if err != nil {
 		return nil, selectionState{}, err
 	}
@@ -268,7 +268,7 @@ func (m *manager) refreshEditedSkill(
 	}
 	defer closeExclusiveLock(guard)
 
-	skills, err := m.skills(project)
+	skills, err := m.managementSkills(project, "")
 	if err != nil {
 		return nil, selectionState{}, err
 	}

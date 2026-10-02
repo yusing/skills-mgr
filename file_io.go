@@ -53,11 +53,18 @@ func writeAtomicFile(path, label string, data []byte) error {
 // writeAtomicJSONFile renders value as the indented JSON every on-disk metadata
 // file in this package uses, then replaces path atomically.
 func writeAtomicJSONFile(path, label string, value any) error {
+	return writeBoundedAtomicJSONFile(path, label, value, 0)
+}
+
+func writeBoundedAtomicJSONFile(path, label string, value any, maxBytes int64) error {
 	var data bytes.Buffer
 	encoder := json.NewEncoder(&data)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(value); err != nil {
 		return fmt.Errorf("write %s: %w", label, err)
+	}
+	if maxBytes > 0 && int64(data.Len()) > maxBytes {
+		return fmt.Errorf("write %s: file exceeds %d bytes", label, maxBytes)
 	}
 	return writeAtomicFile(path, label, data.Bytes())
 }

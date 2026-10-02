@@ -632,5 +632,5 @@ func loadSkillsMPCache(path string) (skillsMPCache, error) {
 }
 
 func saveSkillsMPCache(path string, cache skillsMPCache) error {
-	return writeAtomicJSONFile(path, "SkillsMP cache", cache)
+	return writeBoundedAtomicJSONFile(path, "SkillsMP cache", cache, remoteResponseLimit)
 }

@@ -303,11 +303,14 @@ func (m *manager) persistedRemoteRef(
 	}
 	m.remoteStore.mu.Lock()
 	defer m.remoteStore.mu.Unlock()
-	record, err := m.remoteStore.loadRecordLocked(key)
+	record, err := m.remoteStore.loadRecordMetadataLocked(key)
 	if errors.Is(err, os.ErrNotExist) {
 		return remoteSkillRef{}, fmt.Errorf("remote skill metadata for %q is unavailable", name)
 	}
 	if err != nil {
+		return remoteSkillRef{}, err
+	}
+	if _, err := m.remoteStore.contentRoot(record); err != nil && !errors.Is(err, errRemoteSkillContentMissing) {
 		return remoteSkillRef{}, err
 	}
 	ref := record.ref()

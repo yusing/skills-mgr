@@ -27,6 +27,7 @@ type discoveredSkill struct {
 	UserInvocable          bool
 	CompatibilityStatus    string
 	ExternalEnabled        bool
+	ContentMissing         bool
 }
 
 type skillDiscovery struct {
@@ -60,6 +61,38 @@ type skillRoot struct {
 // Source: ../git-agent/internal/skills/skills.go:67:433 Discover and discovery helpers.
 func (m *manager) skills(project string, harnesses ...listHarness) ([]discoveredSkill, error) {
 	return m.discoverSkills(project, "", harnesses...)
+}
+
+// managementSkills retains absent remote identities for uninstall and refetch
+// controls. Access and list continue to use discovery of available content only.
+func (m *manager) managementSkills(project, excludedRemoteKey string) ([]discoveredSkill, error) {
+	skills, err := m.discoverSkills(project, excludedRemoteKey)
+	if err != nil || m.remoteStore == nil {
+		return skills, err
+	}
+	records, err := m.remoteStore.records()
+	if err != nil {
+		return nil, err
+	}
+	availableCount := len(skills)
+	for _, record := range records {
+		if record.ref().key() == excludedRemoteKey {
+			continue
+		}
+		if _, err := m.remoteStore.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {
+			skills = append(skills, discoveredSkill{
+				Name: record.Name, Source: record.Provider, RemoteKey: record.ref().key(),
+				Description:    "Cached content is missing. Use sync or reinstall to restore it, or u to uninstall.",
+				ContentMissing: true,
+			})
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	if len(skills) != availableCount {
+		slices.SortFunc(skills, compareDiscoveredSkills)
+	}
+	return skills, nil
 }
 
 func (m *manager) discoverSkills(
@@ -287,6 +320,13 @@ func (d *skillDiscovery) addResolvedSkill(root skillRoot, candidateRoot, resolve
 		if err != nil || !filepath.IsLocal(relative) {
 			return nil //nolint:nilerr // Ignore skill files outside their candidate root.
 		}
+		info, err = os.Stat(resolvedSkill)
+		if err != nil {
+			return nil //nolint:nilerr // Ignore skill files that disappeared.
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return nil
 	}
 	skill, ok, err := parseSkill(resolvedSkill)
 	if err != nil || !ok {

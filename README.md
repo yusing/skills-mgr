@@ -161,6 +161,9 @@ saving it empty removes the current-layer value. `m` rewrites the skill's source
 file, preserving the rest of its frontmatter. `a` moves content rather than
 copying it; see [The Manager Home](#the-manager-home).
 
+During a registry installation, Ctrl-C cancels the operation and waits for
+cleanup before closing the interface.
+
 For an installed remote skill, `e` opens the provider content with any existing
 local edit applied. Saving stores the edit under
 `$HOME/.skills-mgr/skills/.remote-patches/`; the fetched provider files remain
@@ -401,6 +404,7 @@ consume the fallback as the edited skill.
 files run directly, non-executable `.py` files run under `python3`, and
 non-executable `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`, and `.cts` files run under
 the first of `node` and `bun` found in `PATH`.
+An interrupt or SIGTERM terminates the running script process.
 
 ```sh
 # Read an enabled skill's main instructions.
@@ -673,6 +677,8 @@ unauthenticated requests otherwise. Provider results are validated before they
 reach the store: absolute or escaping paths, non-regular entries, duplicate
 paths, responses over 16 MiB, and a root `SKILL.md` whose name does not match
 the catalog entry are all rejected.
+Registry caches are limited to 4 MiB per file. An update exceeding that limit
+reports an error and leaves the previous cache intact.
 
 ### Placeholders
 
@@ -711,6 +717,12 @@ only when effectively enabled. Fresh cached content is reused, and the command
 prints one line per skill synchronized. Conditions still control skill exposure;
 downloading a skill does not enable it.
 
+If cached remote content disappears while its identity remains recorded,
+`sync` refetches it. Missing cached content does not prevent access to other
+installed skills or removal of that entry. The Installed tab keeps a
+`[content missing]` row so you can uninstall it without refetching first;
+`list`, `get`, and `run` do not expose the unavailable content.
+
 Running from `$HOME` or `$HOME/.skills-mgr` synchronizes the global selection
 without creating `$HOME/.skills-mgr.json`. Running from a project also reconciles
 its remote metadata. A failure names the skill, returns non-zero, and leaves
@@ -725,7 +737,7 @@ Each `skills-mgr` invocation except `info` starts a detached background runner i
 already running and the last successful cycle is at least five minutes old. The
 runner refreshes skills.sh registry metadata when that cache is missing or at
 least five minutes old, and refreshes installed remote content once it passes
-three hours old. It only updates identities already
+three hours old or its cached content is missing. It only updates identities already
 present in the store. Structured text logs append to a bounded `refresh.log` in
 the user cache `skills-mgr` directory for cache refresh and each remote-skill
 update; a failure is logged and does not skip later skills in the same run.

@@ -1052,10 +1052,12 @@ func TestUninstallRemoteCatalogFailureLeavesInstallationIntact(t *testing.T) {
 	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(
-		filepath.Join(project, ".agents", "skills", "broken", "SKILL.md"),
-		0o755,
-	); err != nil {
+	if err := os.MkdirAll(filepath.Dir(manager.paths.userSkills), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Non-regular manifests are skipped. Use an actual discovery I/O failure
+	// to retain coverage of uninstall's no-mutation-on-catalog-error behavior.
+	if err := os.Symlink("skills", manager.paths.userSkills); err != nil {
 		t.Fatal(err)
 	}
 

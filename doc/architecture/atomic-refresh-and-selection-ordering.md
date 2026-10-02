@@ -11,6 +11,9 @@ succeeds, and leaves both selection locks unchanged on failure or cancellation.
 
 Disabling changes only the existing project lock. The on-demand background
 runner enumerates store metadata and calls the same refresh path for stale
-entries. It does not inspect or mutate project locks.
+entries or entries whose cached generation is absent. Missing cache content
+does not erase a persisted identity or prevent its removal. Unsafe content
+paths and dangling aliases remain validation errors, not cache misses.
+The runner does not inspect or mutate project locks.
 
 This contract supports `REQ-SYNC-002` and `REQ-SYNC-003`.

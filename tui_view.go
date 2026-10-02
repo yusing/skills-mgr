@@ -544,6 +544,9 @@ func (m model) skillLines(indices []int, index int) []string {
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render(cursor + " ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).Render(skill.Name)
+	if skill.ContentMissing {
+		name += selectedStyle(lipgloss.NewStyle().Foreground(warningColor), selected).Render(" [content missing]")
+	}
 	if !isNativeSkill(skill) && m.inherited(skill.Name) {
 		name += selectedStyle(inheritedStyle, selected).Render(" [inherited]")
 	}
@@ -588,6 +591,9 @@ func (m model) skillLines(indices []int, index int) []string {
 		}
 		if skill.CompatibilityStatus != "" {
 			details = append(details, styledMetadataLines("compatibility", terminalSafeText(skill.CompatibilityStatus), m.width)...)
+		}
+		if skill.ContentMissing {
+			return details
 		}
 		return append(
 			details,

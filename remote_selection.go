@@ -258,7 +258,7 @@ func remoteSelectionFrom(
 ) map[string]bool {
 	remote := make(map[string]bool)
 	for _, skill := range skills {
-		if skill.RemoteKey != "" && selected[skill.Name] {
+		if skill.RemoteKey != "" && !skill.ContentMissing && selected[skill.Name] {
 			remote[skill.RemoteKey] = true
 		}
 	}
@@ -317,7 +317,7 @@ func (m *manager) selectRemote(
 			return true, nil
 		})
 	}
-	skills, err := m.skills(project)
+	skills, err := m.managementSkills(project, "")
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
@@ -339,7 +339,7 @@ func (m *manager) selectRemote(
 				skill.Source,
 			)
 		}
-		enabled = selected[skill.Name]
+		enabled = selected[skill.Name] && !skill.ContentMissing
 		break
 	}
 	if enabled && toggle {
@@ -361,7 +361,10 @@ func (m *manager) selectRemote(
 	if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
 		return remoteToggleResult{}, err
 	}
-	skills, err = m.skills(project)
+	if err := ctx.Err(); err != nil {
+		return remoteToggleResult{}, err
+	}
+	skills, err = m.managementSkills(project, "")
 	if err != nil {
 		return remoteToggleResult{}, err
 	}
@@ -422,10 +425,10 @@ func (m *manager) uninstallRemote(
 		}
 	}
 	frontmatter, err := m.remoteSkillFrontmatter(ref)
-	if err != nil {
+	if err != nil && !errors.Is(err, errRemoteSkillContentMissing) {
 		return remoteUninstallResult{}, err
 	}
-	skills, err := m.discoverSkills(project, key)
+	skills, err := m.managementSkills(project, key)
 	if err != nil {
 		return remoteUninstallResult{}, err
 	}

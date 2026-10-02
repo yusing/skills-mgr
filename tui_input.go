@@ -75,6 +75,15 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if isLocalTab(m.tab) {
+		if index, ok := m.localSkillIndex(m.cursor); ok && m.skills[index].ContentMissing {
+			switch message.String() {
+			case " ", "e", "i", "m", "a":
+				m.status = "content missing: use sync or reinstall, or u to uninstall"
+				return m, nil
+			}
+		}
+	}
 	switch message.String() {
 	case "q", "ctrl+c":
 		m.cancelRegistryRequest()
@@ -293,13 +302,15 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 		}
 		m.busy = true
 		m.status = status + ref.Name
+		ctx, cancel := context.WithCancel(context.Background())
+		m.busyCancel = cancel
 		if refresh {
 			m.progressTitle = "Installing " + ref.Name
 			m.progressDetail = "Cloning with git --depth 1…"
 		}
 		return m, func() tea.Msg {
 			result, err := m.manager.toggleRemote(
-				context.Background(),
+				ctx,
 				m.project,
 				ref,
 			)

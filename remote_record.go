@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 func (m *manager) remoteSkillFrontmatter(ref remoteSkillRef) (string, error) {
@@ -104,6 +105,11 @@ func (s *remoteSkillStore) recordsForDiscoveryNamed(
 		if record.ref().key() == excludedRemoteKey {
 			continue
 		}
+		if _, err := s.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
 		override, err := s.loadOverrideLocked(record.ref())
 		if err != nil {
 			return nil, err
@@ -143,7 +149,8 @@ func (s *remoteSkillStore) recordsNamedLocked(name string) ([]remoteSkillRecord,
 		if name != "" && record.Name != name {
 			continue
 		}
-		if _, err := s.contentRoot(record); err != nil {
+		// Missing cache content must not hide its identity from sync or removal.
+		if _, err := s.contentRoot(record); err != nil && !errors.Is(err, errRemoteSkillContentMissing) {
 			return nil, err
 		}
 		records = append(records, record)
@@ -205,9 +212,25 @@ func (s *remoteSkillStore) contentRoot(record remoteSkillRecord) (string, error)
 		return "", fmt.Errorf("remote skill content path is unsafe")
 	}
 	root := filepath.Join(s.root, filepath.FromSlash(record.Content))
-	resolvedStore, err := filepath.EvalSymlinks(filepath.Join(s.root, "content"))
+	contentStore := filepath.Join(s.root, "content")
+	// Generations are direct children of the content store. Validate the path
+	// before treating absence as cache eviction, rather than a dangling alias.
+	if filepath.Dir(root) != contentStore {
+		return "", fmt.Errorf("remote skill content path is unsafe")
+	}
+	if _, err := os.Lstat(contentStore); errors.Is(err, os.ErrNotExist) {
+		return "", errRemoteSkillContentMissing
+	} else if err != nil {
+		return "", fmt.Errorf("inspect remote skill content store: %w", err)
+	}
+	resolvedStore, err := filepath.EvalSymlinks(contentStore)
 	if err != nil {
 		return "", fmt.Errorf("resolve remote skill content store: %w", err)
+	}
+	if _, err := os.Lstat(root); errors.Is(err, os.ErrNotExist) {
+		return "", errRemoteSkillContentMissing
+	} else if err != nil {
+		return "", fmt.Errorf("inspect remote skill content: %w", err)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
@@ -222,4 +245,16 @@ func (s *remoteSkillStore) contentRoot(record remoteSkillRecord) (string, error)
 		return "", fmt.Errorf("remote skill content is missing")
 	}
 	return resolvedRoot, nil
+}
+
+func (s *remoteSkillStore) recordFresh(record remoteSkillRecord, now time.Time) (bool, error) {
+	if record.SchemaRevision == 0 {
+		return false, nil
+	}
+	if _, err := s.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return record.fresh(now), nil
 }

@@ -31,6 +31,8 @@ const (
 var errRemoteSkillPatch = errors.New("remote skill patch no longer applies")
 var errRemoteSkillEditConflict = errors.New("remote skill changed while it was being edited")
 
+var errRemoteSkillContentMissing = errors.New("remote skill content is missing")
+
 const (
 	remoteSkillPatchBaseHeader   = "# skills-mgr-base-sha256 "
 	remoteSkillPatchResultHeader = "# skills-mgr-result-sha256 "

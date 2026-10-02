@@ -182,7 +182,7 @@ type registrySearchRequested struct {
 }
 
 func newModel(manager *manager, project string) (model, error) {
-	discovered, err := manager.skills(project)
+	discovered, err := manager.managementSkills(project, "")
 	if err != nil {
 		return model{}, err
 	}
@@ -326,6 +326,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case remoteToggleDone:
 		m.busy = false
+		if m.busyCancel != nil {
+			m.busyCancel()
+			m.busyCancel = nil
+		}
 		m.progressTitle = ""
 		m.progressDetail = ""
 		if message.err != nil {

@@ -38,7 +38,11 @@ func (s *remoteSkillStore) ensure(
 	if err != nil {
 		return remoteSkillRecord{}, err
 	}
-	if current.SchemaRevision != 0 && current.fresh(time.Now()) {
+	fresh, err := s.recordFresh(current, time.Now())
+	if err != nil {
+		return remoteSkillRecord{}, err
+	}
+	if fresh {
 		return current, nil
 	}
 	prepared, err := s.prepare(ctx, ref, provider)
@@ -68,8 +72,15 @@ func (s *remoteSkillStore) ensure(
 	if err != nil {
 		return remoteSkillRecord{}, err
 	}
-	if current.SchemaRevision != 0 && current.fresh(time.Now()) {
+	fresh, err = s.recordFresh(current, time.Now())
+	if err != nil {
+		return remoteSkillRecord{}, err
+	}
+	if fresh {
 		return current, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return remoteSkillRecord{}, err
 	}
 	if current.SchemaRevision == 0 {
 		err := os.Remove(s.overridePath(ref))
@@ -104,7 +115,8 @@ func (s *remoteSkillStore) needsRefresh(ref remoteSkillRef) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return current.SchemaRevision == 0 || !current.fresh(time.Now()), nil
+	fresh, err := s.recordFresh(current, time.Now())
+	return !fresh, err
 }
 
 func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error {
@@ -253,7 +265,11 @@ func (s *remoteSkillStore) refresh(
 	if current.Provider != record.Provider || current.ID != record.ID {
 		return fmt.Errorf("persisted remote skill identity changed during refresh")
 	}
-	if current.fresh(time.Now()) {
+	fresh, err := s.recordFresh(current, time.Now())
+	if err != nil {
+		return err
+	}
+	if fresh {
 		return nil
 	}
 	ref := current.ref()
@@ -275,7 +291,7 @@ func (s *remoteSkillStore) refresh(
 		return err
 	}
 	defer closeRemoteStoreLock(storeLock)
-	current, err = s.loadRecordLocked(ref.key())
+	current, err = s.loadRecordMetadataLocked(ref.key())
 	if err != nil {
 		return err
 	}
@@ -283,8 +299,15 @@ func (s *remoteSkillStore) refresh(
 		current.Name != ref.Name || current.Locator != ref.Locator {
 		return fmt.Errorf("persisted remote skill identity changed during refresh")
 	}
-	if current.fresh(time.Now()) {
+	fresh, err = s.recordFresh(current, time.Now())
+	if err != nil {
+		return err
+	}
+	if fresh {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	next := prepared.record(ref)
 	if err := s.saveRecordLocked(next); err != nil {
@@ -326,6 +349,9 @@ func (s *remoteSkillStore) prepare(
 	files, err := provider.fetchSkill(ctx, ref)
 	if err != nil {
 		return preparedRemoteContent{}, fmt.Errorf("fetch remote skill %q: %w", ref.Name, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return preparedRemoteContent{}, err
 	}
 	content, err := s.writeContent(ref, files)
 	if err != nil {

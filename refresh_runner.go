@@ -383,7 +383,8 @@ func refreshPersistedRemoteSkills(
 	var errs error
 	started := false
 	for _, record := range records {
-		if record.fresh(now) {
+		fresh, _ := manager.remoteStore.recordFresh(record, now)
+		if fresh {
 			skipped++
 			logger.Debug(
 				"skipping fresh remote skill",

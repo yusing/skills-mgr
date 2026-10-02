@@ -230,7 +230,7 @@ func (m *manager) relocateSkill(
 	if err != nil {
 		return skillLocationResult{}, err
 	}
-	skills, err := m.skills(project)
+	skills, err := m.managementSkills(project, "")
 	if err != nil {
 		return skillLocationResult{}, errors.Join(err, undo())
 	}
