@@ -89,6 +89,9 @@ func run(args []string) error {
   skills-mgr sync
     Fetch missing enabled remote skills for this project.
 
+  skills-mgr install [-g] <repo-address> [skill-name]
+    Install a repository skill and enable it for this project, or globally with -g.
+
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
     Print an enabled skill or file, optionally limited to a line range.
 
@@ -134,6 +137,26 @@ func run(args []string) error {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		return manager.sync(ctx, project, os.Stdout)
+	case args[0] == "install":
+		rest := args[1:]
+		if len(rest) > 0 && rest[0] == "-g" {
+			manager.global = true
+			rest = rest[1:]
+		}
+		if len(rest) < 1 || len(rest) > 2 || strings.HasPrefix(rest[0], "-") {
+			return fmt.Errorf("usage: skills-mgr install [-g] <repo-address> [skill-name]")
+		}
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		name := ""
+		if len(rest) == 2 {
+			name = rest[1]
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.installRepository(ctx, project, rest[0], name, os.Stdout, os.Stderr)
 	case args[0] == "get":
 		_, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {

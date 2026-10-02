@@ -2,7 +2,7 @@
 
 ## REQ-SYNC-001 — Persist remote selection identity
 
-When a remote catalog skill is enabled or disabled in a project, its selection
+When a remote skill is enabled or disabled in a project, its selection
 shall record its enabled state and stable remote reference: provider,
 provider-specific ID, skill name, and provider locator. A local selection shall
 record only its enabled state.
@@ -18,8 +18,9 @@ entries that have no persisted remote-store record.
 
 Acceptance examples:
 
-- Enabling a skills.sh or SkillsMP result writes enough identity for another
-  machine to fetch that exact provider entry without searching a catalog.
+- Enabling a skills.sh or SkillsMP result, or installing from a supplied
+  repository address, lets another machine restore the same skill without
+  searching a catalog.
 - Disabling the remote skill retains its identity while changing its enabled
   state to false.
 - Migrating a project records identity for an inherited remote without adding

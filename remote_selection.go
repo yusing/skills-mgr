@@ -245,6 +245,8 @@ func (m *manager) remoteContentProvider(provider string) remoteSkillContentProvi
 		return m.remote
 	case skillsMPProvider:
 		return m.skillsMP
+	case repositoryProvider:
+		return repositoryContentProvider{}
 	default:
 		return nil
 	}
@@ -268,6 +270,19 @@ func (m *manager) toggleRemote(
 	project string,
 	ref remoteSkillRef,
 ) (remoteToggleResult, error) {
+	return m.selectRemote(ctx, project, ref, m.remoteContentProvider(ref.Provider), true)
+}
+
+func (m *manager) selectRemote(
+	ctx context.Context,
+	project string,
+	ref remoteSkillRef,
+	provider remoteSkillContentProvider,
+	toggle bool,
+) (remoteToggleResult, error) {
+	if err := ctx.Err(); err != nil {
+		return remoteToggleResult{}, err
+	}
 	if m.remoteStore == nil {
 		return remoteToggleResult{}, fmt.Errorf("remote skill store is unavailable")
 	}
@@ -327,7 +342,7 @@ func (m *manager) toggleRemote(
 		enabled = selected[skill.Name]
 		break
 	}
-	if enabled {
+	if enabled && toggle {
 		frontmatter, err := m.remoteSkillFrontmatter(ref)
 		if err != nil {
 			return remoteToggleResult{}, err
@@ -343,7 +358,6 @@ func (m *manager) toggleRemote(
 		return newRemoteToggleResult(ref.Name, false, skills, selected), nil
 	}
 
-	provider := m.remoteContentProvider(ref.Provider)
 	if _, err := m.remoteStore.ensure(ctx, ref, provider); err != nil {
 		return remoteToggleResult{}, err
 	}

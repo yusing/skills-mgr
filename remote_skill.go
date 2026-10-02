@@ -25,6 +25,7 @@ const (
 	remoteSkillPatchDir               = ".remote-patches"
 	skillsShProvider                  = "skills.sh"
 	skillsMPProvider                  = "SkillsMP"
+	repositoryProvider                = "repository"
 )
 
 var errRemoteSkillPatch = errors.New("remote skill patch no longer applies")
@@ -48,7 +49,7 @@ func (r remoteSkillRef) key() string {
 }
 
 func (r remoteSkillRef) validate() error {
-	if r.Provider != skillsShProvider && r.Provider != skillsMPProvider {
+	if r.Provider != skillsShProvider && r.Provider != skillsMPProvider && r.Provider != repositoryProvider {
 		return fmt.Errorf("unsupported remote skill provider %q", r.Provider)
 	}
 	if r.ID == "" || len(r.ID) > 1024 {

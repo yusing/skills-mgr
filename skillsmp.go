@@ -175,12 +175,17 @@ func cloneGitHubRepository(
 	destination string,
 ) error {
 	repository := "https://github.com/" + location.owner + "/" + location.repo + ".git"
+	return cloneSkillRepository(ctx, repository, gitRef, destination)
+}
+
+func cloneSkillRepository(ctx context.Context, repository, gitRef, destination string) error {
 	args := []string{"clone", "--depth", "1", "--single-branch"}
 	if gitRef != "" {
 		args = append(args, "--branch", gitRef)
 	}
 	args = append(args, repository, destination)
 	command := exec.CommandContext(ctx, "git", args...)
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -260,7 +265,7 @@ func filesFromGitHubCheckout(
 				continue
 			}
 		}
-		if relative == "" || manifestOnly && relative != skillManifestName ||
+		if relative == "" || manifestOnly && !isSafeAgentSkillFile(relative) ||
 			agentSkill && !isSafeAgentSkillFile(relative) {
 			continue
 		}

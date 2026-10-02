@@ -9,7 +9,8 @@ to an agent on demand. A selection entry is a plain on/off switch or a condition
 such as `lang go && tooling shadowtree`, so a Go project and a React project see
 different skills without you touching anything. Its terminal interface also
 browses and installs skills from [skills.sh](https://skills.sh) and
-[SkillsMP](https://skillsmp.com).
+[SkillsMP](https://skillsmp.com), or you can install directly from a repository
+address.
 
 TL;DR: run `skills-mgr` to choose skills and `skills-mgr -g` to choose them for
 every project. A session-start hook feeds `skills-mgr list` to your agent, which
@@ -20,7 +21,7 @@ reads what it picks with `get` and `run`.
 Requirements:
 
 - Go 1.26 or newer
-- Git, when installing a SkillsMP skill
+- Git, when installing remote skills
 
 Install the command:
 
@@ -170,6 +171,38 @@ diff for `SKILL.md`.
 the global layer while you are in project mode; uninstall that one from
 `skills-mgr -g`.
 
+### Installing From a Repository
+
+Install and enable a skill without looking it up in a registry:
+
+```sh
+skills-mgr install https://github.com/owner/repo
+skills-mgr install https://github.com/owner/repo/tree/main/skills/my-skill
+skills-mgr install -g owner/repo my-skill
+```
+
+The address can be an HTTPS Git repository root on any host, a GitHub
+`/tree/<branch-or-tag>/<path>` directory, or a GitHub
+`/blob/<branch-or-tag>/<path>/SKILL.md` file. `github.com/owner/repo` and
+`owner/repo` are also accepted. For a branch name containing `/`, encode the
+slash as `%2F` in the address. SSH addresses and URLs with credentials, query
+parameters, or fragments are not accepted.
+
+A directory's own `SKILL.md` takes priority. Otherwise, one valid skill is
+selected automatically; if several exist, the command lists their names and
+paths so you can supply a name or a more specific URL. The name must match the
+manifest's frontmatter. At the repository root, installation includes
+`SKILL.md` and its `references/`, `scripts/`, `assets/`, and `data/` resources,
+not unrelated repository files.
+
+Content goes into the remote store. Installation enables it in the current
+project, or globally with `install -g`, and creates the same harness placeholders
+as a registry installation. Reinstalling keeps the skill enabled. Progress goes
+to stderr and the result to stdout. No SkillsMP API key is needed. Use `sync`
+to restore a committed selection on another machine; installed content follows
+the normal remote refresh and local-edit behavior. Use `u` in the Installed tab
+to uninstall it.
+
 ### Global and Project Layers
 
 Run the interface with `-g` to manage the selection that applies everywhere:
@@ -181,9 +214,9 @@ skills-mgr -g
 This writes `$HOME/.skills-mgr/.skills-mgr.json`. A file left at the older
 `$HOME/.skills-mgr.json` moves there on the next run, unless one already exists.
 In project mode, an entry in `./.skills-mgr.json` overrides the global entry
-with the same name, and deleting the project entry restores inheritance. The
-`-g` flag must be the only argument; the other commands always act on the
-current directory.
+with the same name, and deleting the project entry restores inheritance. For
+the interface, `-g` must be the only argument. `install -g` also manages the
+global selection; the other commands use the current directory.
 
 ### Skills That Are Enabled Without an Entry
 
@@ -334,6 +367,7 @@ Every command uses the current working directory as the project.
 | `skills-mgr help` or `skills-mgr --help` | Print every accepted invocation form with a short description |
 | `skills-mgr info` | Show metadata files, local skill directories, and remote store/patch paths; mark absent paths `[MISSING]`, without fetching or changing files |
 | `skills-mgr adopt` | Move all valid shared skills from `$HOME/.agents/skills` into the manager home |
+| `skills-mgr install [-g] <repo-address> [skill-name]` | Install a repository skill and enable it for this project, or globally with `-g` |
 | `skills-mgr list` | Write the enabled skills to stdout as XML: name, description, and reference-file tree |
 | `skills-mgr get <skill>` | Write the skill's `SKILL.md` body, plus name and description frontmatter for user-invoked skills, to stdout |
 | `skills-mgr get <skill>/<path>` | Write a file from the skill to stdout |
@@ -618,8 +652,9 @@ because in global mode the release destination is the placeholder's own path.
 
 ### The Remote Store
 
-Skills installed from skills.sh or SkillsMP live under the user cache directory,
-in `skills-mgr/remote-skills`, because `sync` can refetch them. Authored content
+Skills installed from skills.sh, SkillsMP, or a repository address live under
+the user cache directory, in `skills-mgr/remote-skills`, because `sync` can
+refetch them. Authored content
 cannot be refetched, which is why the manager home sits outside the cache.
 Content is never executed at install time.
 
