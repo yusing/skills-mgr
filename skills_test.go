@@ -241,6 +241,38 @@ func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
 	}
 }
 
+func TestLockSchemaListsSupportedProviders(t *testing.T) {
+	data, err := os.ReadFile("skills-mgr.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Definitions struct {
+			Remote struct {
+				Properties struct {
+					Provider struct {
+						Enum []string `json:"enum"`
+					} `json:"provider"`
+				} `json:"properties"`
+			} `json:"remote"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(slices.Values(schema.Definitions.Remote.Properties.Provider.Enum))
+	want := slices.Sorted(slices.Values([]string{skillsShProvider, skillsMPProvider, repositoryProvider}))
+	if !slices.Equal(got, want) {
+		t.Fatalf("schema providers = %v, want %v", got, want)
+	}
+	for _, provider := range got {
+		ref := remoteSkillRef{Provider: provider, ID: "id", Name: "alpha", Locator: "locator"}
+		if err := ref.validate(); err != nil {
+			t.Fatalf("schema provider %q rejected by code: %v", provider, err)
+		}
+	}
+}
+
 func TestConcurrentGlobalTogglesPreserveUpdates(t *testing.T) {
 	manager := newTestManager(t)
 	manager.global = true

@@ -139,7 +139,8 @@
         "provider": {
           "enum": [
             "skills.sh",
-            "SkillsMP"
+            "SkillsMP",
+            "repository"
           ]
         },
         "id": {
