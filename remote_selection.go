@@ -8,7 +8,6 @@ import (
 	"io"
 
 	"maps"
-	"os"
 
 	"slices"
 )
@@ -39,16 +38,12 @@ func (m *manager) sync(
 	}
 	// Home is not a project: keep its selection in the manager home and its
 	// harness placeholders in the shared home roots.
-	atHome, err := samePlaceholderRoot(project, m.paths.placeholderDir)
+	atHome, err := m.paths.atHome(project)
 	if err != nil {
 		return err
 	}
-	atManagerHome, err := samePlaceholderRoot(project, m.paths.globalLockDir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 	selectionDir, placeholderBase := project, project
-	if m.global || atHome || atManagerHome {
+	if m.global || atHome {
 		selectionDir = m.paths.globalLockDir
 		placeholderBase = m.paths.placeholderDir
 	}

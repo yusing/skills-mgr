@@ -11,8 +11,10 @@ import (
 )
 
 func TestRunInstallRepository(t *testing.T) {
-	for _, global := range []bool{false, true} {
-		t.Run(map[bool]string{false: "project", true: "global"}[global], func(t *testing.T) {
+	// home runs without -g from $HOME, which must select the global layer.
+	for _, mode := range []string{"project", "global", "home"} {
+		t.Run(mode, func(t *testing.T) {
+			global := mode != "project"
 			fakeGit(t, map[string]map[string]gitTestFile{"main": {
 				"skills/alpha/SKILL.md": {contents: skillFile("alpha", "Repository alpha.", "body"), mode: 0o644},
 			}})
@@ -21,6 +23,9 @@ func TestRunInstallRepository(t *testing.T) {
 			t.Setenv("XDG_CACHE_HOME", filepath.Join(taskHome, "cache"))
 			t.Setenv("CODEX_HOME", filepath.Join(taskHome, ".codex"))
 			project := t.TempDir()
+			if mode == "home" {
+				project = taskHome
+			}
 			t.Chdir(project)
 			stdoutReader, stdoutWriter, err := os.Pipe()
 			if err != nil {
@@ -40,7 +45,7 @@ func TestRunInstallRepository(t *testing.T) {
 				_ = stderrWriter.Close()
 			})
 			args := []string{"install"}
-			if global {
+			if mode == "global" {
 				args = append(args, "-g")
 			}
 			args = append(args, "https://github.com/owner/repo/tree/main/skills/alpha", "alpha")
@@ -71,6 +76,9 @@ func TestRunInstallRepository(t *testing.T) {
 			}
 			manager := &manager{paths: paths, global: global, remoteStore: newRemoteSkillStore(paths.remoteSkills, filepath.Join(paths.managedSkills, remoteSkillPatchDir))}
 			assertRepositoryInstalled(t, manager, project, "alpha", "body")
+			if _, err := os.Stat(filepath.Join(taskHome, lockName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("install wrote a selection at $HOME: %v", err)
+			}
 		})
 	}
 }

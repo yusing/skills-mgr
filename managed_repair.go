@@ -23,17 +23,12 @@ func (m *manager) repairManagedPlaceholders(ctx context.Context, project string,
 	if globalErr != nil {
 		logger.Error("repair global managed placeholders", "err", globalErr)
 	}
-	atHome, err := samePlaceholderRoot(project, m.paths.placeholderDir)
+	atHome, err := m.paths.atHome(project)
 	if err != nil {
 		logger.Error("resolve managed placeholder repair root", "project", project, "err", err)
 		return errors.Join(globalErr, err)
 	}
-	atManagerHome, err := samePlaceholderRoot(project, m.paths.globalLockDir)
-	if err != nil {
-		logger.Error("resolve managed placeholder repair root", "project", project, "err", err)
-		return errors.Join(globalErr, err)
-	}
-	if atHome || atManagerHome {
+	if atHome {
 		return globalErr
 	}
 	projectErr := m.repairManagedPlaceholderScope(ctx, project, project, false)

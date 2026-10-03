@@ -139,7 +139,8 @@ globally with `-g`.
 ### Global and Project Layers
 
 `skills-mgr -g` manages `$HOME/.skills-mgr/.skills-mgr.json`, the selection for
-every project. A project entry in `./.skills-mgr.json` overrides the global
+every project. Run from `$HOME`, the interface, `install`, and `sync` use it
+without `-g`. A project entry in `./.skills-mgr.json` overrides the global
 entry of the same name; deleting it restores inheritance.
 
 With no entry in either layer, a project still enables skills in its own

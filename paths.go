@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,6 +89,20 @@ func (p paths) codexPluginCache() string {
 // such as ".agents" or ".claude".
 func (paths) projectSkills(project, harness string) string {
 	return filepath.Join(project, harness, "skills")
+}
+
+// atHome reports whether project is $HOME or the manager home. Neither is a
+// project: a selection written from there belongs to the global layer.
+func (p paths) atHome(project string) (bool, error) {
+	atHome, err := samePlaceholderRoot(project, p.placeholderDir)
+	if err != nil || atHome {
+		return atHome, err
+	}
+	atManagerHome, err := samePlaceholderRoot(project, p.globalLockDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return atManagerHome, err
 }
 
 // relocateGlobalLock moves a global selection file left in the legacy location

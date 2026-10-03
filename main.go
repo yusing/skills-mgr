@@ -65,6 +65,9 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := manager.useGlobalAtHome(project); err != nil {
+			return err
+		}
 		return runTUI(manager, project)
 	case args[0] == "help" || args[0] == "--help":
 		if len(args) != 1 {
@@ -148,6 +151,9 @@ func run(args []string) error {
 		}
 		project, err := currentProject()
 		if err != nil {
+			return err
+		}
+		if err := manager.useGlobalAtHome(project); err != nil {
 			return err
 		}
 		name := ""
@@ -243,6 +249,17 @@ func inferHarnessFromEnv() []listHarness {
 		return nil
 	}
 	return detected
+}
+
+// useGlobalAtHome switches a selection-writing command to the global layer
+// when it runs from $HOME or the manager home, as -g would.
+func (m *manager) useGlobalAtHome(project string) error {
+	atHome, err := m.paths.atHome(project)
+	if err != nil {
+		return err
+	}
+	m.global = m.global || atHome
+	return nil
 }
 
 func currentProject() (string, error) {
