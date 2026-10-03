@@ -8,27 +8,27 @@ import (
 )
 
 type paths struct {
-	userSkills     string
-	managedSkills  string
-	claudeSkills   string
-	claudeSettings string
-	claudePlugins  string
-	grokSkills     string
-	grokConfig     string
-	grokCommand    string
-	codexHome      string
-	adminSkills    string
-	managerHome    string
-	globalLockDir  string
-	legacyLockDir  string
-	placeholderDir string
-	selectionLocks string
-	remoteRegistry string
-	skillsMP       string
-	remoteSkills   string
-	refreshLock    string
-	refreshLog     string
-	refreshSuccess string
+	userSkills       string
+	managedSkills    string
+	claudeSkills     string
+	claudeSettings   string
+	claudePlugins    string
+	grokSkills       string
+	grokConfig       string
+	grokCommand      string
+	codexHome        string
+	adminSkills      string
+	managerHome      string
+	globalLockDir    string
+	legacyLockDir    string
+	placeholderDir   string
+	selectionLocks   string
+	remoteRegistry   string
+	skillsMP         string
+	remoteSkills     string
+	refreshLock      string
+	refreshLog       string
+	refreshCompleted string
 }
 
 func defaultPaths() (paths, error) {
@@ -61,16 +61,16 @@ func defaultPaths() (paths, error) {
 		// The global selection file lives in the manager home, while global
 		// placeholders stay under $HOME because that is where the harnesses
 		// look for .agents/skills and .claude/skills.
-		globalLockDir:  managerHome,
-		legacyLockDir:  home,
-		placeholderDir: home,
-		selectionLocks: filepath.Join(cacheDir, "selection-locks"),
-		remoteRegistry: filepath.Join(cacheDir, "skills-sh.json"),
-		skillsMP:       filepath.Join(cacheDir, "skillsmp.json"),
-		remoteSkills:   filepath.Join(cacheDir, "remote-skills"),
-		refreshLock:    filepath.Join(cacheDir, "refresh.lock"),
-		refreshLog:     filepath.Join(cacheDir, "refresh.log"),
-		refreshSuccess: filepath.Join(cacheDir, "refresh.success"),
+		globalLockDir:    managerHome,
+		legacyLockDir:    home,
+		placeholderDir:   home,
+		selectionLocks:   filepath.Join(cacheDir, "selection-locks"),
+		remoteRegistry:   filepath.Join(cacheDir, "skills-sh.json"),
+		skillsMP:         filepath.Join(cacheDir, "skillsmp.json"),
+		remoteSkills:     filepath.Join(cacheDir, "remote-skills"),
+		refreshLock:      filepath.Join(cacheDir, "refresh.lock"),
+		refreshLog:       filepath.Join(cacheDir, "refresh.log"),
+		refreshCompleted: filepath.Join(cacheDir, "refresh.completed"),
 	}, nil
 }
 

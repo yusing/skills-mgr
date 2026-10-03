@@ -128,8 +128,8 @@ func TestRefreshRunnerReportsRegistryFailure(t *testing.T) {
 		!strings.Contains(logs.String(), "try later") {
 		t.Fatalf("log = %s", logs.String())
 	}
-	if _, err := os.Stat(manager.paths.refreshSuccess); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("refresh success after failure: %v", err)
+	if refreshSpawnDue(manager.paths.refreshCompleted, time.Now()) {
+		t.Fatal("failed registry refresh respawns the runner before the interval")
 	}
 }
 
@@ -253,7 +253,7 @@ func TestRefreshRunnerCommandWritesLog(t *testing.T) {
 	if !strings.Contains(string(data), `msg="refreshed registry cache" trigger=ondemand`) {
 		t.Fatalf("refresh log = %s", data)
 	}
-	if _, err := lastRefreshSuccess(manager.paths.refreshSuccess); err != nil {
+	if _, err := lastRefreshCompleted(manager.paths.refreshCompleted); err != nil {
 		t.Fatalf("refresh success = %v", err)
 	}
 }
@@ -274,7 +274,7 @@ func TestRefreshRunnerCommandSilentWhenFresh(t *testing.T) {
 	if len(data) != 0 {
 		t.Fatalf("refresh log = %s", data)
 	}
-	if _, err := lastRefreshSuccess(current.paths.refreshSuccess); err != nil {
+	if _, err := lastRefreshCompleted(current.paths.refreshCompleted); err != nil {
 		t.Fatalf("refresh success = %v", err)
 	}
 }
@@ -377,7 +377,7 @@ func TestMaybeStartRefreshRunnerReleasesLaunchLockAfterStartError(t *testing.T) 
 func TestMaybeStartRefreshRunnerSkipsRecentSuccess(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
-	if err := recordRefreshSuccessAt(current.paths.refreshSuccess, time.Now().UTC()); err != nil {
+	if err := recordRefreshCompletedAt(current.paths.refreshCompleted, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	var started atomic.Int32
@@ -394,8 +394,8 @@ func TestMaybeStartRefreshRunnerSkipsRecentSuccess(t *testing.T) {
 func TestMaybeStartRefreshRunnerStartsAfterSuccessInterval(t *testing.T) {
 	restoreRefreshHooks(t)
 	current := newTestManager(t)
-	if err := recordRefreshSuccessAt(
-		current.paths.refreshSuccess,
+	if err := recordRefreshCompletedAt(
+		current.paths.refreshCompleted,
 		time.Now().UTC().Add(-remoteRefreshInterval-time.Second),
 	); err != nil {
 		t.Fatal(err)

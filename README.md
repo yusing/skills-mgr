@@ -454,8 +454,8 @@ shows a `[content missing]` row you can uninstall.
 
 ## Background Refresh
 
-Any command except `info` may start a detached background runner, at most every
-five minutes after a successful run. It refreshes skills.sh metadata, updates
+Any command except `info` may start a detached background runner, at most once
+every five minutes. It refreshes skills.sh metadata, updates
 installed remote skills older than three hours, and repairs manager-home
 placeholders. It never downloads new skills. Failures go to `refresh.log` in
 the user cache `skills-mgr` directory.

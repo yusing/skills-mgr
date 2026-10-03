@@ -34,11 +34,11 @@ var (
 )
 
 // maybeStartRefreshRunner starts a detached refresh child when the last
-// successful cycle is outside the registry interval and no runner currently
+// completed cycle is outside the registry interval and no runner currently
 // holds the lock. The parent transfers its launch lock to the child, which
 // keeps it for the duration of the work.
 func maybeStartRefreshRunner(manager *manager) {
-	if manager == nil || !refreshSpawnDue(manager.paths.refreshSuccess, time.Now()) {
+	if manager == nil || !refreshSpawnDue(manager.paths.refreshCompleted, time.Now()) {
 		return
 	}
 	file, err := tryFlockExclusive(manager.paths.refreshLock)
@@ -233,16 +233,17 @@ func runRefreshRunnerWithLock(
 		}
 		defer closeExclusiveLock(lockFile)
 	}
-	var cycleErr error
+	// Each step logs its own failures. A failed cycle still counts as
+	// completed, so a persistent cause is retried after the interval rather
+	// than by a new runner on every invocation.
 	project, err := currentProject()
 	if err != nil {
 		logger.Error("resolve managed placeholder repair project", "err", err)
-		cycleErr = err
 	} else {
-		cycleErr = manager.repairManagedPlaceholders(ctx, project, logger)
+		_ = manager.repairManagedPlaceholders(ctx, project, logger)
 	}
 	if registryRefreshDue(manager.remote, time.Now()) {
-		cycleErr = errors.Join(cycleErr, refreshRemoteRegistry(ctx, manager.remote, logger))
+		_ = refreshRemoteRegistry(ctx, manager.remote, logger)
 	} else if manager.remote != nil {
 		logger.Debug(
 			"skipping registry cache refresh",
@@ -253,27 +254,27 @@ func runRefreshRunnerWithLock(
 	if ctx.Err() != nil {
 		return nil
 	}
-	cycleErr = errors.Join(cycleErr, refreshPersistedRemoteSkills(ctx, manager, logger))
-	if cycleErr != nil || ctx.Err() != nil {
+	_ = refreshPersistedRemoteSkills(ctx, manager, logger)
+	if ctx.Err() != nil {
 		return nil
 	}
-	if err := recordRefreshSuccess(manager.paths.refreshSuccess); err != nil {
-		logger.Error("record refresh success", "err", err)
+	if err := recordRefreshCompleted(manager.paths.refreshCompleted); err != nil {
+		logger.Error("record refresh completion", "err", err)
 	}
 	return nil
 }
 
 func refreshSpawnDue(path string, now time.Time) bool {
-	at, err := lastRefreshSuccess(path)
+	at, err := lastRefreshCompleted(path)
 	if err != nil || at.IsZero() || at.After(now) {
 		return true
 	}
 	return !now.Before(at.Add(remoteRefreshInterval))
 }
 
-func lastRefreshSuccess(path string) (time.Time, error) {
+func lastRefreshCompleted(path string) (time.Time, error) {
 	if path == "" {
-		return time.Time{}, fmt.Errorf("refresh success path is empty")
+		return time.Time{}, fmt.Errorf("refresh completion path is empty")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -290,17 +291,17 @@ func lastRefreshSuccess(path string) (time.Time, error) {
 	return at, nil
 }
 
-func recordRefreshSuccess(path string) error {
-	return recordRefreshSuccessAt(path, time.Now().UTC())
+func recordRefreshCompleted(path string) error {
+	return recordRefreshCompletedAt(path, time.Now().UTC())
 }
 
-func recordRefreshSuccessAt(path string, at time.Time) error {
+func recordRefreshCompletedAt(path string, at time.Time) error {
 	if path == "" {
-		return fmt.Errorf("refresh success path is empty")
+		return fmt.Errorf("refresh completion path is empty")
 	}
 	return writeAtomicFile(
 		path,
-		"refresh success",
+		"refresh completion",
 		[]byte(at.UTC().Format(time.RFC3339Nano)+"\n"),
 	)
 }

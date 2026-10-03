@@ -170,12 +170,30 @@ func TestRefreshRunnerRepairsManagedPlaceholders(t *testing.T) {
 	for _, root := range []string{".agents", ".claude"} {
 		assertFile(t, filepath.Join(m.paths.placeholderDir, root, "skills", "alpha", "SKILL.md"), wantPlaceholder("alpha", "Managed."))
 	}
-	if _, err := os.Stat(m.paths.refreshSuccess); err != nil {
+	if _, err := os.Stat(m.paths.refreshCompleted); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestRefreshRunnerRepairFailureRetried(t *testing.T) {
+func TestRefreshRunnerOnFreshHome(t *testing.T) {
+	m := newTestManager(t)
+	t.Chdir(t.TempDir())
+	if err := os.RemoveAll(m.paths.managerHome); err != nil {
+		t.Fatal(err)
+	}
+	logger, logs := testLogger()
+	if err := runRefreshRunner(t.Context(), m, logger); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Fatalf("fresh home logged errors: %s", logs.String())
+	}
+	if _, err := os.Stat(m.paths.managerHome); !os.IsNotExist(err) {
+		t.Fatalf("background repair created the manager home: %v", err)
+	}
+}
+
+func TestRefreshRunnerRepairFailureWaitsForInterval(t *testing.T) {
 	m := newTestManager(t)
 	t.Chdir(t.TempDir())
 	writeFile(t, filepath.Join(m.paths.managedSkills, "alpha", "SKILL.md"), skillFile("alpha", "Managed.", "body"))
@@ -189,8 +207,8 @@ func TestRefreshRunnerRepairFailureRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, collision, "user content")
-	if _, err := os.Stat(m.paths.refreshSuccess); !os.IsNotExist(err) {
-		t.Fatalf("failed repair marked successful: %v", err)
+	if refreshSpawnDue(m.paths.refreshCompleted, time.Now()) {
+		t.Fatal("failed repair respawns the runner before the interval")
 	}
 	if !strings.Contains(logs.String(), "repair global managed placeholders") {
 		t.Fatalf("missing repair error: %s", logs.String())
@@ -209,8 +227,8 @@ func TestRefreshRunnerRepairsDespiteRemoteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(m.paths.userSkills, "alpha", "SKILL.md"), wantPlaceholder("alpha", "Managed."))
-	if _, err := os.Stat(m.paths.refreshSuccess); !os.IsNotExist(err) {
-		t.Fatalf("failed cycle marked successful: %v", err)
+	if refreshSpawnDue(m.paths.refreshCompleted, time.Now()) {
+		t.Fatal("failed cycle respawns the runner before the interval")
 	}
 }
 

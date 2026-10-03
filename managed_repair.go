@@ -72,6 +72,9 @@ func (m *manager) repairManagedPlaceholderScope(ctx context.Context, selectionDi
 			return err
 		}
 	}
+	if len(skills) == 0 {
+		return nil
+	}
 	globalLock, err := loadLock(m.paths.globalLockDir)
 	if err != nil {
 		return err
