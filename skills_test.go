@@ -2434,7 +2434,7 @@ func TestHelpCommand(t *testing.T) {
     Print enabled skill metadata as XML.
 
   skills-mgr sync
-    Fetch missing enabled remote skills for this project.
+    Fetch globally listed remote skills and this project's enabled ones.
 
   skills-mgr install [-g] <repo-address> [skill-name]
     Install a repository skill and enable it for this project, or globally with -g.
