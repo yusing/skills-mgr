@@ -367,6 +367,10 @@ func saveLock(project string, value lock) error {
 }
 
 func updateLock(project, coordinationDir string, update func(*lock) (bool, error)) error {
+	// A project directory always exists; the manager home may not yet.
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		return fmt.Errorf("create selection directory %s: %w", project, err)
+	}
 	projectInfo, err := os.Stat(project)
 	if err != nil {
 		return fmt.Errorf("inspect selection lock target %s: %w", project, err)

@@ -51,11 +51,6 @@ func (m *manager) installRepository(ctx context.Context, project, address, name 
 		return err
 	}
 	fmt.Fprintf(progress, "Installing and enabling %s...\n", ref.Name)
-	if m.global {
-		if err := os.MkdirAll(m.paths.globalLockDir, 0o755); err != nil {
-			return fmt.Errorf("create global selection directory: %w", err)
-		}
-	}
 	if _, err := m.selectRemote(ctx, project, ref, repositoryContentProvider{files: files}, false); err != nil {
 		return err
 	}

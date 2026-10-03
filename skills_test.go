@@ -241,6 +241,20 @@ func TestGlobalToggleUpdatesOnlyGlobalLock(t *testing.T) {
 	}
 }
 
+func TestGlobalToggleCreatesMissingManagerHome(t *testing.T) {
+	manager := newTestManager(t)
+	manager.global = true
+	if err := os.RemoveAll(manager.paths.managerHome); err != nil {
+		t.Fatal(err)
+	}
+
+	enabled, err := manager.toggle(t.TempDir(), "alpha")
+	if err != nil || !enabled {
+		t.Fatalf("global toggle = %v, %v; want enabled", enabled, err)
+	}
+	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
+}
+
 func TestLockSchemaListsSupportedProviders(t *testing.T) {
 	data, err := os.ReadFile("skills-mgr.schema.json")
 	if err != nil {
