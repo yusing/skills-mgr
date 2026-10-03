@@ -98,10 +98,30 @@ func run(args []string) error {
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
     Print an enabled skill or file, optionally limited to a line range.
 
+  skills-mgr inspect <skill>
+    Print JSON owner, selection, fallback, patch, and body-health diagnostics.
+
+  skills-mgr check <target> [target...]
+    Validate served bodies and a skill's listed references without running scripts.
+
+  skills-mgr set [-g] <skill> <true|false|condition|inherit>
+    Set a selection value, or remove its override with inherit.
+
+  skills-mgr edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]
+    Replace a complete SKILL.md, preserving remote ownership with a local patch.
+
   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
     Run a script from an enabled skill, forwarding arguments.
 `)
 		return err
+	case args[0] == "inspect" || args[0] == "check" || args[0] == "set" || args[0] == "edit":
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return manager.agentCommand(ctx, project, args, os.Stdin, os.Stdout, os.Stderr)
 	case args[0] == "adopt":
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr adopt")

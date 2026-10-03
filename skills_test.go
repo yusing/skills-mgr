@@ -2456,6 +2456,18 @@ func TestHelpCommand(t *testing.T) {
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
     Print an enabled skill or file, optionally limited to a line range.
 
+  skills-mgr inspect <skill>
+    Print JSON owner, selection, fallback, patch, and body-health diagnostics.
+
+  skills-mgr check <target> [target...]
+    Validate served bodies and a skill's listed references without running scripts.
+
+  skills-mgr set [-g] <skill> <true|false|condition|inherit>
+    Set a selection value, or remove its override with inherit.
+
+  skills-mgr edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]
+    Replace a complete SKILL.md, preserving remote ownership with a local patch.
+
   skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
     Run a script from an enabled skill, forwarding arguments.
 `)
