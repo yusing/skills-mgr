@@ -69,8 +69,9 @@ repository you opened.
 
 `list` advertises the enabled set, `get` prints a skill file, and `run`
 executes a skill script; `get` and `run` refuse a skill that is not enabled
-here. Disabling a skill never deletes it, and enabling one never copies it into
-an agent's directory.
+here. Agents can inspect ownership, check readable content, change selections,
+and edit skills without opening the interface. Disabling a skill never deletes
+it, and enabling one never copies it into an agent's directory.
 
 Vercel's `npx skills` is complementary: it installs skills into each agent's
 directory, where installed means active. `skills-mgr` decides which installed
@@ -140,8 +141,8 @@ globally with `-g`.
 
 `skills-mgr -g` manages `$HOME/.skills-mgr/.skills-mgr.json`, the selection for
 every project. Run from `$HOME`, the interface, `install`, and `sync` use it
-without `-g`. A project entry in `./.skills-mgr.json` overrides the global
-entry of the same name; deleting it restores inheritance.
+without `-g`, as do `set` and `edit`. A project entry in `./.skills-mgr.json`
+overrides the global entry of the same name; deleting it restores inheritance.
 
 With no entry in either layer, a project still enables skills in its own
 `./.agents/skills`, and skills with `disable-model-invocation: true`. The latter
@@ -254,6 +255,10 @@ Every command uses the current working directory as the project.
 | `skills-mgr list` | Write the enabled skills as XML: name, description, and Markdown references |
 | `skills-mgr get <skill>[/<path>] [start:end]` | Write a skill file, or an inclusive 1-based line range of it |
 | `skills-mgr run <skill>/<script> [args...]` | Run a skill script, passing through its streams and exit status |
+| `skills-mgr inspect <skill>` | Write JSON ownership, selection, and content diagnostics |
+| `skills-mgr check <target>...` | Check skills and files through the normal `get` route |
+| `skills-mgr set [-g] <skill> <true\|false\|condition\|inherit>` | Set or remove a selection override |
+| `skills-mgr edit [-g] <skill> --file <path\|-> [--expect-sha256 <digest>]` | Replace the full owning `SKILL.md` from a file or stdin |
 | `skills-mgr sync` | Download the remote skills a selection records |
 
 `get` strips YAML frontmatter, except that the `SKILL.md` of a
@@ -263,6 +268,54 @@ and exits nonzero.
 
 `run` executes the script from the skill directory. Non-executable `.py` files
 run under `python3`, and JavaScript or TypeScript files under `node` or `bun`.
+
+### Non-interactive Management
+
+```sh
+skills-mgr inspect writing-readme
+skills-mgr set writing-readme true
+skills-mgr set golang-best-practices 'lang go'
+skills-mgr check writing-readme golang-best-practices
+skills-mgr edit writing-readme --file ./SKILL.md
+skills-mgr set writing-readme inherit
+```
+
+`inspect` reports diagnostics only for the named skill. Its JSON has
+`name`, `project`, `resolved` (the accessible owner, or `null`), `candidates`,
+`fallback`, and any `warnings` or `error`. Candidates follow `get` precedence:
+the first filesystem owner, then Claude and Grok native alternatives. Each has
+`source`, `scope` (`project`, `shared`, or `native`), `root`, `path`,
+`disable_model_invocation`, `editable`, `enabled`, the effective `selection`
+layer and Boolean or Bash value, `body_health`, and `references`; `plugin`,
+selection file `path`, `remote_key`, `content_missing`, `patch_path`, `sha256`,
+and `error` appear when applicable.
+The digest covers the complete effective manifest, including frontmatter and
+any remote patch. Inspecting a disabled owner succeeds; an absent skill exits
+nonzero. With no filesystem owner, missing persisted remote cache identities
+appear as diagnostics with `content_missing: true` and `body_health: "error"`,
+not accessible owners. The report recommends `skills-mgr sync`; a same-name
+native fallback can still resolve.
+
+`check` rejects unreadable, empty, or frontmatter-only served bodies and remote
+patch failures. A bare skill target also checks its listed Markdown references.
+Supply required skill dependencies and scripts as explicit targets; scripts are
+read, not executed. It prints `PASS` lines to stdout and `FAIL` lines to stderr,
+and exits nonzero if any check fails.
+
+`set` accepts `true`, `false`, a quoted condition, or `inherit` to remove the
+override. It uses the project layer by default and the global layer with `-g`
+or when run from `$HOME`. Native-only selection remains harness-owned: this
+command does not change native harness settings.
+
+`edit` takes a complete `SKILL.md`, including frontmatter; `--file -` reads
+stdin. Add `--expect-sha256` with the candidate's `inspect` digest to reject a
+changed manifest. Local edits preserve the file mode and update selections and
+placeholders if the name changes, but leave the directory in place. Directory
+layout and references still need ordinary authoring updates. Remote edits store
+a patch without changing fetched files and cannot change remote identity or
+invocation metadata; retain `name` and `disable-model-invocation`. `-g` selects
+global management, not a different content owner. Both mutation commands print
+confirmations to stdout.
 
 ## Skill Discovery
 
