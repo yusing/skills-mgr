@@ -41,6 +41,9 @@ func (m *manager) repairManagedPlaceholders(ctx context.Context, project string,
 // lockManagedMutation covers selection, content, placeholder changes and rollback
 // together. The shorter selection-file lock alone cannot serialize those steps.
 func (m *manager) lockManagedMutation(ctx context.Context) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(m.paths.selectionLocks, 0o700); err != nil {
 		return nil, err
 	}

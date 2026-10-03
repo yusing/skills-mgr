@@ -46,9 +46,18 @@ func (m *manager) getContext(
 	if err != nil {
 		return err
 	}
-	root, discovered, err := m.openSkillContext(ctx, project, skill)
+	discovered, err := m.findAccessibleSkill(ctx, project, skill)
 	if err != nil {
 		return err
+	}
+	return m.writeSkillFile(discovered, target, relative, lineRange, output)
+}
+
+// writeSkillFile is the served-file path shared by acquisition and maintenance.
+func (m *manager) writeSkillFile(discovered discoveredSkill, target, relative, lineRange string, output io.Writer) error {
+	root, err := os.OpenRoot(discovered.Root)
+	if err != nil {
+		return fmt.Errorf("open skill %q: %w", discovered.Name, err)
 	}
 	defer root.Close()
 	file, err := root.Open(filepath.FromSlash(relative))
@@ -72,7 +81,7 @@ func (m *manager) getContext(
 	}
 	var input io.Reader = file
 	var patchErr error
-	isSkillMarkdown := filepath.Clean(filepath.FromSlash(relative)) == skillManifestName
+	isSkillMarkdown := isSkillManifest(relative)
 	if discovered.RemoteKey != "" && isSkillMarkdown {
 		original, err := io.ReadAll(file)
 		if err != nil {
@@ -129,6 +138,10 @@ func (m *manager) getContext(
 		return errors.Join(err, patchErr)
 	}
 	return errors.Join(writeLineRange(output, input, start, end), patchErr)
+}
+
+func isSkillManifest(relative string) bool {
+	return filepath.Clean(filepath.FromSlash(relative)) == skillManifestName
 }
 
 func (m *manager) scriptCommandContext(

@@ -267,6 +267,13 @@ func (m *manager) refreshEditedSkill(
 		return nil, selectionState{}, guardErr
 	}
 	defer closeExclusiveLock(guard)
+	return m.refreshEditedSkillLocked(project, oldName, path)
+}
+
+// refreshEditedSkillLocked shares the edit transaction with noninteractive writers.
+func (m *manager) refreshEditedSkillLocked(
+	project, oldName, path string,
+) ([]discoveredSkill, selectionState, error) {
 
 	skills, err := m.managementSkills(project, "")
 	if err != nil {
@@ -317,12 +324,6 @@ func (m *manager) applyEnabledDraft(
 	skill discoveredSkill,
 	draft string,
 ) (selectionState, error) {
-	guard, guardErr := m.lockManagedMutation(context.Background())
-	if guardErr != nil {
-		return selectionState{}, guardErr
-	}
-	defer closeExclusiveLock(guard)
-
 	defer os.Remove(draft)
 	data, err := os.ReadFile(draft)
 	if err != nil {
@@ -341,6 +342,17 @@ func (m *manager) applyEnabledDraft(
 			desired.Expression = draftValue
 		}
 	}
+	return m.applyEnabledValue(context.Background(), project, skill, desired, desiredExists)
+}
+
+func (m *manager) applyEnabledValue(
+	ctx context.Context, project string, skill discoveredSkill, desired enabledValue, desiredExists bool,
+) (selectionState, error) {
+	guard, guardErr := m.lockManagedMutation(ctx)
+	if guardErr != nil {
+		return selectionState{}, guardErr
+	}
+	defer closeExclusiveLock(guard)
 
 	var placeholderPlan []placeholderMutation
 	if placeholderManaged(skill) {
@@ -386,7 +398,7 @@ func (m *manager) applyEnabledDraft(
 	}
 	var before, after lock
 	selectionChanged := false
-	err = m.updateSelectionLock(project, func(value *lock) (bool, error) {
+	err := m.updateSelectionLock(project, func(value *lock) (bool, error) {
 		current, currentExists := value.enabled(skill.Name)
 		same := currentExists == desiredExists &&
 			(!currentExists || current.equal(desired))

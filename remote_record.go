@@ -86,9 +86,13 @@ func findRemoteRecord(
 }
 
 func (s *remoteSkillStore) records() ([]remoteSkillRecord, error) {
+	return s.recordsNamed("")
+}
+
+func (s *remoteSkillStore) recordsNamed(name string) ([]remoteSkillRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.recordsLocked()
+	return s.recordsNamedLocked(name)
 }
 
 func (s *remoteSkillStore) recordsForDiscoveryNamed(
