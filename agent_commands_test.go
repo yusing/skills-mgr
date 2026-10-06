@@ -231,7 +231,11 @@ func TestAgentEditOwnerScopeFromHomeAndProject(t *testing.T) {
 			if atHome {
 				scope = "shared"
 			}
-			if len(report.Candidates) == 0 || report.Candidates[0].Path != owner || report.Candidates[0].Scope != scope {
+			item := report.Resolved
+			if item == nil && len(report.Candidates) == 1 {
+				item = &report.Candidates[0]
+			}
+			if item == nil || item.Path != owner || item.Scope != scope {
 				t.Fatalf("scoped owner = %#v", report)
 			}
 		})
@@ -247,6 +251,11 @@ func agentTestInspection(t *testing.T, m *manager, project, name string) skillIn
 	var report skillInspection
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatal(err)
+	}
+	for _, candidate := range report.Candidates {
+		if report.Resolved != nil && candidate.Path == report.Resolved.Path {
+			t.Fatalf("resolved owner repeated in candidates: %s", out)
+		}
 	}
 	return report
 }
@@ -396,10 +405,18 @@ func TestAgentInspectSelectionLayers(t *testing.T) {
 			agentTestSaveLock(t, m.paths.globalLockDir, tc.global)
 			agentTestSaveLock(t, project, tc.project)
 			report := agentTestInspection(t, m, project, "alpha")
-			if len(report.Candidates) != 1 {
-				t.Fatalf("candidates = %#v", report.Candidates)
+			var item inspectedSkill
+			if tc.enabled {
+				if report.Resolved == nil || len(report.Candidates) != 0 {
+					t.Fatalf("enabled inspection = %#v", report)
+				}
+				item = *report.Resolved
+			} else {
+				if report.Resolved != nil || len(report.Candidates) != 1 {
+					t.Fatalf("disabled inspection = %#v", report)
+				}
+				item = report.Candidates[0]
 			}
-			item := report.Candidates[0]
 			if report.Name != "alpha" || report.Project != project || item.Path != path || !item.Editable || item.Source == "" || item.Enabled != tc.enabled || item.Selection.Layer != tc.layer || item.BodyHealth != "ok" || item.Error != "" || item.SHA256 != fmt.Sprintf("%x", sha256.Sum256([]byte(body))) || !slices.Equal(item.References, []string{"references/guide.md"}) {
 				t.Fatalf("inspection = %#v", report)
 			}
@@ -450,20 +467,20 @@ func TestAgentInspectFilesystemFirstAndNativeFallback(t *testing.T) {
 	claude, grok := agentTestNativeAlternatives(t, m, "alpha")
 	agentTestSaveLock(t, project, testLock(map[string]bool{"alpha": true}, nil, nil))
 	report := agentTestInspection(t, m, project, "alpha")
-	if len(report.Candidates) != 3 || report.Resolved == nil || report.Resolved.Path != owner || report.Fallback {
+	if len(report.Candidates) != 2 || report.Resolved == nil || report.Resolved.Path != owner || report.Fallback {
 		t.Fatalf("filesystem resolution = %#v", report)
 	}
-	if report.Candidates[1].Path != claude || report.Candidates[2].Path != grok || report.Candidates[1].Editable || report.Candidates[2].Editable {
+	if report.Candidates[0].Path != claude || report.Candidates[1].Path != grok || report.Candidates[0].Editable || report.Candidates[1].Editable {
 		t.Fatalf("native candidates = %#v", report.Candidates)
 	}
 	agentTestSaveLock(t, project, testLock(map[string]bool{"alpha": false}, nil, nil))
 	report = agentTestInspection(t, m, project, "alpha")
-	if report.Resolved == nil || report.Resolved.Path != claude || !report.Fallback {
+	if report.Resolved == nil || report.Resolved.Path != claude || !report.Fallback || len(report.Candidates) != 2 || report.Candidates[0].Path != owner || report.Candidates[1].Path != grok {
 		t.Fatalf("Claude fallback = %#v", report)
 	}
 	writeJSONFile(t, m.paths.claudeSettings, claudeSettingsFile{EnabledPlugins: map[string]bool{"sample@market": false}})
 	report = agentTestInspection(t, m, project, "alpha")
-	if report.Resolved == nil || report.Resolved.Path != grok || !report.Fallback {
+	if report.Resolved == nil || report.Resolved.Path != grok || !report.Fallback || len(report.Candidates) != 2 || report.Candidates[0].Path != owner || report.Candidates[1].Path != claude {
 		t.Fatalf("Grok fallback = %#v", report)
 	}
 }
@@ -765,7 +782,7 @@ func TestAgentEditRemotePatchAndStaleHealth(t *testing.T) {
 	}
 	assertFile(t, m.remoteStore.patchPath(ref), string(patchBefore))
 	report = agentTestInspection(t, m, project, "alpha")
-	if len(report.Candidates) != 1 || report.Candidates[0].BodyHealth == "ok" || report.Candidates[0].Error == "" {
+	if report.Resolved == nil || len(report.Candidates) != 0 || report.Resolved.BodyHealth == "ok" || report.Resolved.Error == "" {
 		t.Fatalf("stale health = %#v", report)
 	}
 	out, diagnostics, err := agentTestCommand(t, m, project, "", "check", "alpha")

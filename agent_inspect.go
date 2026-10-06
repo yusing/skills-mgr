@@ -149,11 +149,12 @@ func (m *manager) inspectContext(ctx context.Context, project, name string, out 
 		} else if refs != nil {
 			item.References = refs
 		}
-		report.Candidates = append(report.Candidates, item)
 		if report.Resolved == nil && accessErr == nil && item.Enabled && !skill.ContentMissing {
 			resolved := item
 			report.Resolved = &resolved
-			report.Fallback = isNativeSkill(skill) && len(report.Candidates) > 1
+			report.Fallback = isNativeSkill(skill) && len(report.Candidates) > 0
+		} else {
+			report.Candidates = append(report.Candidates, item)
 		}
 	}
 	if report.Resolved == nil {

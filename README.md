@@ -282,8 +282,10 @@ skills-mgr set writing-readme inherit
 
 `inspect` reports diagnostics only for the named skill. Its JSON has
 `name`, `project`, `resolved` (the accessible owner, or `null`), `candidates`,
-`fallback`, and any `warnings` or `error`. Candidates follow `get` precedence:
-the first filesystem owner, then Claude and Grok native alternatives. Each has
+`fallback`, and any `warnings` or `error`. The resolved owner appears only in
+`resolved`; `candidates` contains the other discovered owners, or all discovered
+owners when none resolves. Candidates retain `get` precedence: the first
+filesystem owner, then Claude and Grok native alternatives. Each owner has
 `source`, `scope` (`project`, `shared`, or `native`), `root`, `path`,
 `disable_model_invocation`, `editable`, `enabled`, the effective `selection`
 layer and Boolean or Bash value, `body_health`, and `references`; `plugin`,
