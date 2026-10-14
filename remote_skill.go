@@ -19,7 +19,7 @@ const (
 	remoteSkillOverrideSchemaRevision = 1
 	remoteSkillCacheTTL               = 3 * time.Hour
 	remoteSkillMaxFiles               = 1024
-	remoteSkillMaxBytes               = 16 << 20
+	remoteSkillMaxBytes               = 32 << 20
 	remoteSkillMetadataLimit          = 64 << 10
 	remoteContentGracePeriod          = 2 * remoteSkillCacheTTL
 	remoteSkillPatchDir               = ".remote-patches"
