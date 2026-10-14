@@ -117,6 +117,7 @@ type githubSkillLocation struct {
 func (r *skillsMPRegistry) fetchSkill(
 	ctx context.Context,
 	ref remoteSkillRef,
+	exclusion remoteSkillExclusion,
 ) ([]remoteSkillFile, error) {
 	if ref.Provider != skillsMPProvider || ref.Locator == "" {
 		return nil, fmt.Errorf("invalid SkillsMP skill reference")
@@ -165,7 +166,7 @@ func (r *skillsMPRegistry) fetchSkill(
 			return nil, err
 		}
 	}
-	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
+	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked, exclusion)
 }
 
 func cloneGitHubRepository(
@@ -242,6 +243,7 @@ func filesFromGitHubCheckout(
 	checkout string,
 	skillPath string,
 	tracked []string,
+	exclusion remoteSkillExclusion,
 ) ([]remoteSkillFile, error) {
 	if skillPath != "" &&
 		(skillPath != filepath.ToSlash(filepath.Clean(filepath.FromSlash(skillPath))) ||
@@ -266,7 +268,7 @@ func filesFromGitHubCheckout(
 			}
 		}
 		if relative == "" || manifestOnly && !isSafeAgentSkillFile(relative) ||
-			agentSkill && !isSafeAgentSkillFile(relative) {
+			agentSkill && !isSafeAgentSkillFile(relative) || exclusion.excludes(relative) {
 			continue
 		}
 		path := filepath.Join(root, filepath.FromSlash(relative))

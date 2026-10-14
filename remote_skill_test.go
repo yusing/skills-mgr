@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1433,7 +1434,7 @@ func TestRemoteModelInvocationOverrideLeavesContentAndPlaceholdersUntouched(t *t
 		t.Fatalf("remote override was not installation-wide: %#v", otherProjectSkill)
 	}
 	recordAfter := loadRemoteRecord(t, manager.remoteStore, ref)
-	if recordAfter != recordBefore {
+	if !reflect.DeepEqual(recordAfter, recordBefore) {
 		t.Fatalf("override changed remote record:\nbefore: %#v\nafter:  %#v", recordBefore, recordAfter)
 	}
 	contentAfter, err := os.ReadFile(skillPath)
@@ -3129,7 +3130,7 @@ func TestSkillsMPRejectsClaudeLinkOutsideAgentsInstructions(t *testing.T) {
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `targets "../../outside"; want "AGENTS.md"`) {
 		t.Fatalf("unsafe CLAUDE.md link error = %v", err)
 	}
@@ -3155,7 +3156,7 @@ func TestSkillsMPRepositoryRootFetchesBareManifestFromOversizedRepository(t *tes
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3206,7 +3207,7 @@ func TestSkillsMPRepositoryRootFetchesFutureAgentSkillResources(t *testing.T) {
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3235,7 +3236,7 @@ func TestSkillsMPRepositoryRootRejectsExcessiveAgentSkillCandidates(t *testing.T
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "more than 1024 skill manifests") {
 		t.Fatalf("excessive agent skill candidates error = %v", err)
 	}
@@ -3250,7 +3251,7 @@ func TestSkillsMPRepositoryRootRejectsMissingManifest(t *testing.T) {
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
 		t.Fatalf("missing root manifest error = %v", err)
 	}
@@ -3262,7 +3263,7 @@ func TestSkillsMPFetchSkillRejectsMalformedURL(t *testing.T) {
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://example.com/owner/repo",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "unsupported SkillsMP GitHub URL") {
 		t.Fatalf("malformed URL error = %v", err)
 	}
@@ -3282,7 +3283,7 @@ func TestSkillsMPRejectsOversizedSkill(t *testing.T) {
 		ID:       "alpha-id",
 		Name:     "alpha",
 		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized checkout error = %v", err)
 	}
@@ -3810,6 +3811,7 @@ type staticRemoteProvider struct {
 func (p *staticRemoteProvider) fetchSkill(
 	context.Context,
 	remoteSkillRef,
+	remoteSkillExclusion,
 ) ([]remoteSkillFile, error) {
 	return p.files, nil
 }

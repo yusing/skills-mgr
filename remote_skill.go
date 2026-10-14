@@ -81,6 +81,7 @@ type remoteSkillContentProvider interface {
 	fetchSkill(
 		ctx context.Context,
 		ref remoteSkillRef,
+		exclusion remoteSkillExclusion,
 	) ([]remoteSkillFile, error)
 }
 
@@ -92,6 +93,8 @@ type remoteSkillRecord struct {
 	Locator        string    `json:"locator"`
 	FetchedAt      time.Time `json:"fetchedAt"`
 	Content        string    `json:"content"`
+	// Exclude records the patterns this content was fetched with.
+	Exclude remoteSkillExclusion `json:"exclude,omitempty"`
 	// Kept outside the fetched record so refreshes cannot overwrite local policy.
 	disableModelInvocationOverride *bool
 }

@@ -4,12 +4,13 @@ pjdoc:
   kind: spec
   scope: root
   status: draft
-  revision: SPEC-6
+  revision: SPEC-7
   files:
     - persist-remote-selection-identity.md
     - synchronize-enabled-remote-skills.md
     - preserve-trust-boundaries.md
     - layer-local-edits.md
+    - exclude-remote-files.md
 ---
 # skills-mgr product specification
 

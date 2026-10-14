@@ -186,7 +186,7 @@ func TestSkillsShFetchSkillClonesPublicRepositoryAndIgnoresUnrelatedSkill(t *tes
 		ID:       "owner/repo/registry-slug",
 		Name:     "alpha",
 		Locator:  "owner/repo/registry-slug",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestSkillsShFetchSkillRejectsMalformedAndUnknownReferences(t *testing.T) {
 	registry := newRemoteRegistry("")
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := registry.fetchSkill(t.Context(), test.ref); err == nil {
+			if _, err := registry.fetchSkill(t.Context(), test.ref, nil); err == nil {
 				t.Fatal("fetchSkill accepted invalid reference")
 			}
 		})
@@ -303,6 +303,7 @@ func TestGitHubSkillPostCloneOperationsHonorCancellation(t *testing.T) {
 					t.TempDir(),
 					"",
 					[]string{"SKILL.md"},
+					nil,
 				)
 				return err
 			},
@@ -342,7 +343,7 @@ func TestSkillsShFetchSkillRejectsMissingDeclaredName(t *testing.T) {
 		ID:       "owner/repo/alpha",
 		Name:     "alpha",
 		Locator:  "owner/repo/alpha",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
 		t.Fatalf("fetchSkill error = %v", err)
 	}
@@ -362,7 +363,7 @@ func TestSkillsShFetchSkillRejectsMissingExplicitSourcePath(t *testing.T) {
 		ID:       "owner/repo/missing/alpha",
 		Name:     "alpha",
 		Locator:  "owner/repo/missing/alpha",
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), `does not contain skill "alpha"`) {
 		t.Fatalf("fetchSkill error = %v", err)
 	}
@@ -444,7 +445,7 @@ func TestSkillsShFetchSkillSearchesFromCatalogSourcePath(t *testing.T) {
 				ID:       test.id,
 				Name:     "alpha",
 				Locator:  test.id,
-			})
+			}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

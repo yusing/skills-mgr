@@ -18,9 +18,9 @@ type auditCountingProvider struct {
 	calls int
 }
 
-func (p *auditCountingProvider) fetchSkill(ctx context.Context, ref remoteSkillRef) ([]remoteSkillFile, error) {
+func (p *auditCountingProvider) fetchSkill(ctx context.Context, ref remoteSkillRef, exclusion remoteSkillExclusion) ([]remoteSkillFile, error) {
 	p.calls++
-	return p.staticRemoteProvider.fetchSkill(ctx, ref)
+	return p.staticRemoteProvider.fetchSkill(ctx, ref, exclusion)
 }
 
 func auditRemoteRef(name string) remoteSkillRef {
@@ -288,7 +288,7 @@ func TestAuditRemoteMissingContentDirectoryRecovery(t *testing.T) {
 
 type auditProviderFunc func(context.Context, remoteSkillRef) ([]remoteSkillFile, error)
 
-func (fetch auditProviderFunc) fetchSkill(ctx context.Context, ref remoteSkillRef) ([]remoteSkillFile, error) {
+func (fetch auditProviderFunc) fetchSkill(ctx context.Context, ref remoteSkillRef, _ remoteSkillExclusion) ([]remoteSkillFile, error) {
 	return fetch(ctx, ref)
 }
 

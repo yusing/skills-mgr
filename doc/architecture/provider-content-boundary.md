@@ -19,8 +19,8 @@ into validated remote file sets:
 
 Provider results are untrusted data. Before they reach the store, the manager
 must reject absolute or escaping paths, non-regular entries, duplicate paths,
-oversized responses, and any tree whose root `SKILL.md` does not parse to the
-recorded skill's name. Provider and store operations must not execute downloaded
-content.
+oversized responses after `CTR-REMOTE-006` exclusions, and any tree whose root
+`SKILL.md` does not parse to the recorded skill's name. Provider and store
+operations must not execute downloaded content.
 
 This contract supports `REQ-SYNC-002` and `REQ-SYNC-003`.

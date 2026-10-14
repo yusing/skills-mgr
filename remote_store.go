@@ -149,6 +149,7 @@ func (s *remoteSkillStore) remove(ctx context.Context, ref remoteSkillRef) error
 	for _, sidecar := range []struct{ path, name string }{
 		{path: s.overridePath(ref), name: "override"},
 		{path: s.patchPath(ref), name: "patch"},
+		{path: s.exclusionPath(ref), name: "exclusion"},
 	} {
 		if _, err := os.Lstat(sidecar.path); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -320,6 +321,7 @@ func (s *remoteSkillStore) refresh(
 
 type preparedRemoteContent struct {
 	content     string
+	exclusion   remoteSkillExclusion
 	completedAt time.Time
 }
 
@@ -332,6 +334,7 @@ func (p preparedRemoteContent) record(ref remoteSkillRef) remoteSkillRecord {
 		Locator:        ref.Locator,
 		FetchedAt:      p.completedAt,
 		Content:        p.content,
+		Exclude:        p.exclusion,
 	}
 }
 
@@ -346,7 +349,11 @@ func (s *remoteSkillStore) prepare(
 			ref.Provider,
 		)
 	}
-	files, err := provider.fetchSkill(ctx, ref)
+	exclusion, err := s.loadExclusion(ref)
+	if err != nil {
+		return preparedRemoteContent{}, err
+	}
+	files, err := provider.fetchSkill(ctx, ref, exclusion)
 	if err != nil {
 		return preparedRemoteContent{}, fmt.Errorf("fetch remote skill %q: %w", ref.Name, err)
 	}
@@ -359,6 +366,7 @@ func (s *remoteSkillStore) prepare(
 	}
 	return preparedRemoteContent{
 		content:     content,
+		exclusion:   exclusion,
 		completedAt: time.Now().UTC(),
 	}, nil
 }

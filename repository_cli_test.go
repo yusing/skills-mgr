@@ -95,7 +95,7 @@ func TestInstallRepositoryRejectsInvalidInputWithoutMutation(t *testing.T) {
 			gitLog := fakeGit(t, nil)
 			manager := newTestManager(t)
 			project := t.TempDir()
-			err := manager.installRepository(t.Context(), project, address, "", io.Discard, io.Discard)
+			err := manager.installRepository(t.Context(), project, address, "", nil, io.Discard, io.Discard)
 			if err == nil {
 				t.Fatal("invalid repository address accepted")
 			}
@@ -119,7 +119,7 @@ func TestInstallRepositoryEncodedBranch(t *testing.T) {
 	}})
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := manager.installRepository(t.Context(), project, "https://github.com/owner/repo.git/tree/feature%2Fskills/skills/alpha/", "", io.Discard, io.Discard); err != nil {
+	if err := manager.installRepository(t.Context(), project, "https://github.com/owner/repo.git/tree/feature%2Fskills/skills/alpha/", "", nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	record := assertRepositoryInstalled(t, manager, project, "alpha", "body")
@@ -156,7 +156,7 @@ func TestInstallRepositoryCancellationAndProgressFailure(t *testing.T) {
 				}
 				return len(data), nil
 			})
-			err := manager.installRepository(ctx, project, "owner/repo", "", io.Discard, progress)
+			err := manager.installRepository(ctx, project, "owner/repo", "", nil, io.Discard, progress)
 			if phase == "progress failure" {
 				if err != nil {
 					t.Fatalf("auxiliary progress error blocked installation: %v", err)

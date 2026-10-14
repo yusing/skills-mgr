@@ -260,5 +260,9 @@ func (s *remoteSkillStore) recordFresh(record remoteSkillRecord, now time.Time) 
 	} else if err != nil {
 		return false, err
 	}
-	return record.fresh(now), nil
+	exclusion, err := s.loadExclusion(record.ref())
+	if err != nil {
+		return false, err
+	}
+	return record.fresh(now) && slices.Equal(record.Exclude, exclusion), nil
 }

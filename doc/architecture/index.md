@@ -4,7 +4,7 @@ pjdoc:
   kind: architecture
   scope: root
   status: draft
-  revision: ARCH-6
+  revision: ARCH-7
   files:
     - remote-store-ownership.md
     - provider-content-boundary.md
@@ -12,5 +12,6 @@ pjdoc:
     - discovery-and-tui-integration.md
     - local-patch-layer.md
     - selection-identity-and-orchestration.md
+    - remote-file-exclusion.md
 ---
 # skills-mgr architecture

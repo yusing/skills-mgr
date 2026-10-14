@@ -35,7 +35,7 @@ func TestInstallRepositoryAcceptedAddresses(t *testing.T) {
 			})
 			manager := newTestManager(t)
 			project := t.TempDir()
-			if err := manager.installRepository(t.Context(), project, test.address, "", io.Discard, io.Discard); err != nil {
+			if err := manager.installRepository(t.Context(), project, test.address, "", nil, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			assertRepositoryInstalled(t, manager, project, "alpha", "body")
@@ -65,7 +65,7 @@ func TestInstallRepositoryRootWinsAndCopiesOnlySkillResources(t *testing.T) {
 	})
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := manager.installRepository(t.Context(), project, "owner/repo", "", io.Discard, io.Discard); err != nil {
+	if err := manager.installRepository(t.Context(), project, "owner/repo", "", nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	record := assertRepositoryInstalled(t, manager, project, "alpha", "root body")
@@ -106,7 +106,7 @@ func TestInstallRepositoryDiscoversAndSelectsFrontmatterName(t *testing.T) {
 			fakeGit(t, map[string]map[string]gitTestFile{"default": files})
 			manager := newTestManager(t)
 			project := t.TempDir()
-			if err := manager.installRepository(t.Context(), project, "owner/repo", name, io.Discard, io.Discard); err != nil {
+			if err := manager.installRepository(t.Context(), project, "owner/repo", name, nil, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			record := assertRepositoryInstalled(t, manager, project, "alpha", "selected body")
@@ -130,7 +130,7 @@ func TestInstallRepositoryAmbiguityDoesNotPersist(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
 	var output strings.Builder
-	err := manager.installRepository(t.Context(), project, "owner/repo", "", &output, io.Discard)
+	err := manager.installRepository(t.Context(), project, "owner/repo", "", nil, &output, io.Discard)
 	if err == nil {
 		t.Fatal("ambiguous repository installed without choosing a skill")
 	}
@@ -162,7 +162,7 @@ func TestInstallRepositoryRepeatKeepsProjectAndGlobalEnabled(t *testing.T) {
 			manager.global = global
 			project := t.TempDir()
 			for range 2 {
-				if err := manager.installRepository(t.Context(), project, "owner/repo", "", io.Discard, io.Discard); err != nil {
+				if err := manager.installRepository(t.Context(), project, "owner/repo", "", nil, io.Discard, io.Discard); err != nil {
 					t.Fatal(err)
 				}
 				assertRepositoryInstalled(t, manager, project, "alpha", "body")
@@ -190,7 +190,7 @@ func TestInstallRepositorySyncRefetchesPersistedSubdirectory(t *testing.T) {
 	}})
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := manager.installRepository(t.Context(), project, "https://github.com/owner/repo/tree/stable/skills/alpha", "", io.Discard, io.Discard); err != nil {
+	if err := manager.installRepository(t.Context(), project, "https://github.com/owner/repo/tree/stable/skills/alpha", "", nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	record := assertRepositoryInstalled(t, manager, project, "alpha", "body")
@@ -247,7 +247,7 @@ func TestInstallRepositoryRealGitAndFreshStoreSync(t *testing.T) {
 	}
 	manager := newTestManager(t)
 	project := t.TempDir()
-	if err := manager.installRepository(t.Context(), project, "https://github.com/fixture/skills/tree/stable/skills/alpha", "", io.Discard, io.Discard); err != nil {
+	if err := manager.installRepository(t.Context(), project, "https://github.com/fixture/skills/tree/stable/skills/alpha", "", nil, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	record := assertRepositoryInstalled(t, manager, project, "alpha", "real git body")
@@ -321,4 +321,95 @@ func assertRepositoryInstalled(t *testing.T, manager *manager, project, name, bo
 		t.Fatal("repository content provider unavailable for persisted selection")
 	}
 	return records[0]
+}
+
+func TestInstallRepositoryExcludePersistsAcrossRefresh(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"stable": {
+			"skills/alpha/SKILL.md":            {contents: skillFile("alpha", "Repository alpha.", "body"), mode: 0o644},
+			"skills/alpha/examples/spec.json":  {contents: "{}", mode: 0o644},
+			"skills/alpha/examples/big.html":   {contents: strings.Repeat("x", remoteSkillMaxBytes+1), mode: 0o644},
+			"skills/alpha/tests/fixture.txt":   {contents: "fixture", mode: 0o644},
+			"skills/alpha/tests/deep/case.txt": {contents: "case", mode: 0o644},
+		},
+	})
+	manager := newTestManager(t)
+	project := t.TempDir()
+	address := "https://github.com/owner/repo/tree/stable/skills/alpha"
+	exclude := []string{"tests", "examples/*.html", "tests"}
+	if err := manager.installRepository(t.Context(), project, address, "", exclude, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	record := assertRepositoryInstalled(t, manager, project, "alpha", "body")
+	assertExcludedContent := func(record remoteSkillRecord) {
+		t.Helper()
+		root, err := manager.remoteStore.contentRoot(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFile(t, filepath.Join(root, "examples", "spec.json"), "{}")
+		for _, path := range []string{"examples/big.html", "tests"} {
+			if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(path))); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("excluded %s was stored: %v", path, err)
+			}
+		}
+	}
+	assertExcludedContent(record)
+	assertFile(t, manager.remoteStore.exclusionPath(record.ref()), "examples/*.html\ntests\n")
+
+	ageRemoteRecord(t, manager.remoteStore, record.ref())
+	refreshed, err := manager.remoteStore.ensure(t.Context(), record.ref(), manager.remoteContentProvider(record.Provider))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gitCloneCount(t, gitLog) != 2 {
+		t.Fatalf("refresh did not refetch: %d clones", gitCloneCount(t, gitLog))
+	}
+	assertExcludedContent(refreshed)
+}
+
+func TestInstallRepositoryReplacesExcludePatterns(t *testing.T) {
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{
+		"stable": {
+			"skills/alpha/SKILL.md":           {contents: skillFile("alpha", "Repository alpha.", "body"), mode: 0o644},
+			"skills/alpha/examples/demo.html": {contents: "<html/>", mode: 0o644},
+		},
+	})
+	manager := newTestManager(t)
+	project := t.TempDir()
+	address := "https://github.com/owner/repo/tree/stable/skills/alpha"
+	if err := manager.installRepository(t.Context(), project, address, "", []string{"examples"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.installRepository(t.Context(), project, address, "", nil, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	record := assertRepositoryInstalled(t, manager, project, "alpha", "body")
+	root, err := manager.remoteStore.contentRoot(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "examples", "demo.html"), "<html/>")
+	if _, err := os.Lstat(manager.remoteStore.exclusionPath(record.ref())); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("install without --exclude kept the exclusion: %v", err)
+	}
+	if gitCloneCount(t, gitLog) != 2 {
+		t.Fatalf("clones = %d, want one per install", gitCloneCount(t, gitLog))
+	}
+}
+
+func TestInstallRepositoryRejectsMalformedExcludeBeforeFetching(t *testing.T) {
+	gitLog := fakeGit(t, nil)
+	manager := newTestManager(t)
+	project := t.TempDir()
+	err := manager.installRepository(t.Context(), project, "owner/repo", "", []string{"["}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), `invalid exclude pattern "["`) {
+		t.Fatalf("install error = %v", err)
+	}
+	if gitCloneCount(t, gitLog) != 0 {
+		t.Fatal("malformed exclude pattern fetched the repository")
+	}
+	if _, err := os.Lstat(filepath.Join(project, ".skills-mgr.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("malformed exclude pattern changed selection: %v", err)
+	}
 }

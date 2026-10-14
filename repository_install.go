@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -25,7 +26,7 @@ type repositoryContentProvider struct {
 	files []remoteSkillFile
 }
 
-func (p repositoryContentProvider) fetchSkill(ctx context.Context, ref remoteSkillRef) ([]remoteSkillFile, error) {
+func (p repositoryContentProvider) fetchSkill(ctx context.Context, ref remoteSkillRef, exclusion remoteSkillExclusion) ([]remoteSkillFile, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -35,7 +36,7 @@ func (p repositoryContentProvider) fetchSkill(ctx context.Context, ref remoteSki
 	if p.files != nil {
 		return p.files, nil
 	}
-	resolved, files, err := loadRepositorySkill(ctx, ref.Locator, ref.Name, io.Discard)
+	resolved, files, err := loadRepositorySkill(ctx, ref.Locator, ref.Name, exclusion, io.Discard)
 	if err != nil {
 		return nil, err
 	}
@@ -45,14 +46,22 @@ func (p repositoryContentProvider) fetchSkill(ctx context.Context, ref remoteSki
 	return files, nil
 }
 
-func (m *manager) installRepository(ctx context.Context, project, address, name string, output, progress io.Writer) error {
-	ref, files, err := loadRepositorySkill(ctx, address, name, progress)
+func (m *manager) installRepository(ctx context.Context, project, address, name string, exclude []string, output, progress io.Writer) error {
+	exclusion, err := newRemoteSkillExclusion(exclude)
+	if err != nil {
+		return err
+	}
+	ref, files, err := loadRepositorySkill(ctx, address, name, exclusion, progress)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(progress, "Installing and enabling %s...\n", ref.Name)
-	if _, err := m.selectRemote(ctx, project, ref, repositoryContentProvider{files: files}, false); err != nil {
+	restoreExclusion, err := m.remoteStore.replaceExclusion(ctx, ref, exclusion)
+	if err != nil {
 		return err
+	}
+	if _, err := m.selectRemote(ctx, project, ref, repositoryContentProvider{files: files}, false); err != nil {
+		return errors.Join(err, restoreExclusion())
 	}
 	layer := "project"
 	if m.global {
@@ -132,7 +141,7 @@ func parseRepositoryLocation(address string) (repositoryLocation, error) {
 	return location, nil
 }
 
-func loadRepositorySkill(ctx context.Context, address, name string, progress io.Writer) (remoteSkillRef, []remoteSkillFile, error) {
+func loadRepositorySkill(ctx context.Context, address, name string, exclusion remoteSkillExclusion, progress io.Writer) (remoteSkillRef, []remoteSkillFile, error) {
 	if err := ctx.Err(); err != nil {
 		return remoteSkillRef{}, nil, err
 	}
@@ -228,6 +237,6 @@ func loadRepositorySkill(ctx context.Context, address, name string, progress io.
 	if err := ref.validate(); err != nil {
 		return remoteSkillRef{}, nil, err
 	}
-	files, err := filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
+	files, err := filesFromGitHubCheckout(ctx, checkout, skillPath, tracked, exclusion)
 	return ref, files, err
 }

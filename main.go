@@ -92,8 +92,9 @@ func run(args []string) error {
   skills-mgr sync
     Fetch globally listed remote skills and this project's enabled ones.
 
-  skills-mgr install [-g] <repo-address> [skill-name]
+  skills-mgr install [-g] [--exclude <pattern>]... <repo-address> [skill-name]
     Install a repository skill and enable it for this project, or globally with -g.
+    --exclude leaves out matching files and directories on this and later fetches.
 
   skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
     Print an enabled skill or file, optionally limited to a line range.
@@ -161,13 +162,23 @@ func run(args []string) error {
 		defer stop()
 		return manager.sync(ctx, project, os.Stdout)
 	case args[0] == "install":
+		const usage = "usage: skills-mgr install [-g] [--exclude <pattern>]... <repo-address> [skill-name]"
 		rest := args[1:]
-		if len(rest) > 0 && rest[0] == "-g" {
-			manager.global = true
-			rest = rest[1:]
+		var exclude []string
+		for len(rest) > 0 && strings.HasPrefix(rest[0], "-") {
+			switch {
+			case rest[0] == "-g":
+				manager.global = true
+				rest = rest[1:]
+			case rest[0] == "--exclude" && len(rest) > 1:
+				exclude = append(exclude, rest[1])
+				rest = rest[2:]
+			default:
+				return errors.New(usage)
+			}
 		}
-		if len(rest) < 1 || len(rest) > 2 || strings.HasPrefix(rest[0], "-") {
-			return fmt.Errorf("usage: skills-mgr install [-g] <repo-address> [skill-name]")
+		if len(rest) < 1 || len(rest) > 2 {
+			return errors.New(usage)
 		}
 		project, err := currentProject()
 		if err != nil {
@@ -182,7 +193,7 @@ func run(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return manager.installRepository(ctx, project, rest[0], name, os.Stdout, os.Stderr)
+		return manager.installRepository(ctx, project, rest[0], name, exclude, os.Stdout, os.Stderr)
 	case args[0] == "get":
 		_, rest, err := parseHarnessArgs(args[1:])
 		if err != nil {

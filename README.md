@@ -126,6 +126,7 @@ display-only.
 skills-mgr install https://github.com/owner/repo
 skills-mgr install https://github.com/owner/repo/tree/main/skills/my-skill
 skills-mgr install -g owner/repo my-skill
+skills-mgr install --exclude 'examples/*.html' tt-a1i/archify archify
 ```
 
 The address is an HTTPS Git repository on any host, a GitHub `/tree/<ref>/<path>`
@@ -136,6 +137,14 @@ the candidates.
 
 The skill is stored with other remote skills and enabled for this project, or
 globally with `-g`.
+
+`--exclude <pattern>`, repeatable, leaves out files the skill does not need,
+such as rendered examples that push it over the size limit. A pattern uses
+Go `path.Match` syntax relative to the skill directory and also excludes
+everything below a matching directory, so `--exclude examples` drops the whole
+folder. The patterns are kept with the remote skill's local patch and apply to
+every later refresh and `sync`. Each `install` replaces them; installing
+without `--exclude` removes them.
 
 ### Global and Project Layers
 
@@ -474,10 +483,11 @@ its entry says, and is missing from Claude Code entirely.
 
 Installed remote skills live in the user cache, under
 `skills-mgr/remote-skills`, because `sync` can refetch them. Content is never
-executed at install time. A skill over 1024 files or 32 MiB is rejected. Set
-`SKILLSMP_API_KEY` to authenticate SkillsMP requests.
+executed at install time. A skill over 1024 files or 32 MiB, after
+`--exclude` patterns are applied, is rejected. Set `SKILLSMP_API_KEY` to
+authenticate SkillsMP requests.
 
-Local edits to a remote skill are stored in
+Local edits and `--exclude` patterns for a remote skill are stored in
 `$HOME/.skills-mgr/skills/.remote-patches/`, outside the cache, so they can be
 tracked with the manager home. They survive refreshes and are removed on
 uninstall.

@@ -124,6 +124,7 @@ func (r *remoteRegistry) search(
 func (r *remoteRegistry) fetchSkill(
 	ctx context.Context,
 	ref remoteSkillRef,
+	exclusion remoteSkillExclusion,
 ) ([]remoteSkillFile, error) {
 	if ref.Provider != skillsShProvider || ref.Locator != ref.ID {
 		return nil, fmt.Errorf("invalid skills.sh skill reference")
@@ -166,7 +167,7 @@ func (r *remoteRegistry) fetchSkill(
 	if err != nil {
 		return nil, err
 	}
-	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked)
+	return filesFromGitHubCheckout(ctx, checkout, skillPath, tracked, exclusion)
 }
 
 func validGitHubRepositoryPart(value string) bool {
