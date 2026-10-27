@@ -251,7 +251,7 @@ func (m *manager) checkContext(ctx context.Context, project string, targets []st
 		if result, exists := resolved[name]; exists {
 			return result
 		}
-		skill, err := m.findAccessibleSkill(ctx, project, name)
+		skill, _, err := m.resolveAccessibleSkill(ctx, project, name)
 		result := resolution{skill, err}
 		resolved[name] = result
 		return result

@@ -293,6 +293,28 @@ func TestAgentInspectMissingRemoteCache(t *testing.T) {
 	if report.Resolved == nil || report.Resolved.Path != claude || !report.Fallback {
 		t.Fatalf("missing-cache fallback = %#v", report)
 	}
+	writeExecutable(t, filepath.Join(filepath.Dir(claude), "script.sh"), "#!/bin/sh\nprintf script")
+	stderr, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStderr := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = originalStderr; _ = stderr.Close() })
+	var body bytes.Buffer
+	if err := m.getContext(t.Context(), project, "alpha", "", &body); err != nil || body.String() != "Claude instructions.\n" {
+		t.Fatalf("get = %q, error = %v", body.String(), err)
+	}
+	if _, err := m.scriptCommandContext(t.Context(), project, "alpha/script.sh", nil); err != nil {
+		t.Fatal(err)
+	}
+	diagnostic, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(diagnostic), claude) != 2 || strings.Count(string(diagnostic), "alpha") < 2 {
+		t.Fatalf("get/run fallback diagnostics = %q", diagnostic)
+	}
 }
 
 func TestAgentEditRollbackPreservesSourceAndSelection(t *testing.T) {

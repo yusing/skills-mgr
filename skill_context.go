@@ -46,11 +46,18 @@ func (m *manager) getContext(
 	if err != nil {
 		return err
 	}
-	discovered, err := m.findAccessibleSkill(ctx, project, skill)
+	discovered, err := m.acquireSkill(ctx, project, skill)
 	if err != nil {
 		return err
 	}
-	return m.writeSkillFile(discovered, target, relative, lineRange, output)
+	return acquisitionError(skill, m.writeSkillFile(discovered, target, relative, lineRange, output))
+}
+
+func acquisitionError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w; use skills-mgr inspect %s to diagnose", err, name)
 }
 
 // writeSkillFile is the served-file path shared by acquisition and maintenance.
@@ -103,7 +110,7 @@ func (m *manager) writeSkillFile(discovered discoveredSkill, target, relative, l
 	if strings.EqualFold(filepath.Ext(relative), ".md") {
 		frontmatter, body, status, err := readFrontmatter(input)
 		if err != nil {
-			return fmt.Errorf("read %s frontmatter: %w", target, err)
+			return errors.Join(fmt.Errorf("read %s frontmatter: %w", target, err), patchErr)
 		}
 		switch status {
 		case frontmatterValid:
@@ -114,11 +121,11 @@ func (m *manager) writeSkillFile(discovered discoveredSkill, target, relative, l
 					Description string `yaml:"description"`
 				}
 				if err := yaml.Unmarshal([]byte(frontmatter), &metadata); err != nil {
-					return fmt.Errorf("decode %s frontmatter: %w", target, err)
+					return errors.Join(fmt.Errorf("decode %s frontmatter: %w", target, err), patchErr)
 				}
 				rendered, err := yaml.Marshal(metadata)
 				if err != nil {
-					return fmt.Errorf("render %s frontmatter: %w", target, err)
+					return errors.Join(fmt.Errorf("render %s frontmatter: %w", target, err), patchErr)
 				}
 				if _, err := fmt.Fprintf(output, "---\n%s---\n", rendered); err != nil {
 					return errors.Join(err, patchErr)
@@ -126,11 +133,11 @@ func (m *manager) writeSkillFile(discovered discoveredSkill, target, relative, l
 			}
 		case frontmatterAbsent:
 			if isSkillMarkdown {
-				return fmt.Errorf("%s has invalid frontmatter", target)
+				return errors.Join(fmt.Errorf("%s has invalid frontmatter", target), patchErr)
 			}
 			input = body
 		case frontmatterMalformed:
-			return fmt.Errorf("%s has invalid frontmatter", target)
+			return errors.Join(fmt.Errorf("%s has invalid frontmatter", target), patchErr)
 		}
 	}
 	if lineRange == "" {
@@ -163,10 +170,10 @@ func (m *manager) scriptCommandContext(
 	defer root.Close()
 	info, err := root.Stat(filepath.FromSlash(relative))
 	if err != nil {
-		return nil, fmt.Errorf("stat %s: %w", target, err)
+		return nil, acquisitionError(skill, fmt.Errorf("stat %s: %w", target, err))
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", target)
+		return nil, acquisitionError(skill, fmt.Errorf("%s is not a regular file", target))
 	}
 
 	script := filepath.Join(root.Name(), filepath.FromSlash(relative))
@@ -220,25 +227,48 @@ func (m *manager) openSkillContext(
 	ctx context.Context,
 	project, skill string,
 ) (*os.Root, discoveredSkill, error) {
-	discovered, err := m.findAccessibleSkill(ctx, project, skill)
+	discovered, err := m.acquireSkill(ctx, project, skill)
 	if err != nil {
 		return nil, discoveredSkill{}, err
 	}
 	root, err := os.OpenRoot(discovered.Root)
 	if err != nil {
-		return nil, discoveredSkill{}, fmt.Errorf("open skill %q: %w", skill, err)
+		return nil, discoveredSkill{}, acquisitionError(skill, fmt.Errorf("open skill %q: %w", skill, err))
 	}
 	return root, discovered, nil
 }
 
-// findAccessibleSkill returns the first enabled skill of this name, searching
+func (m *manager) acquireSkill(ctx context.Context, project, name string) (discoveredSkill, error) {
+	discovered, fallback, err := m.resolveAccessibleSkill(ctx, project, name)
+	if err != nil {
+		return discoveredSkill{}, acquisitionError(name, err)
+	}
+	if !fallback && isNativeSkill(discovered) && m.remoteStore != nil {
+		// Missing cache identities are omitted by discovery, but inspection still
+		// presents them as bypassed owners. Diagnostics must not block acquisition.
+		if records, err := m.remoteStore.recordsNamed(name); err == nil {
+			for _, record := range records {
+				if _, err := m.remoteStore.contentRoot(record); errors.Is(err, errRemoteSkillContentMissing) {
+					fallback = true
+					break
+				}
+			}
+		}
+	}
+	if fallback {
+		fmt.Fprintf(os.Stderr, "skills-mgr: using %s skill %q at %s after an inaccessible owner\n", discovered.Source, name, discovered.Path)
+	}
+	return discovered, nil
+}
+
+// resolveAccessibleSkill returns the first enabled skill of this name, searching
 // filesystem discovery, then Claude plugins, then Grok native skills. A catalog
 // that fails to load is skipped when another catalog can serve the name; its
 // error is returned only when the name is absent from every catalog that loaded.
-func (m *manager) findAccessibleSkill(
+func (m *manager) resolveAccessibleSkill(
 	ctx context.Context,
 	project, name string,
-) (discoveredSkill, error) {
+) (discoveredSkill, bool, error) {
 	inaccessible := false
 	try := func(skills []discoveredSkill) (discoveredSkill, bool, error) {
 		for _, discovered := range skills {
@@ -259,10 +289,10 @@ func (m *manager) findAccessibleSkill(
 
 	skills, err := m.discoverSkillsNamed(project, "", name)
 	if err != nil {
-		return discoveredSkill{}, err
+		return discoveredSkill{}, false, err
 	}
 	if discovered, ok, err := try(skills); err != nil || ok {
-		return discovered, err
+		return discovered, false, err
 	}
 
 	var catalogErr error
@@ -270,7 +300,7 @@ func (m *manager) findAccessibleSkill(
 	if err != nil {
 		catalogErr = err
 	} else if discovered, ok, err := try(claude); err != nil || ok {
-		return discovered, err
+		return discovered, ok && inaccessible, err
 	}
 
 	grok, err := m.grokNativeSkills(project)
@@ -279,16 +309,16 @@ func (m *manager) findAccessibleSkill(
 			catalogErr = err
 		}
 	} else if discovered, ok, err := try(grok); err != nil || ok {
-		return discovered, err
+		return discovered, ok && inaccessible, err
 	}
 
 	if inaccessible {
-		return discoveredSkill{}, fmt.Errorf("skill %q is not enabled", name)
+		return discoveredSkill{}, false, fmt.Errorf("skill %q is not enabled", name)
 	}
 	if catalogErr != nil {
-		return discoveredSkill{}, catalogErr
+		return discoveredSkill{}, false, catalogErr
 	}
-	return discoveredSkill{}, fmt.Errorf("skill %q was not discovered", name)
+	return discoveredSkill{}, false, fmt.Errorf("skill %q was not discovered", name)
 }
 
 func (m *manager) skillAccessible(

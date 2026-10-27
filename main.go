@@ -12,9 +12,13 @@ import (
 	"syscall"
 )
 
+type scriptExitError struct{ *exec.ExitError }
+
+func (e *scriptExitError) Unwrap() error { return e.ExitError }
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
+		if exitError, ok := errors.AsType[*scriptExitError](err); ok {
 			code := exitError.ExitCode()
 			if code < 0 {
 				code = 1
@@ -27,6 +31,21 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) > 0 && (args[0] == "help" || args[0] == "--help") {
+		if len(args) > 2 || (args[0] == "--help" && len(args) != 1) {
+			return fmt.Errorf("usage: skills-mgr help [command]")
+		}
+		if len(args) == 2 {
+			if args[1] == "--help" {
+				return printHelp("help")
+			}
+			return printHelp(args[1])
+		}
+		return printHelp("")
+	}
+	if len(args) == 2 && args[1] == "--help" {
+		return printHelp(args[0])
+	}
 	if len(args) == 2 && args[0] == "completion" && args[1] == "fish" {
 		_, err := fmt.Fprint(os.Stdout, fishCompletion)
 		return err
@@ -66,7 +85,7 @@ func run(args []string) error {
 	if err := paths.relocateGlobalLock(); err != nil {
 		return err
 	}
-	if len(args) == 0 || args[0] != refreshRunnerCommand {
+	if os.Getenv("SKILLS_MGR_NO_REFRESH") != "1" && (len(args) == 0 || args[0] != refreshRunnerCommand) {
 		maybeStartRefreshRunner(manager)
 	}
 
@@ -80,55 +99,6 @@ func run(args []string) error {
 			return err
 		}
 		return runTUI(manager, project)
-	case args[0] == "help" || args[0] == "--help":
-		if len(args) != 1 {
-			return fmt.Errorf("usage: skills-mgr help")
-		}
-		_, err = fmt.Fprint(os.Stdout, `Usage:
-  skills-mgr [-g]
-    Open the project skill selection interface, or global with -g.
-
-  skills-mgr help | --help
-    Show commands and their usage.
-
-  skills-mgr completion fish
-    Print fish shell completions.
-
-  skills-mgr info
-    Show metadata and skill paths; mark missing paths.
-
-  skills-mgr adopt
-    Move shared user skills into the managed skill store.
-
-  skills-mgr list [--claude] [--grok] [--codex]
-    Print enabled skill metadata as XML.
-
-  skills-mgr sync
-    Fetch globally listed remote skills and this project's enabled ones.
-
-  skills-mgr install [-g] [--exclude <pattern>]... <repo-address> [skill-name]
-    Install a repository skill and enable it for this project, or globally with -g.
-    --exclude leaves out matching files and directories on this and later fetches.
-
-  skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
-    Print an enabled skill or file, optionally limited to a line range.
-
-  skills-mgr inspect <skill>
-    Print JSON owner, selection, fallback, patch, and body-health diagnostics.
-
-  skills-mgr check <target> [target...]
-    Validate served bodies and a skill's listed references without running scripts.
-
-  skills-mgr set [-g] <skill> <true|false|condition|inherit>
-    Set a selection value, or remove its override with inherit.
-
-  skills-mgr edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]
-    Replace a complete SKILL.md, preserving remote ownership with a local patch.
-
-  skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
-    Run a script from an enabled skill, forwarding arguments.
-`)
-		return err
 	case args[0] == "completion":
 		return fmt.Errorf("usage: skills-mgr completion fish")
 	case args[0] == "inspect" || args[0] == "check" || args[0] == "set" || args[0] == "edit":
@@ -250,7 +220,13 @@ func run(args []string) error {
 		command.Stdin = os.Stdin
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr
-		return command.Run()
+		if err := command.Run(); err != nil {
+			if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
+				return &scriptExitError{exitError}
+			}
+			return err
+		}
+		return nil
 	case args[0] == refreshRunnerCommand:
 		if len(args) != 1 {
 			return fmt.Errorf("usage: skills-mgr %s", refreshRunnerCommand)
@@ -259,6 +235,46 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+var commandHelp = []struct {
+	name, usage, description string
+}{
+	{"help", "help [command] | --help", "Show all commands or help for one command.\n    Each command also accepts --help on its own."},
+	{"completion", "completion fish", "Print fish shell completions."},
+	{"info", "info", "Show metadata and skill paths; mark missing paths."},
+	{"adopt", "adopt", "Move shared user skills into the managed skill store."},
+	{"list", "list [--claude] [--grok] [--codex]", "Print enabled skill metadata as XML."},
+	{"sync", "sync", "Fetch globally listed remote skills and this project's enabled ones."},
+	{"install", "install [-g] [--exclude <pattern>]... <repo-address> [skill-name]", "Install a repository skill and enable it for this project, or globally with -g.\n    --exclude leaves out matching files and directories on this and later fetches."},
+	{"get", "get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]", "Print an enabled skill or file, optionally limited to an inclusive 1-based line range.\n    Lines refer to the served body after frontmatter removal and any remote patch.\n    Examples: skills-mgr get example 1:120\n              skills-mgr get example 121:240"},
+	{"inspect", "inspect <skill>", "Print JSON owner, selection, fallback, patch, and body-health diagnostics."},
+	{"check", "check <target> [target...]", "Validate served bodies and a skill's listed references without running scripts."},
+	{"set", "set [-g] <skill> <true|false|condition|inherit>", "Set a selection value, or remove its override with inherit."},
+	{"edit", "edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]", "Replace a complete SKILL.md, preserving remote ownership with a local patch."},
+	{"run", "run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]", "Run a script from an enabled skill, forwarding arguments."},
+}
+
+func printHelp(target string) error {
+	var output strings.Builder
+	output.WriteString("Usage:\n")
+	if target == "" {
+		output.WriteString("  skills-mgr [-g]\n    Open the project skill selection interface, or global with -g.\n")
+	}
+	for _, command := range commandHelp {
+		if target == "" || target == command.name {
+			fmt.Fprintf(&output, "\n  skills-mgr %s\n    %s\n", command.usage, command.description)
+			if target != "" {
+				_, err := fmt.Fprint(os.Stdout, output.String())
+				return err
+			}
+		}
+	}
+	if target != "" {
+		return fmt.Errorf("unknown help target %q", target)
+	}
+	_, err := fmt.Fprint(os.Stdout, output.String())
+	return err
 }
 
 func parseHarnessArgs(args []string) ([]listHarness, []string, error) {

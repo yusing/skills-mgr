@@ -467,8 +467,10 @@ func TestRemoteSkillPatchFailureCLI(t *testing.T) {
 	if stdout.String() != "upstream\n" {
 		t.Fatalf("get stdout = %q", stdout.String())
 	}
-	if stderr.String() != "skills-mgr: remote skill patch no longer applies\n" {
-		t.Fatalf("get stderr = %q", stderr.String())
+	for _, want := range []string{"alpha", manager.remoteStore.patchPath(ref), "remote skill patch no longer applies", "skills-mgr inspect alpha"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("get stderr = %q, missing %q", stderr.String(), want)
+		}
 	}
 }
 

@@ -120,22 +120,25 @@ func (s *remoteSkillStore) applyPatch(
 		return nil, err
 	}
 	path := s.patchPath(ref)
+	patchError := func(err error) error {
+		return fmt.Errorf("remote skill %q patch %q: %w", ref.Name, path, err)
+	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return original, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("inspect remote skill patch: %w", err)
+		return nil, patchError(fmt.Errorf("inspect patch: %w", err))
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: patch is not a regular file", errRemoteSkillPatch)
+		return nil, patchError(fmt.Errorf("%w: patch is not a regular file", errRemoteSkillPatch))
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read remote skill patch: %w", err)
+		return nil, patchError(fmt.Errorf("read patch: %w", err))
 	}
 	if len(data) == 0 {
-		return nil, fmt.Errorf("%w: patch is empty", errRemoteSkillPatch)
+		return nil, patchError(fmt.Errorf("%w: patch is empty", errRemoteSkillPatch))
 	}
 
 	baseHeader, remainder, hasResult := strings.Cut(string(data), "\n")
@@ -147,19 +150,19 @@ func (s *remoteSkillStore) applyPatch(
 	)
 	if !hasResult || !hasPatch || !hasBaseHeader || !hasResultHeader || patchText == "" ||
 		baseDigest == resultDigest {
-		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
+		return nil, patchError(fmt.Errorf("%w: malformed patch", errRemoteSkillPatch))
 	}
 	baseSum := sha256.Sum256(original)
 	if baseDigest != hex.EncodeToString(baseSum[:]) {
-		return nil, errRemoteSkillPatch
+		return nil, patchError(fmt.Errorf("%w: base content mismatch", errRemoteSkillPatch))
 	}
 	patched, err := applyRemoteSkillPatch(original, patchText)
 	if err != nil {
-		return nil, fmt.Errorf("%w: malformed patch", errRemoteSkillPatch)
+		return nil, patchError(fmt.Errorf("%w: malformed patch: %v", errRemoteSkillPatch, err))
 	}
 	resultSum := sha256.Sum256(patched)
 	if resultDigest != hex.EncodeToString(resultSum[:]) {
-		return nil, errRemoteSkillPatch
+		return nil, patchError(fmt.Errorf("%w: result integrity mismatch", errRemoteSkillPatch))
 	}
 	return patched, nil
 }

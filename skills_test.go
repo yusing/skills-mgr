@@ -1726,12 +1726,87 @@ func TestGetUsesEnabledNativeSkillWhenFilesystemSkillIsDisabled(t *testing.T) {
   }]
 }`, inspectPath))
 
+	stderr, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStderr := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = originalStderr; _ = stderr.Close() })
 	var output bytes.Buffer
 	if err := manager.getContext(t.Context(), project, "review", "", &output); err != nil {
 		t.Fatal(err)
 	}
 	if output.String() != "bundled body\n" {
 		t.Fatalf("output = %q, want enabled bundled skill", output.String())
+	}
+	diagnostic, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"review", "grok", filepath.Join(bundledRoot, "SKILL.md")} {
+		if !strings.Contains(string(diagnostic), want) {
+			t.Errorf("fallback diagnostic = %q, missing %q", diagnostic, want)
+		}
+	}
+}
+
+func TestAcquisitionFailureSuggestsInspection(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	var output bytes.Buffer
+	err := manager.getContext(t.Context(), project, "missing", "", &output)
+	if err == nil || !strings.Contains(err.Error(), "skills-mgr inspect missing") {
+		t.Fatalf("get error = %v, want inspection hint", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("failed get output = %q", output.String())
+	}
+}
+
+func TestCLIReportsDiscoveryFailureAndForwardsScriptExit(t *testing.T) {
+	if testCase := os.Getenv("SKILLS_MGR_TEST_CLI_EXIT"); testCase != "" {
+		if testCase == "discovery" {
+			os.Args = []string{"skills-mgr", "get", "missing"}
+		} else {
+			os.Args = []string{"skills-mgr", "run", "alpha/fail.sh"}
+		}
+		main()
+		return
+	}
+	home, project, bin := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", filepath.Join(home, ".codex"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("PATH", bin)
+	t.Setenv("SKILLS_MGR_NO_REFRESH", "1")
+	writeExecutable(t, filepath.Join(bin, "grok"), "#!/bin/sh\nexit 23\n")
+	root := filepath.Join(home, ".agents", "skills", "alpha")
+	writeFile(t, filepath.Join(root, "SKILL.md"), skillFile("alpha", "Alpha.", "body\n"))
+	writeExecutable(t, filepath.Join(root, "fail.sh"), "#!/bin/sh\nexit 23\n")
+	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for _, testCase := range []struct {
+		name string
+		code int
+		want string
+	}{{"discovery", 1, "skills-mgr inspect missing"}, {"script", 23, ""}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=^TestCLIReportsDiscoveryFailureAndForwardsScriptExit$")
+			command.Dir = project
+			command.Env = append(os.Environ(), "SKILLS_MGR_TEST_CLI_EXIT="+testCase.name)
+			var stderr bytes.Buffer
+			command.Stderr = &stderr
+			err := command.Run()
+			exitError, ok := errors.AsType[*exec.ExitError](err)
+			if !ok || exitError.ExitCode() != testCase.code || !strings.Contains(stderr.String(), testCase.want) {
+				t.Fatalf("exit = %v, stderr = %q", err, stderr.String())
+			}
+			if testCase.want == "" && stderr.Len() != 0 {
+				t.Fatalf("unexpected script stderr = %q", stderr.String())
+			}
+		})
 	}
 }
 
@@ -2445,53 +2520,20 @@ func TestHelpCommand(t *testing.T) {
 			if helpErr != nil {
 				t.Fatal(helpErr)
 			}
-			assertFile(t, stdout.Name(), `Usage:
-  skills-mgr [-g]
-    Open the project skill selection interface, or global with -g.
+			contents, err := os.ReadFile(stdout.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"Usage:", "skills-mgr help [command]", "skills-mgr get", "skills-mgr run"} {
+				if !strings.Contains(string(contents), want) {
+					t.Errorf("help output missing %q", want)
+				}
+			}
 
-  skills-mgr help | --help
-    Show commands and their usage.
-
-  skills-mgr completion fish
-    Print fish shell completions.
-
-  skills-mgr info
-    Show metadata and skill paths; mark missing paths.
-
-  skills-mgr adopt
-    Move shared user skills into the managed skill store.
-
-  skills-mgr list [--claude] [--grok] [--codex]
-    Print enabled skill metadata as XML.
-
-  skills-mgr sync
-    Fetch globally listed remote skills and this project's enabled ones.
-
-  skills-mgr install [-g] [--exclude <pattern>]... <repo-address> [skill-name]
-    Install a repository skill and enable it for this project, or globally with -g.
-    --exclude leaves out matching files and directories on this and later fetches.
-
-  skills-mgr get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]
-    Print an enabled skill or file, optionally limited to a line range.
-
-  skills-mgr inspect <skill>
-    Print JSON owner, selection, fallback, patch, and body-health diagnostics.
-
-  skills-mgr check <target> [target...]
-    Validate served bodies and a skill's listed references without running scripts.
-
-  skills-mgr set [-g] <skill> <true|false|condition|inherit>
-    Set a selection value, or remove its override with inherit.
-
-  skills-mgr edit [-g] <skill> --file <path|-> [--expect-sha256 <digest>]
-    Replace a complete SKILL.md, preserving remote ownership with a local patch.
-
-  skills-mgr run [--claude] [--grok] [--codex] <skill-name>/<relative/script> [args...]
-    Run a script from an enabled skill, forwarding arguments.
-`)
-
-			if err := run([]string{command, "get"}); err == nil || err.Error() != "usage: skills-mgr help" {
-				t.Fatalf("help with operand error = %v, want usage error", err)
+			if command == "--help" {
+				if err := run([]string{command, "get"}); err == nil {
+					t.Fatal("--help with operand succeeded")
+				}
 			}
 
 			closedStdout, err := os.Create(filepath.Join(t.TempDir(), "closed-stdout"))
@@ -2508,6 +2550,38 @@ func TestHelpCommand(t *testing.T) {
 				t.Fatal("help succeeded when stdout was closed")
 			}
 		})
+	}
+}
+
+func TestCommandHelpWithoutManagerState(t *testing.T) {
+	t.Setenv("HOME", "")
+	for _, args := range [][]string{{"help", "get"}, {"get", "--help"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := os.Stdout
+			os.Stdout = stdout
+			err = run(args)
+			os.Stdout = old
+			_ = stdout.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents, err := os.ReadFile(stdout.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"skills-mgr get", "1:120", "121:240"} {
+				if !strings.Contains(string(contents), want) {
+					t.Errorf("help = %q, missing %q", contents, want)
+				}
+			}
+		})
+	}
+	if err := run([]string{"help", "missing"}); err == nil {
+		t.Fatal("unknown help target succeeded")
 	}
 }
 
@@ -2665,6 +2739,10 @@ func TestRunCommandInvokesSkillScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(root, "result"), "argument with spaces")
+	if err := run([]string{"run", "alpha/scripts/record.sh", "--help"}); err != nil {
+		t.Fatal(err)
+	}
+	assertFile(t, filepath.Join(root, "result"), "--help")
 
 	writeExecutable(t, filepath.Join(root, "scripts", "fail.sh"), "#!/bin/sh\nexit 23")
 	err := run([]string{"run", "alpha/scripts/fail.sh"})

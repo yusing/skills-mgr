@@ -413,6 +413,7 @@ func TestMaybeStartRefreshRunnerStartsAfterSuccessInterval(t *testing.T) {
 
 func TestRunStartsRefreshRunner(t *testing.T) {
 	restoreRefreshHooks(t)
+	t.Setenv("SKILLS_MGR_NO_REFRESH", "")
 	var started atomic.Int32
 	startBackgroundRefresh = func(*manager, *os.File) error {
 		started.Add(1)
@@ -421,21 +422,26 @@ func TestRunStartsRefreshRunner(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
-	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	originalStdout := os.Stdout
-	os.Stdout = stdout
-	t.Cleanup(func() {
-		os.Stdout = originalStdout
-		_ = stdout.Close()
-	})
-	if err := run([]string{"help"}); err != nil {
-		t.Fatal(err)
-	}
+	_ = run([]string{"unknown"})
 	if started.Load() != 1 {
 		t.Fatalf("started = %d, want 1", started.Load())
+	}
+}
+
+func TestRunSuppressesBackgroundRefresh(t *testing.T) {
+	restoreRefreshHooks(t)
+	var started atomic.Int32
+	startBackgroundRefresh = func(*manager, *os.File) error {
+		started.Add(1)
+		return nil
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, "cache"))
+	t.Setenv("SKILLS_MGR_NO_REFRESH", "1")
+	_ = run([]string{"unknown"})
+	if started.Load() != 0 {
+		t.Fatalf("started = %d, want 0", started.Load())
 	}
 }
 
