@@ -217,6 +217,11 @@ Register every event that starts a fresh context:
 Pass `--claude`, `--grok`, or `--codex` only when the environment is cleared or
 sets more than one marker; without exactly one harness, `list` omits nothing.
 
+If an agent cannot find the command or gets an unexpected version, check
+`command -v skills-mgr` and `skills-mgr help` in the shell used by its hook and
+in the shell used for tool commands. Different PATH settings can select
+different installations; configure both environments to use the intended one.
+
 ### The Instruction
 
 Put this in `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md`, and
@@ -271,7 +276,7 @@ Every command uses the current working directory as the project.
 | Command | Result |
 | --- | --- |
 | `skills-mgr [-g]` | Open the project interface, or the global one |
-| `skills-mgr help` | Print usage |
+| `skills-mgr help [command]` or `skills-mgr <command> --help` | Print usage |
 | `skills-mgr completion fish` | Print the fish completion script |
 | `skills-mgr info` | Show the paths `skills-mgr` uses, marking absent ones `[MISSING]` |
 | `skills-mgr adopt` | Move all skills from `$HOME/.agents/skills` into the manager home |
@@ -289,6 +294,11 @@ Every command uses the current working directory as the project.
 `disable-model-invocation` skill keeps its `name` and `description`. If a provider update breaks a
 remote skill's local edit, `get` prints the unedited body, reports the error,
 and exits nonzero.
+
+Use ranges to limit large reads, for example `skills-mgr get example 1:120`
+followed by `skills-mgr get example 121:240`. Line numbers refer to the served
+body after frontmatter is removed and any remote patch is applied. A range
+limits lines, not bytes or tokens.
 
 `run` executes the script from the skill directory. Non-executable `.py` files
 run under `python3`, and JavaScript or TypeScript files under `node` or `bun`.
@@ -322,11 +332,20 @@ appear as diagnostics with `content_missing: true` and `body_health: "error"`,
 not accessible owners. The report recommends `skills-mgr sync`; a same-name
 native fallback can still resolve.
 
+When acquisition fails, use `skills-mgr inspect <skill>` to diagnose the
+selection and available owners. If an inaccessible owner is bypassed in favor
+of a native skill, acquisition identifies the chosen owner on stderr.
+
 `check` rejects unreadable, empty, or frontmatter-only served bodies and remote
 patch failures. A bare skill target also checks its listed Markdown references.
 Supply required skill dependencies and scripts as explicit targets; scripts are
 read, not executed. It prints `PASS` lines to stdout and `FAIL` lines to stderr,
 and exits nonzero if any check fails.
+
+When maintaining a skill, check each required dependency and script this way,
+then run representative script invocations separately when they are safe to
+execute. Readability alone does not verify an interpreter, arguments, or runtime
+dependencies.
 
 `set` accepts `true`, `false`, a quoted condition, or `inherit` to remove the
 override. It uses the project layer by default and the global layer with `-g`
@@ -507,6 +526,11 @@ Local edits and `--exclude` patterns for a remote skill are stored in
 tracked with the manager home. They survive refreshes and are removed on
 uninstall.
 
+If a patch no longer applies, the error identifies its path. Move that patch
+aside to preserve the old edit, then use `skills-mgr edit` to recreate the edit
+against the current provider content. Refresh and `sync` retain the patch and
+do not resolve a stale edit.
+
 ### Placeholders
 
 Enabling a skill from either store writes a stub `SKILL.md` under
@@ -534,11 +558,15 @@ shows a `[content missing]` row you can uninstall.
 
 ## Background Refresh
 
-Any command except `info` may start a detached background runner, at most once
+Any command except `info` and help may start a detached background runner, at most once
 every five minutes. It refreshes skills.sh metadata, updates
 installed remote skills older than three hours, and repairs manager-home
 placeholders. It never downloads new skills. Failures go to `refresh.log` in
 the user cache `skills-mgr` directory.
+
+Set `SKILLS_MGR_NO_REFRESH=1` on an invocation to suppress this background
+runner. This does not disable selection expressions, which run as Bash, or
+other foreground effects such as migration of a legacy global selection.
 
 ## Development
 

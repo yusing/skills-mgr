@@ -21,7 +21,9 @@ The `get` owner applies the sidecar only to a remote skill's `SKILL.md` before
 frontmatter filtering and body-line range selection. Patch parsing or application
 is all-or-nothing: failure discards any partial result, writes the original
 provider content through the normal output path, and returns an error for the
-CLI to report on stderr with nonzero status. Discovery and the inventory layer
+CLI to report on stderr with nonzero status. The diagnostic identifies the
+skill and patch path so the retained edit can be inspected and recovered.
+Discovery and the inventory layer
 valid patched descriptions over provider metadata, falling back to the provider
 description when the patch is stale, malformed, or has invalid frontmatter.
 Remote identity and model-invocation policy retain their existing provider and
