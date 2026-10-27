@@ -51,6 +51,18 @@ skills-mgr get codebase-design/DEEPENING.md 1:40
 Reference inventories group files in the same directory with shell-style braces;
 expand a group to obtain the individual paths to pass to `get`.
 
+For fish completions, install the generated script and start a new shell:
+
+```fish
+mkdir -p ~/.config/fish/completions
+skills-mgr completion fish > ~/.config/fish/completions/skills-mgr.fish
+```
+
+Completion suggests commands, options, and discovered skill names. For commands
+that require enabled skills, completing names evaluates selection conditions.
+Type reference and script paths after the skill name; those paths are not
+completed.
+
 To feed this to every session automatically, see
 [Agent Integration](#agent-integration).
 
@@ -260,6 +272,7 @@ Every command uses the current working directory as the project.
 | --- | --- |
 | `skills-mgr [-g]` | Open the project interface, or the global one |
 | `skills-mgr help` | Print usage |
+| `skills-mgr completion fish` | Print the fish completion script |
 | `skills-mgr info` | Show the paths `skills-mgr` uses, marking absent ones `[MISSING]` |
 | `skills-mgr adopt` | Move all skills from `$HOME/.agents/skills` into the manager home |
 | `skills-mgr install [-g] <address> [skill]` | Install a repository skill and enable it |

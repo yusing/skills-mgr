@@ -2452,6 +2452,9 @@ func TestHelpCommand(t *testing.T) {
   skills-mgr help | --help
     Show commands and their usage.
 
+  skills-mgr completion fish
+    Print fish shell completions.
+
   skills-mgr info
     Show metadata and skill paths; mark missing paths.
 

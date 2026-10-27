@@ -27,6 +27,10 @@ func main() {
 }
 
 func run(args []string) error {
+	if len(args) == 2 && args[0] == "completion" && args[1] == "fish" {
+		_, err := fmt.Fprint(os.Stdout, fishCompletion)
+		return err
+	}
 	paths, err := defaultPaths()
 	if err != nil {
 		return err
@@ -41,9 +45,6 @@ func run(args []string) error {
 		}
 		return printInfo(os.Stdout, paths, project)
 	}
-	if err := paths.relocateGlobalLock(); err != nil {
-		return err
-	}
 	global := len(args) == 1 && args[0] == "-g"
 	remote := newRemoteRegistry(paths.remoteRegistry)
 	skillsMP := newSkillsMPRegistry(paths.skillsMP, os.Getenv("SKILLSMP_API_KEY"))
@@ -54,6 +55,16 @@ func run(args []string) error {
 			filepath.Join(paths.managedSkills, remoteSkillPatchDir),
 		),
 		global: global,
+	}
+	if len(args) == 2 && args[0] == "__complete-skills" && (args[1] == "all" || args[1] == "enabled") {
+		project, err := currentProject()
+		if err != nil {
+			return err
+		}
+		return manager.completeSkills(context.Background(), project, args[1] == "enabled", os.Stdout)
+	}
+	if err := paths.relocateGlobalLock(); err != nil {
+		return err
 	}
 	if len(args) == 0 || args[0] != refreshRunnerCommand {
 		maybeStartRefreshRunner(manager)
@@ -79,6 +90,9 @@ func run(args []string) error {
 
   skills-mgr help | --help
     Show commands and their usage.
+
+  skills-mgr completion fish
+    Print fish shell completions.
 
   skills-mgr info
     Show metadata and skill paths; mark missing paths.
@@ -115,6 +129,8 @@ func run(args []string) error {
     Run a script from an enabled skill, forwarding arguments.
 `)
 		return err
+	case args[0] == "completion":
+		return fmt.Errorf("usage: skills-mgr completion fish")
 	case args[0] == "inspect" || args[0] == "check" || args[0] == "set" || args[0] == "edit":
 		project, err := currentProject()
 		if err != nil {
