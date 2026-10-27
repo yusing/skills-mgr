@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -354,6 +356,29 @@ func TestGrokInspectRejectsInvalidJSON(t *testing.T) {
 	_, err := manager.grokNativeSkills(t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "decode grok inspect --json") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestGrokInspectWaitsForChildOutputWithoutCancellation(t *testing.T) {
+	manager := newTestManager(t)
+	manager.paths.grokCommand = filepath.Join(t.TempDir(), "grok")
+	writeExecutable(t, manager.paths.grokCommand, "#!/bin/sh\n(sleep 0.5; printf '{\"skills\":[]}') &\nexit 0\n")
+	if _, err := manager.grokNativeSkillsContext(t.Context(), t.TempDir()); err != nil {
+		t.Fatalf("discovery with delayed child output: %v", err)
+	}
+}
+
+func TestGrokInspectPreservesBoundedFailureStderr(t *testing.T) {
+	manager := newTestManager(t)
+	manager.paths.grokCommand = filepath.Join(t.TempDir(), "grok")
+	message := strings.Repeat("a", 33000) + strings.Repeat("b", 33000)
+	writeExecutable(t, manager.paths.grokCommand, "#!/bin/sh\nprintf '%s' '"+message+"' >&2\nexit 7\n")
+	_, err := manager.grokNativeSkillsContext(t.Context(), t.TempDir())
+	exitErr, ok := errors.AsType[*exec.ExitError](err)
+	if !ok || exitErr.ExitCode() != 7 || !strings.HasPrefix(string(exitErr.Stderr), strings.Repeat("a", 32768)) ||
+		!strings.HasSuffix(string(exitErr.Stderr), strings.Repeat("b", 32768)) ||
+		!strings.Contains(string(exitErr.Stderr), "omitting 464 bytes") {
+		t.Fatalf("unexpected exit diagnostics: %v", err)
 	}
 }
 

@@ -75,9 +75,12 @@ func (m *manager) inspectContext(ctx context.Context, project, name string, out 
 		}
 	}
 	var catalogErr error
-	for _, load := range []func() ([]discoveredSkill, error){m.claudePluginSkills, func() ([]discoveredSkill, error) { return m.grokNativeSkills(project) }} {
+	for _, load := range []func() ([]discoveredSkill, error){m.claudePluginSkills, func() ([]discoveredSkill, error) { return m.grokNativeSkillsContext(ctx, project) }} {
 		catalog, err := load()
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			report.Warnings = append(report.Warnings, err.Error())
 			if catalogErr == nil {
 				catalogErr = err

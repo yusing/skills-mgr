@@ -303,8 +303,11 @@ func (m *manager) resolveAccessibleSkill(
 		return discovered, ok && inaccessible, err
 	}
 
-	grok, err := m.grokNativeSkills(project)
+	grok, err := m.grokNativeSkillsContext(ctx, project)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return discoveredSkill{}, false, ctxErr
+		}
 		if catalogErr == nil {
 			catalogErr = err
 		}

@@ -1764,6 +1764,51 @@ func TestAcquisitionFailureSuggestsInspection(t *testing.T) {
 	}
 }
 
+func TestAcquisitionCancelsGrokDiscovery(t *testing.T) {
+	for _, operation := range []string{"get", "run", "inspect"} {
+		t.Run(operation, func(t *testing.T) {
+			manager := newTestManager(t)
+			project := t.TempDir()
+			writeFile(t, manager.paths.claudeSettings, "{invalid")
+			started := filepath.Join(t.TempDir(), "started")
+			manager.paths.grokCommand = filepath.Join(t.TempDir(), "grok")
+			writeExecutable(t, manager.paths.grokCommand, "#!/bin/sh\nsleep 2 &\nprintf started > '"+started+"'\nwait\n")
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				if operation == "get" {
+					done <- manager.getContext(ctx, project, "missing", "", io.Discard)
+				} else if operation == "run" {
+					_, err := manager.scriptCommandContext(ctx, project, "missing/script.sh", nil)
+					done <- err
+				} else {
+					done <- manager.inspectContext(ctx, project, "missing", io.Discard)
+				}
+			}()
+			deadline := time.Now().Add(3 * time.Second)
+			for {
+				if _, err := os.Stat(started); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("Grok discovery did not start")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("acquisition error = %v, want context cancellation", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("acquisition did not stop after cancellation")
+			}
+		})
+	}
+}
+
 func TestCLIReportsDiscoveryFailureAndForwardsScriptExit(t *testing.T) {
 	if testCase := os.Getenv("SKILLS_MGR_TEST_CLI_EXIT"); testCase != "" {
 		if testCase == "discovery" {

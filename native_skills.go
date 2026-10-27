@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,13 +128,23 @@ func (m *manager) claudePluginSkills() ([]discoveredSkill, error) {
 }
 
 func (m *manager) grokNativeSkills(project string) ([]discoveredSkill, error) {
+	return m.grokNativeSkillsContext(context.Background(), project)
+}
+
+func (m *manager) grokNativeSkillsContext(ctx context.Context, project string) ([]discoveredSkill, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if m.paths.grokCommand == "" {
 		return nil, nil
 	}
-	command := exec.Command(m.paths.grokCommand, "inspect", "--json")
+	command := exec.CommandContext(ctx, m.paths.grokCommand, "inspect", "--json")
 	command.Dir = project
-	output, err := command.Output()
+	output, err := grokCommandOutput(ctx, command)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("run grok inspect --json: %w", ctxErr)
+		}
 		if startErr, ok := errors.AsType[*exec.Error](err); ok && errors.Is(startErr.Err, exec.ErrNotFound) {
 			return nil, nil
 		}
@@ -178,6 +189,94 @@ func (m *manager) grokNativeSkills(project string) ([]discoveredSkill, error) {
 		})
 	}
 	return skills, nil
+}
+
+// grokCommandOutput waits for inherited output pipes on success, but closes them
+// on cancellation so descendants cannot hold discovery open indefinitely.
+func grokCommandOutput(ctx context.Context, command *exec.Cmd) ([]byte, error) {
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdout.Close()
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stderr.Close()
+	if err := command.Start(); err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(ctx, func() {
+		stdout.Close()
+		stderr.Close()
+	})
+	defer stop()
+
+	var diagnostic grokStderr
+	stderrDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(&diagnostic, stderr)
+		stderrDone <- err
+	}()
+	output, readErr := io.ReadAll(stdout)
+	stderrErr := <-stderrDone
+	err = command.Wait()
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		exitErr.Stderr = diagnostic.bytes()
+	}
+	if err != nil {
+		return output, err
+	}
+	if readErr != nil {
+		return output, readErr
+	}
+	return output, stderrErr
+}
+
+// Match Cmd.Output's bounded diagnostic capture: retain a prefix and suffix.
+type grokStderr struct {
+	prefix, suffix []byte
+	offset         int
+	skipped        int64
+}
+
+func (s *grokStderr) Write(p []byte) (int, error) {
+	const limit = 32 << 10
+	n := len(p)
+	if len(s.prefix) < limit {
+		take := min(limit-len(s.prefix), len(p))
+		s.prefix = append(s.prefix, p[:take]...)
+		p = p[take:]
+	}
+	if len(p) > limit {
+		s.skipped += int64(len(p) - limit)
+		p = p[len(p)-limit:]
+	}
+	if len(s.suffix) < limit {
+		take := min(limit-len(s.suffix), len(p))
+		s.suffix = append(s.suffix, p[:take]...)
+		p = p[take:]
+	}
+	for len(p) > 0 {
+		take := copy(s.suffix[s.offset:], p)
+		p = p[take:]
+		s.skipped += int64(take)
+		s.offset = (s.offset + take) % limit
+	}
+	return n, nil
+}
+
+func (s *grokStderr) bytes() []byte {
+	if s.skipped == 0 {
+		return append(s.prefix, s.suffix...)
+	}
+	var output bytes.Buffer
+	output.Write(s.prefix)
+	fmt.Fprintf(&output, "\n... omitting %d bytes ...\n", s.skipped)
+	output.Write(s.suffix[s.offset:])
+	output.Write(s.suffix[:s.offset])
+	return output.Bytes()
 }
 
 func loadGrokDisabled(path string) ([]string, error) {
