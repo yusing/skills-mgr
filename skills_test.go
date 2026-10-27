@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -589,7 +590,9 @@ description: >
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "ignore.md.txt"), "ignored")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "escape&me.md"), "escaped")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "overview.md"), "overview")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "space, 'name'.md"), "special")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "details.md"), "details")
+	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "nested", "other.md"), "other")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", ".secret.md"), "secret")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_draft.md"), "draft")
 	writeFile(t, filepath.Join(manager.paths.userSkills, "alpha", "references", "_internal", "notes.md"), "internal")
@@ -613,17 +616,28 @@ description: >
 	}
 	want := `<skills>
   <skill name="alpha" description="Alpha&#39;s description does &lt;one&gt; &amp; one thing. It also does &#34;another&#34;.">
-    <references>NOTES.md
-references/
-  escape&amp;me.md
-  nested/details.md
-  overview.md</references>
+    <references>NOTES.md references/{'escape&amp;me',overview,'space, '\''name'\'''}.md references/nested/{details,other}.md</references>
   </skill>
   <skill name="gamma" description="No references."></skill>
 </skills>
 `
 	if output.String() != want {
 		t.Fatalf("list output:\n%s\nwant:\n%s", output.String(), want)
+	}
+	var document struct {
+		Skills []struct {
+			References string `xml:"references"`
+		} `xml:"skill"`
+	}
+	if err := xml.Unmarshal(output.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	expanded, err := exec.Command("bash", "-c", "printf '%s\\n' "+document.Skills[0].References).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "NOTES.md\nreferences/escape&me.md\nreferences/overview.md\nreferences/space, 'name'.md\nreferences/nested/details.md\nreferences/nested/other.md\n"; string(expanded) != want {
+		t.Fatalf("expanded references = %q, want %q", expanded, want)
 	}
 	for _, unexpected := range []string{
 		"beta",

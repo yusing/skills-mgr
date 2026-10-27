@@ -36,8 +36,7 @@ skills-mgr list
 ```xml
 <skills>
   <skill name="codebase-design" description="Shared vocabulary for designing deep modules.">
-    <references>DEEPENING.md
-DESIGN-IT-TWICE.md</references>
+    <references>{DEEPENING,DESIGN-IT-TWICE}.md</references>
   </skill>
 </skills>
 ```
@@ -48,6 +47,9 @@ Read a skill, or part of one of its references:
 skills-mgr get codebase-design
 skills-mgr get codebase-design/DEEPENING.md 1:40
 ```
+
+Reference inventories group files in the same directory with shell-style braces;
+expand a group to obtain the individual paths to pass to `get`.
 
 To feed this to every session automatically, see
 [Agent Integration](#agent-integration).

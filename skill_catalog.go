@@ -12,6 +12,7 @@ import (
 
 	"os"
 
+	"path"
 	"path/filepath"
 
 	"strings"
@@ -273,31 +274,40 @@ func referenceFiles(skillRoot string) ([]string, error) {
 }
 
 func formatReferenceList(files []string) (string, error) {
-	lines := make([]string, 0, len(files)+1)
-	var nested []string
+	var directories []string
+	groups := make(map[string][]string)
 	for _, file := range files {
-		if relative, ok := strings.CutPrefix(file, "references/"); ok {
-			nested = append(nested, "  "+relative)
-			continue
+		dir := path.Dir(file)
+		if _, ok := groups[dir]; !ok {
+			directories = append(directories, dir)
 		}
-		lines = append(lines, file)
+		groups[dir] = append(groups[dir], strings.TrimSuffix(path.Base(file), ".md"))
 	}
-	if len(nested) > 0 {
-		lines = append(lines, "references/")
-		lines = append(lines, nested...)
-	}
-	var output strings.Builder
-	for index, line := range lines {
-		if index > 0 {
-			output.WriteByte('\n')
+	quote := func(s string) string {
+		for _, c := range s {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("_./-", c)) {
+				return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+			}
 		}
-		escaped, err := escapeXMLText(line)
-		if err != nil {
-			return "", err
-		}
-		output.WriteString(escaped)
+		return s
 	}
-	return output.String(), nil
+	var parts []string
+	for _, dir := range directories {
+		var prefix string
+		if dir != "." {
+			prefix = quote(dir) + "/"
+		}
+		names := groups[dir]
+		for i := range names {
+			names[i] = quote(names[i])
+		}
+		if len(names) == 1 {
+			parts = append(parts, prefix+names[0]+".md")
+		} else {
+			parts = append(parts, prefix+"{"+strings.Join(names, ",")+"}.md")
+		}
+	}
+	return escapeXMLText(strings.Join(parts, " "))
 }
 
 func escapeXMLText(value string) (string, error) {
