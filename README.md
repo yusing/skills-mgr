@@ -252,7 +252,7 @@ harness looks on its own stay outside it:
 | Harness | Skills it loads itself |
 | --- | --- |
 | Codex | Codex-owned locations and plugins |
-| Claude Code | `.claude/skills` and `~/.claude/skills` |
+| Claude Code | `.claude/skills`, `~/.claude/skills`, and enabled plugins, unless its Skill tool is denied (below) |
 | Grok | `.grok/skills`, `~/.grok/skills`, the shared `.agents/skills` roots, and the `.claude/skills` roots |
 
 Grok's Claude compatibility can be turned off with
@@ -268,6 +268,30 @@ with its `## Using skills` section deleted, and set:
 [skills]
 include_instructions = false
 ```
+
+Claude Code hands its catalog over when its Skill tool is denied, in
+`~/.claude/settings.json` or a project's `.claude/settings.json` or
+`.claude/settings.local.json`:
+
+```json
+{
+  "permissions": {
+    "deny": ["Skill"]
+  }
+}
+```
+
+The rule removes the tool from the model and its subagents. While it is set,
+`list` for Claude also advertises the selected skills in the project's
+`.claude/skills` and the skills of plugins enabled in Claude's `enabledPlugins`,
+and `get` serves them. Skills you placed in `~/.claude/skills` yourself stay
+outside the selection and out of the model's reach; move them into the
+[manager home](#the-manager-home). Claude's built-in skills ship inside Claude
+Code, so the model loses them too; `skills-mgr` has no file to serve.
+
+Grok's bundled and plugin skills stay in Grok's own catalog, which `list` does
+not take over. Turn off the ones you do not want from the Grok tab, which edits
+`skills.disabled` (see [The Interactive Interface](#the-interactive-interface)).
 
 ## Command Reference
 

@@ -25,6 +25,9 @@ const (
 
 type claudeSettingsFile struct {
 	EnabledPlugins map[string]bool `json:"enabledPlugins"`
+	Permissions    struct {
+		Deny []string `json:"deny"`
+	} `json:"permissions"`
 }
 
 type claudeInstalledPluginsFile struct {
@@ -72,6 +75,33 @@ func (m *manager) nativeSkills(project string) ([]discoveredSkill, error) {
 		return nil, err
 	}
 	return append(claude, grok...), nil
+}
+
+// claudeSkillToolDenied reports whether a user or project settings file denies
+// Claude's Skill tool outright. Claude then offers no skill to the model, so list
+// serves the Claude-owned skills it would otherwise leave to Claude.
+func (m *manager) claudeSkillToolDenied(project string) (bool, error) {
+	for _, path := range []string{
+		m.paths.claudeSettings,
+		filepath.Join(project, ".claude", "settings.json"),
+		filepath.Join(project, ".claude", "settings.local.json"),
+	} {
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return false, fmt.Errorf("read Claude settings: %w", err)
+		}
+		var settings claudeSettingsFile
+		if err := json.Unmarshal(data, &settings); err != nil {
+			return false, fmt.Errorf("decode Claude settings %s: %w", path, err)
+		}
+		if slices.Contains(settings.Permissions.Deny, "Skill") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *manager) claudePluginSkills() ([]discoveredSkill, error) {

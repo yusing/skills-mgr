@@ -14,6 +14,7 @@ import (
 
 	"path"
 	"path/filepath"
+	"slices"
 
 	"strings"
 )
@@ -124,24 +125,26 @@ func (m *manager) listContext(
 			return err
 		}
 	}
-	harnessVisible, err := m.harnessVisibleSkillNames(project, harnesses)
+	servesClaude := false
+	if slices.Contains(harnesses, listHarnessClaude) {
+		if servesClaude, err = m.claudeSkillToolDenied(project); err != nil {
+			return err
+		}
+	}
+	visibleHarnesses := harnesses
+	if servesClaude {
+		visibleHarnesses = slices.DeleteFunc(slices.Clone(harnesses), func(harness listHarness) bool {
+			return harness == listHarnessClaude
+		})
+	}
+	harnessVisible, err := m.harnessVisibleSkillNames(project, visibleHarnesses)
 	if err != nil {
 		return err
 	}
 
 	document := skillListXML{}
-	for _, skill := range skills {
-		if skill.DisableModelInvocation ||
-			harnessVisible[skill.Name] {
-			continue
-		}
-		enabled, err := selection.enabled(ctx, evaluator, skill.Name)
-		if err != nil {
-			return err
-		}
-		if !enabled {
-			continue
-		}
+	listedNames := make(map[string]bool)
+	add := func(skill discoveredSkill) error {
 		references, err := referenceFiles(skill.Root)
 		if err != nil {
 			return fmt.Errorf("%s: %w", skill.Name, err)
@@ -158,6 +161,40 @@ func (m *manager) listContext(
 			listed.References = &listedTextXML{Content: content}
 		}
 		document.Skills = append(document.Skills, listed)
+		listedNames[skill.Name] = true
+		return nil
+	}
+	for _, skill := range skills {
+		if skill.DisableModelInvocation ||
+			harnessVisible[skill.Name] {
+			continue
+		}
+		enabled, err := selection.enabled(ctx, evaluator, skill.Name)
+		if err != nil {
+			return err
+		}
+		if !enabled {
+			continue
+		}
+		if err := add(skill); err != nil {
+			return err
+		}
+	}
+	if servesClaude {
+		// Claude's enabled plugins decide these, as they do for get.
+		plugins, err := m.claudePluginSkills()
+		if err != nil {
+			return err
+		}
+		for _, skill := range plugins {
+			if !skill.ExternalEnabled || skill.DisableModelInvocation ||
+				listedNames[skill.Name] || !skillAllowedForAgent(skill, harnesses) {
+				continue
+			}
+			if err := add(skill); err != nil {
+				return err
+			}
+		}
 	}
 
 	encoder := xml.NewEncoder(output)

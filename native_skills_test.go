@@ -273,6 +273,49 @@ func TestNativeSkillsStayOutOfList(t *testing.T) {
 	}
 }
 
+func TestListServesClaudeSkillsWhenClaudeDeniesItsSkillTool(t *testing.T) {
+	manager := newTestManager(t)
+	project := t.TempDir()
+	pluginRoot := filepath.Join(manager.paths.claudePlugins, "cache", "market", "sample", "1")
+	writeSkill(t, filepath.Join(pluginRoot, "skills", "plugin-on"), "plugin-on")
+	offRoot := filepath.Join(manager.paths.claudePlugins, "cache", "market", "off", "1")
+	writeSkill(t, filepath.Join(offRoot, "skills", "plugin-off"), "plugin-off")
+	writeJSONFile(t, manager.paths.claudeSettings, claudeSettingsFile{
+		EnabledPlugins: map[string]bool{"sample@market": true, "off@market": false},
+	})
+	writeJSONFile(t, filepath.Join(manager.paths.claudePlugins, "installed_plugins.json"), claudeInstalledPluginsFile{
+		Plugins: map[string][]struct {
+			InstallPath string `json:"installPath"`
+		}{"sample@market": {{InstallPath: pluginRoot}}, "off@market": {{InstallPath: offRoot}}},
+	})
+	writeSkill(t, filepath.Join(project, ".claude", "skills", "project-claude"), "project-claude")
+	if err := saveLock(project, testLock(map[string]bool{"project-claude": true}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project, ".claude", "settings.local.json"), `{"permissions":{"deny":["Skill"]}}`)
+
+	var output bytes.Buffer
+	if err := manager.listContext(t.Context(), project, &output, listHarnessClaude); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"project-claude", "plugin-on"} {
+		if !strings.Contains(output.String(), `name="`+name+`"`) {
+			t.Fatalf("Claude list omitted %s while Claude denies Skill:\n%s", name, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "plugin-off") {
+		t.Fatalf("Claude list served a plugin Claude disabled:\n%s", output.String())
+	}
+
+	output.Reset()
+	if err := manager.listContext(t.Context(), project, &output, listHarnessGrok); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "project-claude") || strings.Contains(output.String(), "plugin-on") {
+		t.Fatalf("Claude's Skill deny changed the Grok list:\n%s", output.String())
+	}
+}
+
 func TestClaudeAndGrokNestedSourceTabsAndControls(t *testing.T) {
 	manager := newTestManager(t)
 	project := t.TempDir()
