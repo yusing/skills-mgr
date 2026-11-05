@@ -152,10 +152,10 @@ func (r *skillsMPRegistry) fetchSkill(
 			if trackedPath == skillManifestName || len(parts) == 4 && len(parts[0]) > 1 &&
 				strings.HasPrefix(parts[0], ".") && parts[1] == "skills" &&
 				parts[2] == ref.Name && parts[3] == skillManifestName {
-				if len(candidates) >= remoteSkillMaxFiles {
+				if len(candidates) >= remoteSkillMaxManifests {
 					return nil, fmt.Errorf(
 						"GitHub repository contains more than %d skill manifests",
-						remoteSkillMaxFiles,
+						remoteSkillMaxManifests,
 					)
 				}
 				candidates = append(candidates, trackedPath)
@@ -392,10 +392,10 @@ func findGitHubSkillPath(
 		}
 		if filepath.Base(filepath.FromSlash(trackedPath)) == skillManifestName {
 			manifests = append(manifests, trackedPath)
-			if len(manifests) > remoteSkillMaxFiles {
+			if len(manifests) > remoteSkillMaxManifests {
 				return "", fmt.Errorf(
 					"GitHub repository contains more than %d skill manifests",
-					remoteSkillMaxFiles,
+					remoteSkillMaxManifests,
 				)
 			}
 		}
@@ -417,11 +417,11 @@ func findGitHubSkillPath(
 		if !info.Mode().IsRegular() {
 			return "", fmt.Errorf("GitHub skill manifest %q is not a regular file", relative)
 		}
-		remaining := remoteSkillMaxBytes - total
+		remaining := remoteSkillMaxManifestBytes - total
 		if info.Size() > int64(remaining) {
 			return "", fmt.Errorf(
 				"GitHub skill manifests exceed %d bytes",
-				remoteSkillMaxBytes,
+				remoteSkillMaxManifestBytes,
 			)
 		}
 		total += int(info.Size())

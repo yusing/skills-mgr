@@ -183,11 +183,18 @@ func TestInstallRepositoryRepeatKeepsProjectAndGlobalEnabled(t *testing.T) {
 }
 
 func TestInstallRepositorySyncRefetchesPersistedSubdirectory(t *testing.T) {
-	gitLog := fakeGit(t, map[string]map[string]gitTestFile{"stable": {
+	files := map[string]gitTestFile{
 		"skills/alpha/SKILL.md":            {contents: skillFile("alpha", "Repository alpha.", "body"), mode: 0o644},
 		"skills/alpha/references/guide.md": {contents: "guide", mode: 0o644},
+		"skills/alpha/assets/library.bin":  {contents: strings.Repeat("x", 33<<20), mode: 0o644},
 		"skills/beta/SKILL.md":             {contents: skillFile("beta", "Other skill.", "other"), mode: 0o644},
-	}})
+	}
+	for index := range 1025 {
+		files[fmt.Sprintf("skills/alpha/assets/file-%04d.txt", index)] = gitTestFile{
+			contents: "asset", mode: 0o644,
+		}
+	}
+	gitLog := fakeGit(t, map[string]map[string]gitTestFile{"stable": files})
 	manager := newTestManager(t)
 	project := t.TempDir()
 	if err := manager.installRepository(t.Context(), project, "https://github.com/owner/repo/tree/stable/skills/alpha", "", nil, io.Discard, io.Discard); err != nil {
@@ -199,6 +206,18 @@ func TestInstallRepositorySyncRefetchesPersistedSubdirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(root, "references/guide.md"), "guide")
+	assertAssets := func(root string) {
+		t.Helper()
+		assertFile(t, filepath.Join(root, "assets/file-1024.txt"), "asset")
+		info, err := os.Stat(filepath.Join(root, "assets/library.bin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Size() != 33<<20 {
+			t.Fatalf("asset size = %d, want %d", info.Size(), 33<<20)
+		}
+	}
+	assertAssets(root)
 	ageRemoteRecord(t, manager.remoteStore, record.ref())
 	before := gitCloneCount(t, gitLog)
 	if err := manager.sync(t.Context(), project, io.Discard); err != nil {
@@ -213,6 +232,7 @@ func TestInstallRepositorySyncRefetchesPersistedSubdirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(root, "references/guide.md"), "guide")
+	assertAssets(root)
 }
 
 func TestInstallRepositoryRealGitAndFreshStoreSync(t *testing.T) {

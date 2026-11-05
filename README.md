@@ -541,7 +541,7 @@ its entry says, and is missing from Claude Code entirely.
 
 Installed remote skills live in the user cache, under
 `skills-mgr/remote-skills`, because `sync` can refetch them. Content is never
-executed at install time. A skill over 1024 files or 32 MiB, after
+executed at install time. A skill over 4096 files or 64 MiB, after
 `--exclude` patterns are applied, is rejected. Set `SKILLSMP_API_KEY` to
 authenticate SkillsMP requests.
 

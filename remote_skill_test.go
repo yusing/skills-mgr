@@ -3224,8 +3224,8 @@ func TestSkillsMPRepositoryRootFetchesFutureAgentSkillResources(t *testing.T) {
 }
 
 func TestSkillsMPRepositoryRootRejectsExcessiveAgentSkillCandidates(t *testing.T) {
-	filesByPath := make(map[string]gitTestFile, remoteSkillMaxFiles+1)
-	for index := range remoteSkillMaxFiles + 1 {
+	filesByPath := make(map[string]gitTestFile, remoteSkillMaxManifests+1)
+	for index := range remoteSkillMaxManifests + 1 {
 		filesByPath[fmt.Sprintf(".agent-%04d/skills/alpha/SKILL.md", index)] = gitTestFile{
 			contents: "candidate",
 			mode:     0o644,
@@ -3288,6 +3288,29 @@ func TestSkillsMPRejectsOversizedSkill(t *testing.T) {
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized checkout error = %v", err)
+	}
+}
+
+func TestSkillsMPRejectsExcessiveSkillFiles(t *testing.T) {
+	filesByPath := map[string]gitTestFile{
+		"skills/alpha/SKILL.md": {
+			contents: skillFile("alpha", "Remote alpha.", "body"), mode: 0o644,
+		},
+	}
+	for index := range remoteSkillMaxFiles {
+		filesByPath[fmt.Sprintf("skills/alpha/assets/file-%04d.txt", index)] = gitTestFile{
+			contents: "asset", mode: 0o644,
+		}
+	}
+	fakeGit(t, map[string]map[string]gitTestFile{"main": filesByPath})
+	_, err := newSkillsMPRegistry("", "").fetchSkill(t.Context(), remoteSkillRef{
+		Provider: skillsMPProvider,
+		ID:       "alpha-id",
+		Name:     "alpha",
+		Locator:  "https://github.com/owner/repo/tree/main/skills/alpha",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("more than %d files", remoteSkillMaxFiles)) {
+		t.Fatalf("excessive skill files error = %v", err)
 	}
 }
 

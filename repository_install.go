@@ -182,8 +182,8 @@ func loadRepositorySkill(ctx context.Context, address, name string, exclusion re
 	if name == "" && slices.Contains(candidates, direct) {
 		candidates = []string{direct}
 	}
-	if len(candidates) > remoteSkillMaxFiles {
-		return remoteSkillRef{}, nil, fmt.Errorf("repository contains more than %d skill manifests", remoteSkillMaxFiles)
+	if len(candidates) > remoteSkillMaxManifests {
+		return remoteSkillRef{}, nil, fmt.Errorf("repository contains more than %d skill manifests", remoteSkillMaxManifests)
 	}
 	var matches []discoveredSkill
 	var choices []string
@@ -204,8 +204,8 @@ func loadRepositorySkill(ctx context.Context, address, name string, exclusion re
 			return remoteSkillRef{}, nil, fmt.Errorf("repository skill manifest is not a regular file")
 		}
 		total += info.Size()
-		if total > remoteSkillMaxBytes {
-			return remoteSkillRef{}, nil, fmt.Errorf("repository skill manifests exceed %d bytes", remoteSkillMaxBytes)
+		if total > remoteSkillMaxManifestBytes {
+			return remoteSkillRef{}, nil, fmt.Errorf("repository skill manifests exceed %d bytes", remoteSkillMaxManifestBytes)
 		}
 		skill, ok, err := parseSkill(manifest)
 		if err != nil {

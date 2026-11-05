@@ -319,7 +319,7 @@ func TestGitHubSkillPostCloneOperationsHonorCancellation(t *testing.T) {
 }
 
 func TestGitHubSkillDiscoveryRejectsExcessiveManifests(t *testing.T) {
-	tracked := make([]string, remoteSkillMaxFiles+1)
+	tracked := make([]string, remoteSkillMaxManifests+1)
 	for index := range tracked {
 		tracked[index] = fmt.Sprintf("skills/%d/SKILL.md", index)
 	}
