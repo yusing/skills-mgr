@@ -414,8 +414,8 @@ func (m *manager) uninstallRemote(
 		if globallyConfigured ||
 			(global.SchemaRevision == legacyLockSchemaRevision && legacyGlobalSelection) {
 			return remoteUninstallResult{}, fmt.Errorf(
-				"remote skill %q is configured globally; uninstall it from the global TUI",
-				name,
+				"remote skill %q is configured globally; use skills-mgr uninstall -g %s",
+				name, name,
 			)
 		}
 	}
@@ -483,8 +483,8 @@ func (m *manager) uninstallRemote(
 				globallySelected
 			if !m.global && (globallyConfigured || legacyGlobalSelection) {
 				return false, fmt.Errorf(
-					"remote skill %q is configured globally; uninstall it from the global TUI",
-					name,
+					"remote skill %q is configured globally; use skills-mgr uninstall -g %s",
+					name, name,
 				)
 			}
 			if m.global && (globallySelected || globallyConfigured) {

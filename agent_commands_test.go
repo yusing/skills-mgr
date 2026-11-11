@@ -659,6 +659,7 @@ func TestAgentCommandRejectsInvalidArguments(t *testing.T) {
 	project := t.TempDir()
 	for _, args := range [][]string{
 		{"inspect"}, {"inspect", "alpha", "extra"}, {"check"},
+		{"uninstall"}, {"uninstall", "-g"}, {"uninstall", "alpha", "extra"}, {"uninstall", "../alpha"}, {"uninstall", "absent"},
 		{"set", "alpha"}, {"set", "-g"},
 		{"edit", "alpha"}, {"edit", "alpha", "--wrong", "-"},
 		{"edit", "alpha", "--file", "-", "--wrong", "digest"},
@@ -676,7 +677,7 @@ func TestAgentNativeOnlyCannotBeManaged(t *testing.T) {
 	m := newTestManager(t)
 	project := t.TempDir()
 	claude, grok := agentTestNativeAlternatives(t, m, "alpha")
-	for _, args := range [][]string{{"set", "alpha", "true"}, {"edit", "alpha", "--file", "-"}} {
+	for _, args := range [][]string{{"set", "alpha", "true"}, {"edit", "alpha", "--file", "-"}, {"uninstall", "alpha"}} {
 		if _, _, err := agentTestCommand(t, m, project, skillFile("alpha", "Changed.", "Changed.\n"), args...); err == nil {
 			t.Fatalf("native management accepted %v", args)
 		}
@@ -849,4 +850,138 @@ func TestAgentRunDispatch(t *testing.T) {
 		t.Fatalf("dispatch output=%q", data)
 	}
 	assertFile(t, stderr.Name(), "")
+}
+
+func TestAgentUninstall(t *testing.T) {
+	for _, mode := range []string{"enabled", "disabled", "condition", "missing", "override", "override-directory", "global", "home", "global-rejected", "shadowed", "missing-shadowed", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			m := newTestManager(t)
+			project := t.TempDir()
+			ref := remoteSkillRef{Provider: skillsShProvider, ID: "owner/repo/alpha", Name: "alpha", Locator: "owner/repo/alpha"}
+			provider := &staticRemoteProvider{files: []remoteSkillFile{{Path: "SKILL.md", Contents: []byte(skillFile("alpha", "Alpha.", "Body.\n"))}}}
+			record, err := m.remoteStore.ensure(t.Context(), ref, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			root, err := m.remoteStore.contentRoot(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "global" || mode == "home" || mode == "global-rejected" {
+				m.global = true
+			}
+			if mode == "home" {
+				project = m.paths.placeholderDir
+			}
+			if _, err := m.toggleRemote(t.Context(), project, ref); err != nil {
+				t.Fatal(err)
+			}
+			if mode == "disabled" {
+				if _, err := m.toggleRemote(t.Context(), project, ref); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "condition" {
+				if _, _, err := agentTestCommand(t, m, project, "", "set", "alpha", "touch condition-ran"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := t.TempDir()
+			agentTestSaveLock(t, other, testLock(map[string]bool{"alpha": true}, nil, nil))
+			otherBefore, err := os.ReadFile(filepath.Join(other, lockName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "missing" || mode == "missing-shadowed" {
+				if err := os.RemoveAll(root); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "override" {
+				writeFile(t, m.remoteStore.overridePath(ref), `{"schemaRevision":1}`)
+			}
+			if mode == "override-directory" {
+				if err := os.MkdirAll(m.remoteStore.overridePath(ref), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var completions bytes.Buffer
+			if err := m.completeRemoteSkills(&completions); err != nil || completions.String() != "alpha\n" {
+				t.Fatalf("remote completions=%q err=%v", completions.String(), err)
+			}
+			local := filepath.Join(m.paths.managedSkills, "alpha", "SKILL.md")
+			if mode == "shadowed" || mode == "missing-shadowed" {
+				writeFile(t, local, skillFile("alpha", "Local.", "Local body.\n"))
+			}
+			args := []string{"uninstall", "alpha"}
+			if mode == "global" {
+				m.global = false
+				args = []string{"uninstall", "-g", "alpha"}
+			}
+			if mode == "home" || mode == "global-rejected" {
+				m.global = false
+			}
+			ctx := t.Context()
+			if mode == "canceled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			var out, diagnostics bytes.Buffer
+			err = m.agentCommand(ctx, project, args, strings.NewReader(""), &out, &diagnostics)
+			rejected := mode == "global-rejected" || mode == "shadowed" || mode == "missing-shadowed" || mode == "canceled"
+			if rejected {
+				if err == nil || out.Len() != 0 {
+					t.Fatalf("rejection: err=%v output=%q", err, out.String())
+				}
+				if mode == "canceled" && !errors.Is(err, context.Canceled) {
+					t.Fatal(err)
+				}
+			} else if err != nil || out.String() != "Uninstalled alpha\n" {
+				t.Fatalf("uninstall: err=%v output=%q", err, out.String())
+			}
+			if diagnostics.Len() != 0 {
+				t.Fatalf("diagnostics=%q", diagnostics.String())
+			}
+			records, err := m.remoteStore.records()
+			if err != nil || (len(records) != 0) != rejected {
+				t.Fatalf("records=%v err=%v", records, err)
+			}
+			assertFile(t, filepath.Join(other, lockName), string(otherBefore))
+			if mode == "shadowed" || mode == "missing-shadowed" {
+				assertFile(t, local, skillFile("alpha", "Local.", "Local body.\n"))
+			}
+			if !rejected {
+				lockDir := project
+				placeholderDir := project
+				if m.global {
+					lockDir = m.paths.globalLockDir
+					placeholderDir = m.paths.placeholderDir
+				}
+				selection, err := loadLock(lockDir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, exists := selection.Skills["alpha"]; exists {
+					t.Fatal("retained selection")
+				}
+				for _, harness := range []string{".agents", ".claude"} {
+					if _, err := os.Stat(filepath.Join(placeholderDir, harness, "skills", "alpha", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("retained placeholder: %v", err)
+					}
+				}
+				if mode != "missing" {
+					if _, err := os.Stat(root); err != nil {
+						t.Fatalf("removed content generation: %v", err)
+					}
+				}
+				if _, err := os.Stat(m.remoteStore.overridePath(ref)); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("retained override: %v", err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(project, "condition-ran")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("evaluated selection condition: %v", err)
+			}
+		})
+	}
 }

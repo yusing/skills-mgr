@@ -2569,7 +2569,7 @@ func TestHelpCommand(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"Usage:", "skills-mgr help [command]", "skills-mgr get", "skills-mgr run"} {
+			for _, want := range []string{"Usage:", "skills-mgr help [command]", "skills-mgr get", "skills-mgr run", "skills-mgr uninstall [-g] <skill>"} {
 				if !strings.Contains(string(contents), want) {
 					t.Errorf("help output missing %q", want)
 				}

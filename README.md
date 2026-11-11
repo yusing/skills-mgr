@@ -84,8 +84,8 @@ repository you opened.
 `list` advertises the enabled set, `get` prints a skill file, and `run`
 executes a skill script; `get` and `run` refuse a skill that is not enabled
 here. Agents can inspect ownership, check readable content, change selections,
-and edit skills without opening the interface. Disabling a skill never deletes
-it, and enabling one never copies it into an agent's directory.
+edit skills, and uninstall remote skills without opening the interface. Disabling
+a skill never deletes it, and enabling one never copies it into an agent's directory.
 
 Vercel's `npx skills` is complementary: it installs skills into each agent's
 directory, where installed means active. `skills-mgr` decides which installed
@@ -305,6 +305,7 @@ Every command uses the current working directory as the project.
 | `skills-mgr info` | Show the paths `skills-mgr` uses, marking absent ones `[MISSING]` |
 | `skills-mgr adopt` | Move all skills from `$HOME/.agents/skills` into the manager home |
 | `skills-mgr install [-g] <address> [skill]` | Install a repository skill and enable it |
+| `skills-mgr uninstall [-g] <skill>` | Uninstall a remote skill and its current selection |
 | `skills-mgr list` | Write the enabled skills as XML: name, description, and Markdown references |
 | `skills-mgr get <skill>[/<path>] [start:end]` | Write a skill file, or an inclusive 1-based line range of it |
 | `skills-mgr run <skill>/<script> [args...]` | Run a skill script, passing through its streams and exit status |
@@ -383,8 +384,15 @@ placeholders if the name changes, but leave the directory in place. Directory
 layout and references still need ordinary authoring updates. Remote edits store
 a patch without changing fetched files and cannot change remote identity or
 invocation metadata; retain `name` and `disable-model-invocation`. `-g` selects
-global management, not a different content owner. Both mutation commands print
+global management, not a different content owner. Mutation commands print
 confirmations to stdout.
+
+`uninstall` removes an installed remote skill, its local patch and sidecars, and
+the current selection and managed placeholders, even when disabled or its cached
+content is missing. Use `skills-mgr uninstall -g <skill>` for globally configured
+skills; running from `$HOME` also selects global management. Local and
+harness-owned skills are never deleted. Other projects' selection files remain
+unchanged and can restore the remote skill with `sync`.
 
 ## Skill Discovery
 

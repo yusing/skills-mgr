@@ -167,12 +167,43 @@ func writeSkillManifest(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(file.Name(), path)
 }
 
+func (m *manager) uninstallContext(ctx context.Context, project, name string, out io.Writer) error {
+	if !validSkillName(name) {
+		return fmt.Errorf("invalid skill name %q", name)
+	}
+	if m.remoteStore == nil {
+		return fmt.Errorf("remote skill store is unavailable")
+	}
+	// Resolve metadata without loading content overrides: uninstall is also the
+	// recovery path for missing content and malformed sidecars.
+	records, err := m.remoteStore.recordsNamed(name)
+	if err != nil {
+		return err
+	}
+	key := ""
+	if len(records) != 0 {
+		key = records[0].ref().key()
+	}
+	owners, err := m.discoverSkillsNamed(project, key, name)
+	if err != nil {
+		return err
+	}
+	if len(owners) != 0 || key == "" {
+		return fmt.Errorf("skill %q is not an installed remote skill; local and harness-owned skills cannot be uninstalled", name)
+	}
+	if _, err := m.uninstallRemote(ctx, project, name, key); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(out, "Uninstalled %s\n", name)
+	return err
+}
+
 func (m *manager) agentCommand(ctx context.Context, project string, args []string, input io.Reader, out, diagnostics io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	command, rest := args[0], args[1:]
-	if command == "set" || command == "edit" {
+	if command == "set" || command == "edit" || command == "uninstall" {
 		if len(rest) > 0 && rest[0] == "-g" {
 			m.global = true
 			rest = rest[1:]
@@ -182,6 +213,11 @@ func (m *manager) agentCommand(ctx context.Context, project string, args []strin
 		}
 	}
 	switch command {
+	case "uninstall":
+		if len(rest) != 1 {
+			return fmt.Errorf("usage: skills-mgr uninstall [-g] <skill>")
+		}
+		return m.uninstallContext(ctx, project, rest[0], out)
 	case "inspect":
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: skills-mgr inspect <skill>")

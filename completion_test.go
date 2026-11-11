@@ -43,19 +43,21 @@ func TestFishCompletions(t *testing.T) {
 		t.Skip("fish is not installed")
 	}
 	bin := t.TempDir()
-	writeExecutable(t, filepath.Join(bin, "skills-mgr"), "#!/bin/sh\ncase \"$2\" in all) printf 'alpha\\nbeta\\n';; enabled) printf 'alpha\\n';; esac\n")
+	writeExecutable(t, filepath.Join(bin, "skills-mgr"), "#!/bin/sh\ncase \"$2\" in remote) printf 'missing\n';; all) printf 'alpha\\nbeta\\n';; enabled) printf 'alpha\\n';; esac\n")
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	for _, tc := range []struct {
 		command string
 		present []string
 		absent  []string
 	}{
-		{"skills-mgr ", []string{"get", "set", "completion"}, nil},
+		{"skills-mgr ", []string{"get", "set", "completion", "uninstall"}, nil},
 		{"skills-mgr completion ", []string{"fish"}, nil},
 		{"skills-mgr get ", []string{"alpha"}, []string{"beta"}},
 		{"skills-mgr get --", []string{"--codex"}, nil},
 		{"skills-mgr run ", []string{"alpha/"}, []string{"beta/"}},
 		{"skills-mgr set ", []string{"alpha", "beta"}, nil},
+		{"skills-mgr uninstall ", []string{"missing"}, []string{"beta"}},
+		{"skills-mgr uninstall -", []string{"-g"}, nil},
 		{"skills-mgr set -", []string{"-g"}, nil},
 		{"skills-mgr set alpha ", []string{"true", "false", "inherit"}, []string{"beta"}},
 		{"skills-mgr edit alpha --file ", nil, []string{"alpha"}},

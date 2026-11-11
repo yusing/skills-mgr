@@ -75,10 +75,13 @@ func run(args []string) error {
 		),
 		global: global,
 	}
-	if len(args) == 2 && args[0] == "__complete-skills" && (args[1] == "all" || args[1] == "enabled") {
+	if len(args) == 2 && args[0] == "__complete-skills" && (args[1] == "all" || args[1] == "enabled" || args[1] == "remote") {
 		project, err := currentProject()
 		if err != nil {
 			return err
+		}
+		if args[1] == "remote" {
+			return manager.completeRemoteSkills(os.Stdout)
 		}
 		return manager.completeSkills(context.Background(), project, args[1] == "enabled", os.Stdout)
 	}
@@ -101,7 +104,7 @@ func run(args []string) error {
 		return runTUI(manager, project)
 	case args[0] == "completion":
 		return fmt.Errorf("usage: skills-mgr completion fish")
-	case args[0] == "inspect" || args[0] == "check" || args[0] == "set" || args[0] == "edit":
+	case args[0] == "inspect" || args[0] == "check" || args[0] == "set" || args[0] == "edit" || args[0] == "uninstall":
 		project, err := currentProject()
 		if err != nil {
 			return err
@@ -247,6 +250,7 @@ var commandHelp = []struct {
 	{"list", "list [--claude] [--grok] [--codex]", "Print enabled skill metadata as XML."},
 	{"sync", "sync", "Fetch globally listed remote skills and this project's enabled ones."},
 	{"install", "install [-g] [--exclude <pattern>]... <repo-address> [skill-name]", "Install a repository skill and enable it for this project, or globally with -g.\n    --exclude leaves out matching files and directories on this and later fetches."},
+	{"uninstall", "uninstall [-g] <skill>", "Uninstall a remote skill and remove its current selection and placeholders.\n    Use -g for globally configured skills; local and harness-owned skills are not removed."},
 	{"get", "get [--claude] [--grok] [--codex] <skill-name>[/relative/path] [start:end]", "Print an enabled skill or file, optionally limited to an inclusive 1-based line range.\n    Lines refer to the served body after frontmatter removal and any remote patch.\n    Examples: skills-mgr get example 1:120\n              skills-mgr get example 121:240"},
 	{"inspect", "inspect <skill>", "Print JSON owner, selection, fallback, patch, and body-health diagnostics."},
 	{"check", "check <target> [target...]", "Validate served bodies and a skill's listed references without running scripts."},

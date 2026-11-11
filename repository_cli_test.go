@@ -76,6 +76,17 @@ func TestRunInstallRepository(t *testing.T) {
 			}
 			manager := &manager{paths: paths, global: global, remoteStore: newRemoteSkillStore(paths.remoteSkills, filepath.Join(paths.managedSkills, remoteSkillPatchDir))}
 			assertRepositoryInstalled(t, manager, project, "alpha", "body")
+			uninstallArgs := []string{"uninstall", "alpha"}
+			if mode == "global" {
+				uninstallArgs = []string{"uninstall", "-g", "alpha"}
+			}
+			if err := run(uninstallArgs); err != nil {
+				t.Fatal(err)
+			}
+			records, err := manager.remoteStore.records()
+			if err != nil || len(records) != 0 {
+				t.Fatalf("uninstall records=%v err=%v", records, err)
+			}
 			if _, err := os.Stat(filepath.Join(taskHome, lockName)); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("install wrote a selection at $HOME: %v", err)
 			}

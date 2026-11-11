@@ -10,6 +10,19 @@ import (
 //go:embed completion.fish
 var fishCompletion string
 
+func (m *manager) completeRemoteSkills(out io.Writer) error {
+	records, err := m.remoteStore.records()
+	if err != nil {
+		return err
+	}
+	for _, record := range records {
+		if _, err := fmt.Fprintln(out, record.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (m *manager) completeSkills(ctx context.Context, project string, enabledOnly bool, out io.Writer) error {
 	skills, err := m.skills(project)
 	if err != nil {
