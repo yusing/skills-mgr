@@ -447,6 +447,7 @@ type enabledEvaluator struct {
 	project     string
 	callHandler interp.CallHandlerFunc
 	evidence    *projectEvidenceIndex
+	singleUse   bool
 }
 
 func newEnabledEvaluator(project string) *enabledEvaluator {
@@ -464,6 +465,21 @@ func (e *enabledEvaluator) evaluate(ctx context.Context, skill, expression strin
 	).Parse(strings.NewReader(expression), "enabled")
 	if err != nil {
 		return false, fmt.Errorf("parse enabled expression for skill %q: %w", skill, err)
+	}
+	if e.singleUse && len(program.Stmts) == 1 {
+		statement := program.Stmts[0]
+		call, ok := statement.Cmd.(*syntax.CallExpr)
+		if ok && !statement.Background && len(statement.Redirs) == 0 &&
+			len(call.Assigns) == 0 && len(call.Args) == 2 && call.Args[1].Lit() != "" {
+			// Require a known name, not just a literal word: a literal such as
+			// r* can still undergo pathname expansion in the shell.
+			switch call.Args[0].Lit() {
+			case languageBuiltin:
+				_, e.evidence.shortCircuit = canonicalLanguage(call.Args[1].Lit())
+			case toolingBuiltin:
+				_, e.evidence.shortCircuit = canonicalTool(call.Args[1].Lit())
+			}
+		}
 	}
 	runner, err := interp.New(
 		interp.Dir(e.project),

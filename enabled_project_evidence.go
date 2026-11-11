@@ -18,11 +18,12 @@ type projectEvidence struct {
 }
 
 type projectEvidenceIndex struct {
-	loadOnce  sync.Once
-	evidence  projectEvidence
-	root      string
-	recursive bool
-	loadErr   error
+	loadOnce     sync.Once
+	evidence     projectEvidence
+	root         string
+	recursive    bool
+	loadErr      error
+	shortCircuit bool
 }
 
 func newProjectEvidenceIndex(project string) *projectEvidenceIndex {
@@ -44,6 +45,10 @@ func (index *projectEvidenceIndex) has(
 	matches map[string]bool,
 	name string,
 ) (bool, error) {
+	if index.shortCircuit {
+		err := index.load(ctx, func() bool { return matches[name] })
+		return matches[name], err
+	}
 	if err := index.prepare(ctx); err != nil {
 		return false, err
 	}
@@ -52,7 +57,7 @@ func (index *projectEvidenceIndex) has(
 
 func (index *projectEvidenceIndex) prepare(ctx context.Context) error {
 	index.loadOnce.Do(func() {
-		index.loadErr = index.load(ctx)
+		index.loadErr = index.load(ctx, nil)
 	})
 	return index.loadErr
 }
@@ -66,7 +71,7 @@ func (index *projectEvidenceIndex) manifestPaths(ctx context.Context) ([]string,
 	return paths, nil
 }
 
-func (index *projectEvidenceIndex) load(ctx context.Context) error {
+func (index *projectEvidenceIndex) load(ctx context.Context, found func() bool) error {
 	type readRequest struct {
 		directory string
 		relative  []string
@@ -209,6 +214,10 @@ func (index *projectEvidenceIndex) load(ctx context.Context) error {
 					filepath.Join(result.request.directory, entry.Name()),
 					entry.Name(),
 				)
+				if found != nil && found() {
+					stopWorkers()
+					return ctx.Err()
+				}
 			}
 		}
 	}

@@ -336,7 +336,9 @@ func (m *manager) skillAccessible(
 	if err != nil {
 		return false, err
 	}
-	return selection.enabled(ctx, newEnabledEvaluator(project), discovered.Name)
+	evaluator := newEnabledEvaluator(project)
+	evaluator.singleUse = true
+	return selection.enabled(ctx, evaluator, discovered.Name)
 }
 
 func (m *manager) findSkill(project, name string) (discoveredSkill, error) {
