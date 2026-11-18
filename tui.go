@@ -2,19 +2,14 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-
 	"fmt"
 	"os"
-	"os/exec"
-
 	"slices"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
 	"golang.org/x/term"
 )
 
@@ -125,18 +120,21 @@ type grokToggleDone struct {
 }
 
 type remoteToggleDone struct {
+	skill  string
 	result remoteToggleResult
 	err    error
 }
 
 type remoteUninstallDone struct {
-	result remoteUninstallResult
-	err    error
+	skill    string
+	snapshot tuiCoreSnapshot
+	err      error
 }
 
 type modelInvocationDone struct {
-	result modelInvocationResult
-	err    error
+	result    modelInvocationResult
+	remoteKey string
+	err       error
 }
 
 type skillLocationDone struct {
@@ -147,22 +145,14 @@ type skillLocationDone struct {
 type editDone struct {
 	skill      string
 	path       string
-	skills     []discoveredSkill
-	selection  selectionState
+	snapshot   tuiCoreSnapshot
 	editorErr  error
 	refreshErr error
 }
 
-type skillEdit struct {
-	command       *exec.Cmd
-	draft         string
-	layeredDigest [sha256.Size]byte
-	source        discoveredSkill
-}
-
 type enabledEditDone struct {
 	skill      string
-	selection  selectionState
+	selection  tuiCoreSelection
 	editorErr  error
 	refreshErr error
 }
@@ -182,21 +172,16 @@ type registrySearchRequested struct {
 }
 
 func newModel(manager *manager, project string) (model, error) {
-	discovered, selection, err := manager.tuiSnapshot(project)
+	snapshot, err := manager.tuiSnapshot(project)
 	if err != nil {
 		return model{}, err
 	}
-	slices.SortFunc(discovered, compareDiscoveredSkills)
+	slices.SortFunc(snapshot.Skills, compareDiscoveredSkills)
 	current := model{
-		manager: manager, project: project, allSkills: discovered,
-		selected:           selection.selected,
-		globalSelected:     selection.globalSelected,
-		projectSelected:    selection.projectSelected,
-		globalConditional:  selection.globalExpressions,
-		projectConditional: selection.projectExpressions,
-		remoteCollapsed:    make(map[string]bool),
-		remoteSelected:     remoteSelectionFrom(discovered, selection.selected),
+		manager: manager, project: project, allSkills: snapshot.Skills,
+		remoteSelected: remoteSelectionFrom(snapshot.Skills, snapshot.Selected),
 	}
+	current.applySelectionState(snapshot.tuiCoreSelection)
 	current.applyCatalog()
 	current.status = fmt.Sprintf("%d skills", len(current.skills))
 	current.reloadRemoteCache()
@@ -213,7 +198,6 @@ func isLocalTab(tab int) bool {
 }
 
 func (m *model) applyCatalog() {
-
 	source := ""
 	if subtabs := sourceSubtabsFor(m.tab); len(subtabs) > 0 {
 		source = subtabs[m.sourceSubtabs[m.tab]].source
@@ -273,33 +257,37 @@ func compareDiscoveredSkills(a, b discoveredSkill) int {
 
 func (model) Init() tea.Cmd { return nil }
 
+func (m *model) startCancelableJob(status string) context.Context {
+	m.busy = true
+	m.status = status
+	ctx, cancel := context.WithCancel(context.Background())
+	m.busyCancel = cancel
+	return ctx
+}
+
+func (m *model) finishJob() {
+	m.busy = false
+	if m.busyCancel != nil {
+		m.busyCancel()
+		m.busyCancel = nil
+	}
+	m.progressTitle = ""
+	m.progressDetail = ""
+}
+
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case toggleDone:
-		m.busy = false
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 		} else {
 			m.selected[message.skill] = message.enabled
-			if m.projectSelected != nil {
-				m.projectSelected[message.skill] = message.enabled
-				delete(m.projectConditional, message.skill)
-			} else {
-				delete(m.globalConditional, message.skill)
-			}
+			m.applyToggledValue(message.skill, message.enabled)
 			m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
-			if message.enabled {
-				m.status = "enabled " + message.skill
-			} else {
-				m.status = "disabled " + message.skill
-			}
 		}
 	case grokToggleDone:
-		m.busy = false
-		if m.busyCancel != nil {
-			m.busyCancel()
-			m.busyCancel = nil
-		}
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
@@ -317,71 +305,36 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "disabled " + message.skill + " in Grok"
 		}
 	case remoteToggleDone:
-		m.busy = false
-		if m.busyCancel != nil {
-			m.busyCancel()
-			m.busyCancel = nil
-		}
-		m.progressTitle = ""
-		m.progressDetail = ""
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.replaceManagedSkills(message.result.Skills)
-		m.applyCatalog()
+		m.remoteSelected = remoteSelectionFrom(message.result.Skills, message.result.Selected)
+		m.applyManagedCatalog(message.result.Skills)
 		m.selected = message.result.Selected
-		if m.projectSelected != nil {
-			m.projectSelected[message.result.Skill] = message.result.Enabled
-			delete(m.projectConditional, message.result.Skill)
-		} else {
-			delete(m.globalConditional, message.result.Skill)
-		}
-		m.remoteSelected = message.result.RemoteSelected
-		if message.result.Enabled {
-			m.status = "enabled " + message.result.Skill
-		} else {
-			m.status = "disabled " + message.result.Skill
-		}
+		m.applyToggledValue(message.skill, message.result.Enabled)
 		m.syncViewport()
 	case remoteUninstallDone:
-		m.busy = false
-		if m.busyCancel != nil {
-			m.busyCancel()
-			m.busyCancel = nil
-		}
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.applyCatalogResult(
-			message.result.Skills,
-			message.result.Selected,
-			message.result.GlobalSelected,
-			message.result.ProjectSelected,
-		)
-		if m.projectSelected != nil {
-			delete(m.projectConditional, message.result.Skill)
-		} else {
-			delete(m.globalConditional, message.result.Skill)
-		}
-		if m.expanded == message.result.Skill {
+		m.applyCatalogResult(message.snapshot)
+		m.clearConditional(message.skill)
+		if m.expanded == message.skill {
 			m.expanded = ""
 		}
-		m.status = "uninstalled " + message.result.Skill
+		m.status = "uninstalled " + message.skill
 		m.syncViewport()
 	case skillLocationDone:
-		m.busy = false
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
 		}
-		m.applyCatalogResult(
-			message.result.Skills,
-			message.result.Selected,
-			message.result.GlobalSelected,
-			message.result.ProjectSelected,
-		)
+		m.applyCatalogResult(message.result.tuiCoreSnapshot)
 		m.expanded = ""
 		where := "released to .agents/skills"
 		if message.result.Managed {
@@ -389,27 +342,18 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = message.result.Skill + " " + where
 	case modelInvocationDone:
-		m.busy = false
-		if m.busyCancel != nil {
-			m.busyCancel()
-			m.busyCancel = nil
-		}
+		m.finishJob()
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break
 		}
 		wasExpanded := m.expanded == message.result.Skill
-		m.applyCatalogResult(
-			message.result.Skills,
-			message.result.Selected,
-			message.result.GlobalSelected,
-			message.result.ProjectSelected,
-		)
+		m.applyCatalogResult(message.result.tuiCoreSnapshot)
 		m.expanded = ""
 		for index, skillIndex := range m.localSkillIndices() {
 			skill := m.skills[skillIndex]
 			if skill.Name != message.result.Skill ||
-				skill.RemoteKey != message.result.RemoteKey {
+				skill.RemoteKey != message.remoteKey {
 				continue
 			}
 			m.cursor = index
@@ -429,14 +373,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case enabledEditDone:
 		m.applyEnabledEditDone(message)
 	case registrySearchDone:
-		if message.request != m.registryRequest ||
-			message.query != normalizedRegistryQuery(m.filterQuery) ||
-			message.tab != m.tab {
+		if !m.isCurrentRegistryRequest(message.request, message.tab, message.query) {
 			break
 		}
 		m.registryCancel = nil
+		m.registrySkills = message.skills
 		if message.err != nil {
-			m.registrySkills = message.skills
 			m.registryError = message.err.Error()
 			if len(message.skills) == 0 {
 				m.status = "error: " + message.err.Error()
@@ -445,17 +387,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
-		m.registrySkills = message.skills
 		m.registryError = ""
 		m.status = fmt.Sprintf("%d %s skills", len(message.skills), registryName(message.tab))
 		m.syncViewport()
 	case registrySearchRequested:
-		if message.request != m.registryRequest ||
-			message.query != normalizedRegistryQuery(m.filterQuery) ||
-			message.tab != m.tab {
+		if !m.isCurrentRegistryRequest(message.request, message.tab, message.query) {
 			break
 		}
-		return m, m.startRegistrySearch(message.tab, &message.query)
+		cmd := m.startRegistrySearch(message.tab, &message.query)
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
@@ -472,7 +412,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) applySourceEditDone(message editDone) {
-	m.busy = false
+	m.finishJob()
 	if message.editorErr != nil {
 		m.status = "editor failed: " + message.editorErr.Error()
 		return
@@ -482,9 +422,8 @@ func (m *model) applySourceEditDone(message editDone) {
 		return
 	}
 	wasExpanded := m.expanded == message.skill
-	m.replaceManagedSkills(message.skills)
-	m.applyCatalog()
-	m.applySelectionState(message.selection)
+	m.applyManagedCatalog(message.snapshot.Skills)
+	m.applySelectionState(message.snapshot.tuiCoreSelection)
 	m.expanded = ""
 	for index, skillIndex := range m.localSkillIndices() {
 		skill := m.skills[skillIndex]
@@ -502,7 +441,7 @@ func (m *model) applySourceEditDone(message editDone) {
 }
 
 func (m *model) applyEnabledEditDone(message enabledEditDone) {
-	m.busy = false
+	m.finishJob()
 	if message.editorErr != nil {
 		m.status = "editor failed: " + message.editorErr.Error()
 		return
@@ -523,30 +462,45 @@ func (m *model) applyEnabledEditDone(message enabledEditDone) {
 	m.status = "saved enabled value for " + message.skill
 }
 
-// applyCatalogResult adopts a refreshed catalog together with the selection maps
-// that were computed against it, so every action that rebuilds the catalog keeps
-// the same derived model fields in step.
-func (m *model) applyCatalogResult(
-	skills []discoveredSkill,
-	selected, global, project map[string]bool,
-) {
-	m.replaceManagedSkills(skills)
-	m.applyCatalog()
-	m.selected = selected
-	m.globalSelected = global
-	m.projectSelected = project
+func (m *model) applyToggledValue(skill string, enabled bool) {
+	if m.projectSelected != nil {
+		m.projectSelected[skill] = enabled
+	}
+	m.clearConditional(skill)
+	if enabled {
+		m.status = "enabled " + skill
+	} else {
+		m.status = "disabled " + skill
+	}
+}
+
+func (m *model) clearConditional(skill string) {
+	if m.projectSelected != nil {
+		delete(m.projectConditional, skill)
+	} else {
+		delete(m.globalConditional, skill)
+	}
+}
+
+// Keep the existing condition displays for actions that only update the catalog
+// and Boolean selections, not the underlying expressions.
+func (m *model) applyCatalogResult(snapshot tuiCoreSnapshot) {
+	m.applyManagedCatalog(snapshot.Skills)
+	m.selected = snapshot.Selected
+	m.globalSelected = snapshot.GlobalSelected
+	m.projectSelected = snapshot.ProjectSelected
 	m.remoteSelected = remoteSelectionFrom(m.allSkills, m.selected)
 }
 
-func (m *model) applySelectionState(selection selectionState) {
-	m.selected = selection.selected
-	m.globalSelected = selection.globalSelected
-	m.projectSelected = selection.projectSelected
-	m.globalConditional = selection.globalExpressions
-	m.projectConditional = selection.projectExpressions
+func (m *model) applySelectionState(selection tuiCoreSelection) {
+	m.selected = selection.Selected
+	m.globalSelected = selection.GlobalSelected
+	m.projectSelected = selection.ProjectSelected
+	m.globalConditional = selection.GlobalExpressions
+	m.projectConditional = selection.ProjectExpressions
 }
 
-func (m *model) replaceManagedSkills(skills []discoveredSkill) {
+func (m *model) applyManagedCatalog(skills []discoveredSkill) {
 	for _, skill := range m.allSkills {
 		if isNativeSkill(skill) {
 			skills = append(skills, skill)
@@ -554,6 +508,17 @@ func (m *model) replaceManagedSkills(skills []discoveredSkill) {
 	}
 	slices.SortFunc(skills, compareDiscoveredSkills)
 	m.allSkills = skills
+	m.applyCatalog()
+}
+
+func remoteSelectionFrom(skills []discoveredSkill, selected map[string]bool) map[string]bool {
+	remote := make(map[string]bool)
+	for _, skill := range skills {
+		if skill.RemoteKey != "" && !skill.ContentMissing && selected[skill.Name] {
+			remote[skill.RemoteKey] = true
+		}
+	}
+	return remote
 }
 
 func runTUI(manager *manager, project string) error {

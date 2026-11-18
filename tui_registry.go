@@ -35,9 +35,7 @@ func (m *model) selectSourceSubtab(subtab int) {
 		return
 	}
 	m.sourceSubtabs[m.tab] = subtab
-	m.cursor = 0
-	m.offset = 0
-	m.expanded = ""
+	m.resetListPosition()
 	m.applyCatalog()
 	m.status = fmt.Sprintf("%d skills", len(m.skills))
 	m.syncViewport()
@@ -47,88 +45,57 @@ func (m *model) selectTab(tab int) tea.Cmd {
 	if tab < localTab || tab > skillsMPTab || m.tab == tab {
 		return nil
 	}
-	m.cancelRegistryRequest()
 	m.tab = tab
-	m.cursor = 0
-	m.offset = 0
-	m.expanded = ""
-	switch tab {
-	case remoteTab:
-		if normalizedRegistryQuery(m.filterQuery) != "" {
-			m.registrySkills = nil
-			m.registryError = ""
-			m.status = "searching skills.sh"
-			m.syncViewport()
-			return m.debounceRegistrySearch()
-		}
-		m.registrySkills = nil
-		m.registryError = ""
-		if m.manager != nil {
-			m.reloadRemoteCache()
-		}
-		m.setRemoteStatus()
-	case skillsMPTab:
-		if normalizedRegistryQuery(m.filterQuery) != "" {
-			m.registrySkills = nil
-			m.registryError = ""
-			m.status = "searching SkillsMP"
-			m.syncViewport()
-			return m.debounceRegistrySearch()
-		}
-		cache := m.reloadSkillsMPCache()
-		if m.registryError == "" && len(cache.Skills) > 0 &&
-			time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
-			m.status = fmt.Sprintf("%d SkillsMP skills", len(m.registrySkills))
-			break
-		}
-		m.status = "loading SkillsMP"
-		m.syncViewport()
-		return m.startRegistrySearch(skillsMPTab, nil)
-	default:
+	if isLocalTab(tab) {
 		m.applyCatalog()
 		m.status = fmt.Sprintf("%d skills", len(m.skills))
 	}
-	m.syncViewport()
-	return nil
+	return m.refreshList()
 }
 
 func (m *model) startFiltering() {
 	m.filtering = true
 }
 
-func (m *model) filterChanged() tea.Cmd {
-	m.cancelRegistryRequest()
+func (m *model) resetListPosition() {
 	m.cursor = 0
 	m.offset = 0
 	m.expanded = ""
+}
+
+func (m *model) refreshList() tea.Cmd {
+	m.cancelRegistryRequest()
+	m.resetListPosition()
+	var cmd tea.Cmd
 	if m.tab == remoteTab || m.tab == skillsMPTab {
-		if normalizedRegistryQuery(m.filterQuery) == "" {
-			m.registrySkills = nil
-			m.registryError = ""
-			if m.tab == remoteTab {
-				if m.manager != nil {
-					m.reloadRemoteCache()
-				}
-				m.setRemoteStatus()
-				m.syncViewport()
-				return nil
-			}
-			cache := m.reloadSkillsMPCache()
-			if m.registryError == "" && len(cache.Skills) > 0 &&
-				time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
-				m.status = fmt.Sprintf("%d SkillsMP skills", len(m.registrySkills))
-				return nil
-			}
-			m.status = "loading SkillsMP"
-			return m.startRegistrySearch(skillsMPTab, nil)
-		}
-		m.registrySkills = nil
-		m.registryError = ""
+		cmd = m.refreshRegistry()
+	}
+	m.syncViewport()
+	return cmd
+}
+
+func (m *model) refreshRegistry() tea.Cmd {
+	m.registrySkills = nil
+	m.registryError = ""
+	if normalizedRegistryQuery(m.filterQuery) != "" {
 		m.status = "searching " + registryName(m.tab)
 		return m.debounceRegistrySearch()
 	}
-	m.syncViewport()
-	return nil
+	if m.tab == remoteTab {
+		if m.manager != nil {
+			m.reloadRemoteCache()
+		}
+		m.setRemoteStatus()
+		return nil
+	}
+	cache := m.reloadSkillsMPCache()
+	if m.registryError == "" && len(cache.Skills) > 0 &&
+		time.Now().Before(cache.UpdatedAt.Add(skillsMPCacheTTL)) {
+		m.status = fmt.Sprintf("%d SkillsMP skills", len(m.registrySkills))
+		return nil
+	}
+	m.status = "loading SkillsMP"
+	return m.startRegistrySearch(skillsMPTab, nil)
 }
 
 func (m *model) reloadRemoteCache() {
@@ -193,10 +160,10 @@ func (m *model) startRegistrySearch(tab int, query *string) tea.Cmd {
 
 func registryName(tab int) string {
 	if tab == remoteTab {
-		return "skills.sh"
+		return skillsShProvider
 	}
 	if tab == skillsMPTab {
-		return "SkillsMP"
+		return skillsMPProvider
 	}
 	return "registry"
 }
@@ -218,8 +185,9 @@ func (m model) debounceRegistrySearch() tea.Cmd {
 	})
 }
 
-func (m model) itemCount() int {
-	return m.currentRowCount()
+func (m model) isCurrentRegistryRequest(request uint64, tab int, query string) bool {
+	return request == m.registryRequest && tab == m.tab &&
+		query == normalizedRegistryQuery(m.filterQuery)
 }
 
 func remoteRefAtCursor(m model) (remoteSkillRef, bool) {

@@ -7,8 +7,54 @@ import (
 	"os"
 	"os/exec"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mattn/go-shellwords"
 )
+
+type skillEdit struct {
+	command *exec.Cmd
+	draft   string
+	path    string
+	digest  [sha256.Size]byte
+}
+
+func (m *model) editSkill(skill string) tea.Cmd {
+	edit, err := m.editor(skill)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return nil
+	}
+	m.busy = true
+	m.status = "editing " + skill
+	return tea.ExecProcess(edit.command, func(err error) tea.Msg {
+		defer os.Remove(edit.draft)
+		done := editDone{skill: skill, path: edit.path, editorErr: err}
+		if err == nil {
+			done.snapshot, done.refreshErr = m.manager.completeSkillEdit(
+				m.project, skill, edit.path, edit.draft, edit.digest,
+			)
+		}
+		return done
+	})
+}
+
+func (m *model) editEnabledValue(skill discoveredSkill) tea.Cmd {
+	command, draft, err := m.enabledEditor(skill.Name)
+	if err != nil {
+		m.status = "error: " + err.Error()
+		return nil
+	}
+	m.busy = true
+	m.status = "editing enabled value for " + skill.Name
+	return tea.ExecProcess(command, func(err error) tea.Msg {
+		defer os.Remove(draft)
+		done := enabledEditDone{skill: skill.Name, editorErr: err}
+		if err == nil {
+			done.selection, done.refreshErr = m.manager.applyEnabledDraft(m.project, skill, draft)
+		}
+		return done
+	})
+}
 
 func configuredEditor(file string) (*exec.Cmd, error) {
 	parts, err := shellwords.Parse(os.Getenv("EDITOR"))
@@ -40,12 +86,10 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 		return skillEdit{}, err
 	}
 	command, err := configuredEditor(draft)
-	return skillEdit{command: command, draft: draft, layeredDigest: prepared.Digest,
-		source: discoveredSkill{Name: skill, Path: prepared.Path}}, err
+	return skillEdit{command: command, draft: draft, path: prepared.Path, digest: prepared.Digest}, err
 }
 
 func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr error) {
-
 	var value json.RawMessage
 	if err := m.manager.callTUICore(m.project, tuiCoreRequest{Op: "enabled_value", Name: skill}, &value); err != nil {
 		return nil, "", err

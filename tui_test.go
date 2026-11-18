@@ -868,10 +868,12 @@ func TestEditDoneRefreshesMetadataByCanonicalPath(t *testing.T) {
 	updated, _ := current.Update(editDone{
 		skill: "alpha",
 		path:  path,
-		skills: []discoveredSkill{{
-			Name: "renamed", Description: "New.", Path: path, Source: "user",
-		}},
-		selection: selectionState{selected: map[string]bool{"renamed": true}},
+		snapshot: tuiCoreSnapshot{
+			Skills: []discoveredSkill{{
+				Name: "renamed", Description: "New.", Path: path, Source: "user",
+			}},
+			tuiCoreSelection: tuiCoreSelection{Selected: map[string]bool{"renamed": true}},
+		},
 	})
 	got := updated.(model)
 	if got.busy || got.skills[0].Name != "renamed" || got.skills[0].Description != "New." {
@@ -886,8 +888,10 @@ func TestTUITogglesLocalModelInvocation(t *testing.T) {
 	skills := []discoveredSkill{{Name: "alpha", Path: "/skills/alpha/SKILL.md", Source: "user"}}
 	reply := modelInvocationResult{
 		Skill: "alpha", Disabled: true,
-		Skills:   []discoveredSkill{{Name: "alpha", Path: "/skills/alpha/SKILL.md", Source: "user", DisableModelInvocation: true}},
-		Selected: map[string]bool{"alpha": true},
+		tuiCoreSnapshot: tuiCoreSnapshot{
+			Skills:           []discoveredSkill{{Name: "alpha", Path: "/skills/alpha/SKILL.md", Source: "user", DisableModelInvocation: true}},
+			tuiCoreSelection: tuiCoreSelection{Selected: map[string]bool{"alpha": true}},
+		},
 	}
 	manager := fakeCore(t, "toggle_invocation", reply)
 	current := model{manager: manager, project: t.TempDir(), allSkills: skills, skills: skills,
@@ -966,9 +970,9 @@ func TestEnabledEditKeepsEditedSkillSelectedAfterReordering(t *testing.T) {
 	}
 	current.applyEnabledEditDone(enabledEditDone{
 		skill: "alpha",
-		selection: selectionState{
-			selected:        map[string]bool{"alpha": true, "beta": true},
-			projectSelected: map[string]bool{"alpha": true, "beta": true},
+		selection: tuiCoreSelection{
+			Selected:        map[string]bool{"alpha": true, "beta": true},
+			ProjectSelected: map[string]bool{"alpha": true, "beta": true},
 		},
 	})
 

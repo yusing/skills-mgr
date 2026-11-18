@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-
 	"strings"
-
 	"unicode"
 
 	"github.com/charmbracelet/lipgloss"
@@ -26,8 +24,13 @@ func (m *model) toggleCurrentExpanded(index int) {
 		}
 		row := rows[index]
 		if row.skill < 0 {
+			if m.remoteCollapsed == nil {
+				m.remoteCollapsed = make(map[string]bool)
+			}
+			slug := m.remoteTopics[row.topic].Slug
+			m.remoteCollapsed[slug] = !m.remoteCollapsed[slug]
 			m.cursor = index
-			m.toggleRemoteTopic()
+			m.syncViewport()
 			return
 		}
 		m.toggleCollapsible(
@@ -75,7 +78,9 @@ func newRenderedList(count int, render func(index int) []string) renderedList {
 	}
 }
 
-func (m model) currentList() renderedList {
+// The row order is fixed for this list, but rendering reads the cursor after
+// syncViewport clamps it, before any lines are cached.
+func (m *model) currentList() renderedList {
 	switch {
 	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
 		rows := m.remoteRows()
@@ -106,12 +111,10 @@ func (m model) currentList() renderedList {
 	}
 }
 
-// currentRowCount reports the active tab's row count without building the
-// render closure or its cache, which the cursor-clamping callers never use.
-func (m model) currentRowCount() int {
+func (m model) itemCount() int {
 	switch {
 	case m.tab == remoteTab && normalizedRegistryQuery(m.filterQuery) == "":
-		return len(m.remoteRows())
+		return m.remoteRowCount()
 	case m.tab == remoteTab || m.tab == skillsMPTab:
 		return len(m.registrySkills)
 	default:
@@ -120,16 +123,14 @@ func (m model) currentRowCount() int {
 }
 
 func (m *model) syncViewport() renderedList {
-	count := m.currentRowCount()
-	if count == 0 {
+	list := m.currentList()
+	if list.count == 0 {
 		m.cursor = 0
 		m.offset = 0
-		return m.currentList()
+		return list
 	}
-	// currentList captures the cursor, so clamp before building the list.
-	m.cursor = min(max(m.cursor, 0), count-1)
-	m.offset = min(max(m.offset, 0), count-1)
-	list := m.currentList()
+	m.cursor = min(max(m.cursor, 0), list.count-1)
+	m.offset = min(max(m.offset, 0), list.count-1)
 	visible := m.height - m.chromeHeight()
 	if visible <= 0 {
 		m.offset = m.cursor
@@ -307,22 +308,24 @@ func (m model) sourceSubtabAt(x int) (int, bool) {
 type remoteRow struct {
 	topic int
 	skill int
-	count int
 }
 
-func (m model) remoteRows() []remoteRow {
+func (m model) remoteRowCount() int {
 	total := len(m.remoteTopics)
 	for _, topic := range m.remoteTopics {
 		if !m.remoteCollapsed[topic.Slug] {
 			total += len(topic.Skills)
 		}
 	}
-	rows := make([]remoteRow, 0, total)
+	return total
+}
+
+func (m model) remoteRows() []remoteRow {
+	rows := make([]remoteRow, 0, m.remoteRowCount())
 	for topicIndex, topic := range m.remoteTopics {
 		rows = append(rows, remoteRow{
 			topic: topicIndex,
 			skill: -1,
-			count: len(topic.Skills),
 		})
 		if m.remoteCollapsed[topic.Slug] {
 			continue
@@ -346,28 +349,13 @@ func matchesNormalizedFilter(query string, values ...string) bool {
 	return false
 }
 
-func (m *model) toggleRemoteTopic() {
-	if normalizedRegistryQuery(m.filterQuery) != "" {
-		return
-	}
-	rows := m.remoteRows()
-	if m.cursor < 0 || m.cursor >= len(rows) || rows[m.cursor].skill >= 0 {
-		return
-	}
-	topic := m.remoteTopics[rows[m.cursor].topic]
-	if m.remoteCollapsed == nil {
-		m.remoteCollapsed = make(map[string]bool)
-	}
-	m.remoteCollapsed[topic.Slug] = !m.remoteCollapsed[topic.Slug]
-	m.syncViewport()
-}
-
 func (m model) registrySkillLines(skill registrySearchSkill, selected bool) []string {
 	displayName := skill.Name
-	if m.remoteSelected[skill.ref().key()] {
+	key := skill.ref().key()
+	if m.remoteSelected[key] {
 		displayName += " [enabled]"
 	}
-	expanded := m.expanded == skill.ref().key()
+	expanded := m.expanded == key
 	disclosure := disclosureIndicator(expanded)
 	name := selectedStyle(disclosureStyle, selected).Render(disclosure + " ")
 	name += selectedStyle(lipgloss.NewStyle(), selected).
@@ -392,15 +380,16 @@ func (m model) remoteLines(row remoteRow, selected bool) []string {
 		line += selectedStyle(lipgloss.NewStyle().Bold(true), selected).
 			Render(terminalSafeText(topic.Name))
 		line += selectedStyle(mutedStyle, selected).
-			Render(fmt.Sprintf(" (%d)", row.count))
+			Render(fmt.Sprintf(" (%d)", len(topic.Skills)))
 		return []string{boundLine(line, m.width)}
 	}
 	skill := topic.Skills[row.skill]
 	displayName := skill.Name
-	if m.remoteSelected[skill.ref().key()] {
+	key := skill.ref().key()
+	if m.remoteSelected[key] {
 		displayName += " [enabled]"
 	}
-	expanded := m.expanded == skill.ref().key()
+	expanded := m.expanded == key
 	disclosure := disclosureIndicator(expanded)
 	name := selectedStyle(lipgloss.NewStyle(), selected).Render("  ")
 	name += selectedStyle(disclosureStyle, selected).Render(disclosure + " ")

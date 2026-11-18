@@ -46,14 +46,6 @@ type discoveredSkill struct {
 	ContentMissing         bool
 }
 
-type selectionState struct {
-	selected           map[string]bool
-	globalSelected     map[string]bool
-	projectSelected    map[string]bool
-	globalExpressions  map[string]string
-	projectExpressions map[string]string
-}
-
 type remoteSkillRef struct {
 	Provider string `json:"provider"`
 	ID       string `json:"id"`
@@ -67,66 +59,20 @@ func (r remoteSkillRef) key() string {
 }
 
 type remoteToggleResult struct {
-	Skill          string
-	Enabled        bool
-	Skills         []discoveredSkill
-	Selected       map[string]bool
-	RemoteSelected map[string]bool
-}
-
-type remoteUninstallResult struct {
-	Skill           string
-	Skills          []discoveredSkill
-	Selected        map[string]bool
-	GlobalSelected  map[string]bool
-	ProjectSelected map[string]bool
+	Enabled bool
+	tuiCoreSnapshot
 }
 
 type skillLocationResult struct {
-	Skill           string
-	Managed         bool
-	Skills          []discoveredSkill
-	Selected        map[string]bool
-	GlobalSelected  map[string]bool
-	ProjectSelected map[string]bool
+	Skill   string
+	Managed bool
+	tuiCoreSnapshot
 }
 
 type modelInvocationResult struct {
-	Skill           string
-	RemoteKey       string
-	Disabled        bool
-	Skills          []discoveredSkill
-	Selected        map[string]bool
-	GlobalSelected  map[string]bool
-	ProjectSelected map[string]bool
-}
-
-func remoteSelectionFrom(
-	skills []discoveredSkill,
-	selected map[string]bool,
-) map[string]bool {
-	remote := make(map[string]bool)
-	for _, skill := range skills {
-		if skill.RemoteKey != "" && !skill.ContentMissing && selected[skill.Name] {
-			remote[skill.RemoteKey] = true
-		}
-	}
-	return remote
-}
-
-func newRemoteToggleResult(
-	skill string,
-	enabled bool,
-	skills []discoveredSkill,
-	selected map[string]bool,
-) remoteToggleResult {
-	return remoteToggleResult{
-		Skill:          skill,
-		Enabled:        enabled,
-		Skills:         skills,
-		Selected:       selected,
-		RemoteSelected: remoteSelectionFrom(skills, selected),
-	}
+	Skill    string
+	Disabled bool
+	tuiCoreSnapshot
 }
 
 type tuiCoreSelection struct {
@@ -140,16 +86,6 @@ type tuiCoreSelection struct {
 type tuiCoreSnapshot struct {
 	Skills []discoveredSkill
 	tuiCoreSelection
-}
-
-func (s tuiCoreSelection) state() selectionState {
-	return selectionState{
-		selected:           s.Selected,
-		globalSelected:     s.GlobalSelected,
-		projectSelected:    s.ProjectSelected,
-		globalExpressions:  s.GlobalExpressions,
-		projectExpressions: s.ProjectExpressions,
-	}
 }
 
 type tuiCoreRequest struct {
@@ -166,10 +102,10 @@ type tuiCoreRequest struct {
 	Query    *string         `json:"query,omitempty"`
 }
 
-func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState, error) {
+func (m *manager) tuiSnapshot(project string) (tuiCoreSnapshot, error) {
 	var snapshot tuiCoreSnapshot
 	err := m.callTUICore(project, tuiCoreRequest{Op: "snapshot"}, &snapshot)
-	return snapshot.Skills, snapshot.state(), err
+	return snapshot, err
 }
 
 func (m *manager) tuiToggle(project string, skill discoveredSkill) (bool, error) {
@@ -181,12 +117,9 @@ func (m *manager) tuiToggle(project string, skill discoveredSkill) (bool, error)
 }
 
 func (m *manager) tuiToggleRemote(ctx context.Context, project string, ref remoteSkillRef) (remoteToggleResult, error) {
-	var reply struct {
-		Enabled bool
-		tuiCoreSnapshot
-	}
+	var reply remoteToggleResult
 	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{Op: "toggle_remote", Remote: &ref}, &reply)
-	return newRemoteToggleResult(ref.Name, reply.Enabled, reply.Skills, reply.Selected), err
+	return reply, err
 }
 
 func (m *manager) tuiToggleGrok(ctx context.Context, project, name string) (bool, error) {
@@ -195,13 +128,10 @@ func (m *manager) tuiToggleGrok(ctx context.Context, project, name string) (bool
 	return enabled, err
 }
 
-func (m *manager) tuiUninstall(ctx context.Context, project, name, key string) (remoteUninstallResult, error) {
+func (m *manager) tuiUninstall(ctx context.Context, project, name, key string) (tuiCoreSnapshot, error) {
 	var reply tuiCoreSnapshot
 	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{Op: "uninstall", Name: name, Key: key}, &reply)
-	return remoteUninstallResult{
-		Skill: name, Skills: reply.Skills, Selected: reply.Selected,
-		GlobalSelected: reply.GlobalSelected, ProjectSelected: reply.ProjectSelected,
-	}, err
+	return reply, err
 }
 
 func (m *manager) callTUICore(project string, input tuiCoreRequest, response any) error {
@@ -237,19 +167,18 @@ func (m *manager) callTUICoreContext(ctx context.Context, project string, input 
 	return nil
 }
 
-func (m *manager) completeSkillEdit(project string, edited discoveredSkill, draft string, digest [sha256.Size]byte) ([]discoveredSkill, selectionState, error) {
+func (m *manager) completeSkillEdit(project, skill, path, draft string, digest [sha256.Size]byte) (tuiCoreSnapshot, error) {
 	var snapshot tuiCoreSnapshot
 	err := m.callTUICore(project, tuiCoreRequest{
-		Op: "edit", Name: edited.Name, Path: edited.Path, Draft: draft, Digest: fmt.Sprintf("%x", digest),
+		Op: "edit", Name: skill, Path: path, Draft: draft, Digest: fmt.Sprintf("%x", digest),
 	}, &snapshot)
-	return snapshot.Skills, snapshot.state(), err
+	return snapshot, err
 }
 
-func (m *manager) applyEnabledDraft(project string, skill discoveredSkill, draft string) (selectionState, error) {
-	defer os.Remove(draft)
+func (m *manager) applyEnabledDraft(project string, skill discoveredSkill, draft string) (tuiCoreSelection, error) {
 	data, err := os.ReadFile(draft)
 	if err != nil {
-		return selectionState{}, fmt.Errorf("read enabled editor draft: %w", err)
+		return tuiCoreSelection{}, fmt.Errorf("read enabled editor draft: %w", err)
 	}
 	var selection tuiCoreSelection
 	request := tuiCoreRequest{Op: "set_enabled", Name: skill.Name, Path: skill.Path, Key: skill.RemoteKey}
@@ -257,17 +186,17 @@ func (m *manager) applyEnabledDraft(project string, skill discoveredSkill, draft
 	case value == "":
 	case value == "true" || value == "false" || strings.HasPrefix(value, "\""):
 		if !json.Valid([]byte(value)) {
-			return selectionState{}, fmt.Errorf("decode enabled editor draft: invalid JSON value")
+			return tuiCoreSelection{}, fmt.Errorf("decode enabled editor draft: invalid JSON value")
 		}
 		request.Value = json.RawMessage(value)
 	default:
 		request.Value, err = json.Marshal(value)
 		if err != nil {
-			return selectionState{}, err
+			return tuiCoreSelection{}, err
 		}
 	}
 	err = m.callTUICore(project, request, &selection)
-	return selection.state(), err
+	return selection, err
 }
 
 func (m *manager) toggleModelInvocation(ctx context.Context, project string, expected discoveredSkill) (modelInvocationResult, error) {
@@ -275,7 +204,6 @@ func (m *manager) toggleModelInvocation(ctx context.Context, project string, exp
 	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{
 		Op: "toggle_invocation", Name: expected.Name, Path: expected.Path,
 	}, &result)
-	result.RemoteKey = expected.RemoteKey
 	return result, err
 }
 
