@@ -5,7 +5,15 @@ edition = "2024"
 description = "Read the skills-mgr catalog and skill files from Rust without subprocesses"
 license = "MIT"
 repository = "https://github.com/yusing/skills-mgr"
-include = ["/src", "/tests", "/README.md", "/LICENSE"]
+include = ["/src", "/tests", "/completion.fish", "/README.md", "/LICENSE"]
+
+[features]
+cli = []
+
+[[bin]]
+name = "skills-mgr"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 brush-parser = "0.4.0"

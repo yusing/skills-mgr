@@ -9,6 +9,10 @@ mod content;
 mod remote;
 mod selection;
 
+#[cfg(feature = "cli")]
+#[doc(hidden)]
+pub mod cli;
+
 use std::{
     env, io,
     ops::RangeInclusive,
