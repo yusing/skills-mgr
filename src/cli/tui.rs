@@ -45,6 +45,12 @@ enum Request {
         draft: PathBuf,
         digest: String,
     },
+    #[cfg(unix)]
+    Relocate {
+        global: bool,
+        name: String,
+        path: PathBuf,
+    },
 }
 
 pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
@@ -94,6 +100,28 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             let scope = Scope::new(&manager, global)?;
             mutation::edit_draft(&manager, &scope, &name, &path, &digest, &draft)?;
             reply(out, &build_snapshot(&manager, scope.global, false)?)
+        }
+        #[cfg(unix)]
+        Request::Relocate { global, name, path } => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Location {
+                skill: String,
+                managed: bool,
+                #[serde(flatten)]
+                snapshot: Snapshot,
+            }
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            let managed = mutation::relocate(&manager, &scope, &name, &path)?;
+            reply(
+                out,
+                &Location {
+                    skill: name,
+                    managed,
+                    snapshot: build_snapshot(&manager, scope.global, false)?,
+                },
+            )
         }
     }
 }

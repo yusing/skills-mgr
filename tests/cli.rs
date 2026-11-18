@@ -252,6 +252,82 @@ fn local_edit_preserves_the_manifest_owner_and_moves_its_selection() {
     assert!(selection["skills"].get("alpha").is_none());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn adopt_moves_shared_skills_as_one_transaction() {
+    use std::fs;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let user = home.path().join(".agents/skills");
+    let managed = home.path().join(".skills-mgr/skills");
+    let project_alpha = project.join(".agents/skills/alpha");
+    fs::create_dir_all(&project_alpha).unwrap();
+    fs::write(
+        project_alpha.join("SKILL.md"),
+        "---\nname: alpha\ndescription: Project owner\n---\nLocal.\n",
+    )
+    .unwrap();
+    for name in ["alpha", "beta"] {
+        let dir = user.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Shared owner\n---\nShared.\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("guide.md"), "A sidecar.").unwrap();
+    }
+    fs::create_dir_all(managed.join("beta")).unwrap();
+    fs::write(
+        home.path().join(".skills-mgr/.skills-mgr.json"),
+        br#"{"schema_revision":3,"skills":{"alpha":{"enabled":true},"beta":{"enabled":true}}}"#,
+    )
+    .unwrap();
+    let adopt = || {
+        cli()
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .arg("adopt")
+            .output()
+            .unwrap()
+    };
+    let collision = adopt();
+    assert!(!collision.status.success(), "{collision:?}");
+    assert!(collision.stdout.is_empty());
+    assert!(user.join("alpha/guide.md").is_file());
+    assert!(user.join("beta/guide.md").is_file());
+    assert!(!managed.join("alpha").exists());
+    fs::remove_dir(managed.join("beta")).unwrap();
+    let adopted = adopt();
+    assert!(adopted.status.success(), "{adopted:?}");
+    assert_eq!(adopted.stdout, b"alpha\nbeta\n");
+    for name in ["alpha", "beta"] {
+        assert_eq!(
+            fs::read(managed.join(name).join("guide.md")).unwrap(),
+            b"A sidecar."
+        );
+        for harness in [".agents", ".claude"] {
+            assert!(
+                home.path()
+                    .join(harness)
+                    .join("skills")
+                    .join(name)
+                    .join(".skills-mgr-placeholder")
+                    .is_file()
+            );
+        }
+    }
+    assert!(
+        fs::read_to_string(project_alpha.join("SKILL.md"))
+            .unwrap()
+            .contains("Local.")
+    );
+    assert!(!project.join(".skills-mgr.json").exists());
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();

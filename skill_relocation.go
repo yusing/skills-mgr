@@ -213,6 +213,13 @@ func (m *manager) relocateSkill(
 	project string,
 	skill discoveredSkill,
 ) (skillLocationResult, error) {
+	if m.tuiCore != "" {
+		var result skillLocationResult
+		err := m.callTUICore(project, tuiCoreRequest{
+			Op: "relocate", Name: skill.Name, Path: skill.Path,
+		}, &result)
+		return result, err
+	}
 	guard, guardErr := m.lockManagedMutation(context.Background())
 	if guardErr != nil {
 		return skillLocationResult{}, guardErr

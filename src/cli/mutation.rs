@@ -21,7 +21,9 @@ use super::{Result, current_manager};
 
 mod edit;
 mod placeholder;
+mod relocate;
 pub(super) use edit::{edit, edit_draft};
+pub(super) use relocate::{adopt, relocate};
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
     let usage = "usage: skills-mgr set [-g] <skill> <true|false|condition|inherit>";

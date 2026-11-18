@@ -18,6 +18,7 @@ struct FileState {
 #[derive(PartialEq, Eq)]
 struct State {
     missing: Vec<PathBuf>,
+    dir_mode: Option<u32>,
     manifest: Option<FileState>,
     marker: Option<FileState>,
 }
@@ -98,20 +99,18 @@ impl Plan {
         publish_all(std::slice::from_ref(self), publish)
     }
 
-    fn finish(&self) {
-        if self.desired.is_none() {
-            for change in &self.changes {
-                // An unrelated sidecar may keep the directory alive.
-                let _ = self.root.remove_dir(&change.dir);
-            }
-        }
-    }
-
     fn rollback(&self, undo: Vec<Undo<'_>>) -> impl Iterator<Item = String> {
         undo.into_iter().rev().filter_map(|action| {
             let (path, result) = match &action {
-                Undo::RemoveDir(path) => (*path, self.root.remove_dir(path)),
+                Undo::RemoveDir(path) => (path.as_path(), self.root.remove_dir(path)),
                 Undo::RemoveFile(path) => (path.as_path(), self.root.remove_file(path)),
+                Undo::RestoreDir(path, mode) => (
+                    *path,
+                    self.root.create_dir(path).and_then(|()| {
+                        self.root
+                            .set_permissions(path, Permissions::from_mode(*mode))
+                    }),
+                ),
                 Undo::Restore(path, state, removed) => {
                     (path.as_path(), write(&self.root, path, state, *removed))
                 }
@@ -124,7 +123,23 @@ impl Plan {
 
     fn apply<'a>(&'a self, undo: &mut Vec<Undo<'a>>) -> Result<()> {
         for Change { dir, state } in &self.changes {
-            if inspect(&self.root, &self.base, dir)?.as_ref() != Some(state) {
+            let Some(current) = inspect(&self.root, &self.base, dir)? else {
+                return Err(format!(
+                    "skill placeholder {} changed before publication",
+                    self.base.join(dir).display()
+                )
+                .into());
+            };
+            // A preceding change can create a harness directory shared by
+            // several placeholders in the same transaction.
+            if current.manifest != state.manifest
+                || current.marker != state.marker
+                || current.dir_mode != state.dir_mode
+                || !current
+                    .missing
+                    .iter()
+                    .all(|path| state.missing.contains(path))
+            {
                 return Err(format!(
                     "skill placeholder {} changed before publication",
                     self.base.join(dir).display()
@@ -141,8 +156,8 @@ impl Plan {
                     file.write_all(bytes).map_err(error)?;
                 }
                 (Some(bytes), None, None) => {
-                    for path in &state.missing {
-                        self.root.create_dir(path).map_err(error)?;
+                    for path in current.missing {
+                        self.root.create_dir(&path).map_err(error)?;
                         undo.push(Undo::RemoveDir(path));
                     }
                     for (path, data) in [(manifest, bytes.as_slice()), (marker, PLACEHOLDER_MARKER)]
@@ -156,6 +171,13 @@ impl Plan {
                     for (path, original) in [(marker, owner), (manifest, previous)] {
                         self.root.remove_file(&path).map_err(error)?;
                         undo.push(Undo::Restore(path, original, true));
+                    }
+                    // Preserve directories with unrelated sidecars.
+                    if self.root.remove_dir(dir).is_ok() {
+                        undo.push(Undo::RestoreDir(
+                            dir,
+                            state.dir_mode.expect("managed directory exists"),
+                        ));
                     }
                 }
                 _ => unreachable!("only managed or vacant placeholders are changed"),
@@ -172,10 +194,7 @@ pub(super) fn publish_all(plans: &[Plan], publish: impl FnOnce() -> Result<()>) 
         plan.apply(&mut undo.last_mut().expect("just pushed a journal").1)
     });
     match applied.and_then(|()| publish()) {
-        Ok(()) => {
-            plans.iter().for_each(Plan::finish);
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(err) => {
             let rollback: Vec<_> = undo
                 .into_iter()
@@ -196,8 +215,9 @@ pub(super) fn publish_all(plans: &[Plan], publish: impl FnOnce() -> Result<()>) 
 }
 
 enum Undo<'a> {
-    RemoveDir(&'a Path),
+    RemoveDir(PathBuf),
     RemoveFile(PathBuf),
+    RestoreDir(&'a Path, u32),
     Restore(PathBuf, &'a FileState, bool),
 }
 
@@ -223,10 +243,15 @@ fn write(root: &Dir, path: &Path, original: &FileState, create: bool) -> io::Res
 fn inspect(root: &Dir, base: &Path, dir: &Path) -> Result<Option<State>> {
     let mut missing = Vec::new();
     let mut path = PathBuf::new();
+    let mut dir_mode = None;
     for component in dir.components() {
         path.push(component);
         match root.symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_dir() => {}
+            Ok(metadata) if metadata.is_dir() => {
+                if path == dir {
+                    dir_mode = Some(metadata.permissions().mode());
+                }
+            }
             Ok(metadata) if metadata.is_symlink() && root_alias(base, &path) => return Ok(None),
             Ok(_) => {
                 return Err(format!(
@@ -241,6 +266,7 @@ fn inspect(root: &Dir, base: &Path, dir: &Path) -> Result<Option<State>> {
     }
     Ok(Some(State {
         missing,
+        dir_mode,
         manifest: read(root, base, &dir.join(MANIFEST))?,
         marker: read(root, base, &dir.join(PLACEHOLDER_MARKER_NAME))?,
     }))
