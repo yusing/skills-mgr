@@ -84,6 +84,13 @@ pub(crate) fn safe_relative(path: &Path) -> bool {
         .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
 }
 
+pub(crate) fn is_manifest(relative: &Path) -> bool {
+    relative
+        .components()
+        .filter(|part| *part != Component::CurDir)
+        .eq([Component::Normal(MANIFEST.as_ref())])
+}
+
 pub(crate) fn open_root(root: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(root, ambient_authority()).map_err(|e| io_error(root, e))
 }
@@ -207,10 +214,7 @@ pub(crate) fn get_with_patch_error(
     let root = open_root(&skill.root)?;
     let path = skill.root.join(relative);
     let file = open_file(&root, relative).map_err(|e| io_error(&path, e))?;
-    let manifest = relative
-        .components()
-        .filter(|part| *part != Component::CurDir)
-        .eq([Component::Normal(MANIFEST.as_ref())]);
+    let manifest = is_manifest(relative);
 
     if let Some(key) = &skill.remote_key
         && manifest
@@ -242,6 +246,22 @@ pub(crate) fn get_with_patch_error(
         lines,
     )
     .map(|bytes| (bytes, None))
+}
+
+#[cfg(feature = "cli")]
+pub(crate) fn validate_body(bytes: &[u8], strip_header: bool) -> std::result::Result<(), String> {
+    let mut body = bytes;
+    if strip_header {
+        match frontmatter(&mut body).map_err(|e| e.to_string())? {
+            Frontmatter::Valid(_) => {}
+            Frontmatter::Malformed => return Err("invalid frontmatter".into()),
+            Frontmatter::Absent(_) => body = bytes,
+        }
+    }
+    if String::from_utf8_lossy(body).trim().is_empty() {
+        return Err("missing body or frontmatter-only placeholder".into());
+    }
+    Ok(())
 }
 
 fn serve(

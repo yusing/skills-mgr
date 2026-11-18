@@ -134,4 +134,32 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
             .unwrap()
             .contains("skill \"off\" is not enabled")
     );
+
+    put(&project.join(".agents/skills/alpha/script.sh"), b"#!/bin/sh\nprintf 'from %s: %s\\n' \"$PWD\" \"$1\"\nprintf 'child stderr\\n' >&2\nexit 23\n");
+    use std::os::unix::fs::PermissionsExt;
+    let script = project.join(".agents/skills/alpha/script.sh");
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    let run = invoke(&["run", "alpha/script.sh", "two words"]);
+    assert_eq!(run.status.code(), Some(23));
+    assert_eq!(
+        String::from_utf8(run.stdout).unwrap(),
+        format!("from {}: two words\n", script.parent().unwrap().display())
+    );
+    assert_eq!(run.stderr, b"child stderr\n");
+
+    put(
+        &project.join(".agents/skills/alpha/references/empty.md"),
+        b"---\ntitle: Empty body\n---\n\n",
+    );
+    let check = invoke(&["check", "alpha", "alpha/script.sh", "alpha/guide.md"]);
+    assert_eq!(check.status.code(), Some(1));
+    assert_eq!(check.stdout, b"PASS alpha\nPASS alpha/guide.md\nPASS alpha/references/query&sort.md\nPASS alpha/script.sh\n");
+    assert!(check.stderr.starts_with(
+        b"FAIL alpha/references/empty.md: missing body or frontmatter-only placeholder\n"
+    ));
+    assert!(
+        !String::from_utf8(check.stderr)
+            .unwrap()
+            .contains("child stderr")
+    );
 }

@@ -112,15 +112,20 @@ impl Skill {
                 description = metadata.description;
             }
         }
-        let mut references = Vec::new();
-        reference_files(&self.root, &dir, Path::new(""), &mut references)?;
-        references.sort();
+        let references = references(&self.root, &dir)?;
         Ok(ListedSkill {
             name: self.metadata.name,
             description,
             references,
         })
     }
+}
+
+pub(crate) fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {
+    let mut paths = Vec::new();
+    reference_files(root, dir, Path::new(""), &mut paths)?;
+    paths.sort();
+    Ok(paths)
 }
 
 fn ignore_stale<T>(error: Error) -> Result<Option<T>> {

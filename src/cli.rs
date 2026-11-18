@@ -43,6 +43,8 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
         [command, ..] if command == "info" => Err("usage: skills-mgr info".into()),
         [command, args @ ..] if command == "list" => read::list(out, args),
         [command, args @ ..] if command == "get" => read::get(out, args),
+        [command, args @ ..] if command == "run" => read::run_script(args),
+        [command, args @ ..] if command == "check" => read::check(out, args),
         [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
         [command, kind]
             if command == "__complete-skills" && (kind == "all" || kind == "enabled") =>
