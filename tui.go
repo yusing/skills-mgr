@@ -182,20 +182,11 @@ type registrySearchRequested struct {
 }
 
 func newModel(manager *manager, project string) (model, error) {
-	discovered, err := manager.managementSkills(project, "")
+	discovered, selection, err := manager.tuiSnapshot(project)
 	if err != nil {
 		return model{}, err
 	}
-	native, err := manager.nativeSkills(project)
-	if err != nil {
-		return model{}, err
-	}
-	discovered = append(discovered, native...)
 	slices.SortFunc(discovered, compareDiscoveredSkills)
-	selection, err := manager.selectionState(project, nil)
-	if err != nil {
-		return model{}, err
-	}
 	current := model{
 		manager: manager, project: project, allSkills: discovered,
 		selected:           selection.selected,

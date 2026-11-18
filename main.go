@@ -94,6 +94,7 @@ func run(args []string) error {
 
 	switch {
 	case len(args) == 0 || global:
+		manager.tuiCore = os.Getenv("_SKILLS_MGR_TUI_CORE")
 		project, err := currentProject()
 		if err != nil {
 			return err

@@ -16,8 +16,18 @@ use crate::{
 #[derive(Clone, Copy)]
 pub(crate) enum Source {
     Project,
-    Shared,
+    User,
+    Managed,
     Native(Harness),
+    Admin,
+    Bundled,
+    CodexPlugin,
+    ClaudePlugin,
+    Remote(#[cfg_attr(not(feature = "cli"), allow(dead_code))] remote::Provider),
+    #[cfg(feature = "cli")]
+    GrokPlugin,
+    #[cfg(feature = "cli")]
+    GrokBundled,
 }
 
 impl Source {
@@ -26,7 +36,42 @@ impl Source {
     }
 
     fn visible_to(self, harnesses: &[Harness]) -> bool {
-        !matches!(self, Self::Native(owner) if harnesses.iter().any(|active| *active != owner))
+        let harness = match self {
+            Self::Native(harness) => harness,
+            Self::Admin | Self::Bundled | Self::CodexPlugin => Harness::Codex,
+            Self::ClaudePlugin => Harness::Claude,
+            #[cfg(feature = "cli")]
+            Self::GrokPlugin | Self::GrokBundled => Harness::Grok,
+            _ => return true,
+        };
+        harnesses.iter().all(|active| *active == harness)
+    }
+
+    #[cfg(feature = "cli")]
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::User => "user",
+            Self::Managed => "managed",
+            Self::Native(Harness::Codex) => "codex",
+            Self::Native(Harness::Claude) => "claude",
+            Self::Native(Harness::Grok) => "grok",
+            Self::Admin => "admin",
+            Self::Bundled => "bundled",
+            Self::CodexPlugin => "plugin",
+            Self::ClaudePlugin => "claude-plugin",
+            Self::GrokPlugin => "grok-plugin",
+            Self::GrokBundled => "grok-bundled",
+            Self::Remote(provider) => provider.label(),
+        }
+    }
+
+    #[cfg(feature = "cli")]
+    pub(crate) fn editable(self) -> bool {
+        matches!(
+            self,
+            Self::Project | Self::User | Self::Managed | Self::Native(_) | Self::Remote(_)
+        )
     }
 }
 
@@ -35,6 +80,21 @@ pub(crate) struct Skill {
     pub root: PathBuf,
     pub remote_key: Option<String>,
     pub source: Source,
+    #[cfg(feature = "cli")]
+    pub entry_path: PathBuf,
+    #[cfg(feature = "cli")]
+    pub native: Option<Native>,
+}
+
+#[cfg(feature = "cli")]
+#[derive(Default)]
+pub(crate) struct Native {
+    pub enabled: bool,
+    pub plugin: String,
+    pub vendor: String,
+    pub user_invocable: bool,
+    pub compatibility_status: String,
+    pub manifest: Option<PathBuf>,
 }
 
 pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<Vec<ListedSkill>> {
@@ -62,7 +122,8 @@ pub(crate) fn list_harnesses(
         }
     }
     if serves_claude && harnesses.iter().all(|harness| *harness == Harness::Claude) {
-        for (name, skill) in claude_plugins(manager, None)? {
+        for skill in claude_plugins(manager, None, false)? {
+            let name = skill.metadata.name.clone();
             if !skill.metadata.hide && !listed.contains_key(&name) {
                 listed.insert(name, skill.listed(manager)?);
             }
@@ -78,9 +139,9 @@ pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
         Some(_) => true,
         None => false,
     };
-    match claude_plugins(manager, Some(name)) {
-        Ok(mut plugins) => {
-            if let Some(plugin) = plugins.remove(name) {
+    match claude_plugins(manager, Some(name), false) {
+        Ok(plugins) => {
+            if let Some(plugin) = plugins.into_iter().next() {
                 return Ok(plugin);
             }
         }
@@ -97,27 +158,56 @@ pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
 impl Skill {
     fn listed(self, manager: &SkillsManager) -> Result<ListedSkill> {
         let dir = content::open_root(&self.root)?;
-        let mut description = self.metadata.description;
-        if let Some(key) = &self.remote_key
-            && let Some(patch) = remote::patch(manager, key).or_else(ignore_stale)?
-        {
-            let path = self.root.join(MANIFEST);
-            let mut file =
-                content::open_file(&dir, Path::new(MANIFEST)).map_err(|e| io_error(&path, e))?;
-            let mut bytes = Vec::new();
-            io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| io_error(&path, e))?;
-            if let Some(patched) = patch.apply(&bytes).map(Some).or_else(ignore_stale)?
-                && let Some(metadata) = content::patched_metadata(&patched)
-            {
-                description = metadata.description;
-            }
-        }
+        let description = self
+            .patched_description(manager, &dir)?
+            .unwrap_or(self.metadata.description);
         let references = references(&self.root, &dir)?;
         Ok(ListedSkill {
             name: self.metadata.name,
             description,
             references,
         })
+    }
+
+    fn patched_description(
+        &self,
+        manager: &SkillsManager,
+        dir: &cap_std::fs::Dir,
+    ) -> Result<Option<String>> {
+        if let Some(key) = &self.remote_key
+            && let Some(patch) = remote::patch(manager, key).or_else(ignore_stale)?
+        {
+            let path = self.root.join(MANIFEST);
+            let mut file =
+                content::open_file(dir, Path::new(MANIFEST)).map_err(|e| io_error(&path, e))?;
+            let mut bytes = Vec::new();
+            io::Read::read_to_end(&mut file, &mut bytes).map_err(|e| io_error(&path, e))?;
+            if let Some(patched) = patch.apply(&bytes).map(Some).or_else(ignore_stale)?
+                && let Some(metadata) = content::patched_metadata(&patched)
+            {
+                return Ok(Some(metadata.description));
+            }
+        }
+        Ok(None)
+    }
+
+    #[cfg(feature = "cli")]
+    pub(crate) fn manifest_path(&self) -> PathBuf {
+        self.native
+            .as_ref()
+            .and_then(|native| native.manifest.clone())
+            .unwrap_or_else(|| self.root.join(MANIFEST))
+    }
+
+    #[cfg(feature = "cli")]
+    pub(crate) fn description(&self, manager: &SkillsManager) -> Result<std::borrow::Cow<'_, str>> {
+        if self.remote_key.is_some()
+            && let Some(description) =
+                self.patched_description(manager, &content::open_root(&self.root)?)?
+        {
+            return Ok(description.into());
+        }
+        Ok(self.metadata.description.as_str().into())
     }
 }
 
@@ -183,8 +273,12 @@ pub(crate) fn discover(
     let home = &manager.home;
     for (root, source, system) in [
         (project.join(".agents/skills"), Source::Project, false),
-        (home.join(".agents/skills"), Source::Shared, false),
-        (manager.manager_home().join("skills"), Source::Shared, false),
+        (home.join(".agents/skills"), Source::User, false),
+        (
+            manager.manager_home().join("skills"),
+            Source::Managed,
+            false,
+        ),
         (
             project.join(".claude/skills"),
             Source::Native(Harness::Claude),
@@ -215,7 +309,13 @@ pub(crate) fn discover(
         return Ok(discovery.skills);
     }
     for entry in remote::entries(manager, name)? {
-        if discovery.add(entry.root, Source::Shared, Some(entry.key), entry.hide)? {
+        if discovery.add(
+            entry.root,
+            Source::Remote(entry.provider),
+            Some(entry.key),
+            entry.hide,
+            None,
+        )? {
             break;
         }
     }
@@ -240,11 +340,11 @@ impl<'a> Discovery<'a> {
             let path = entry.path();
             let kind = entry.file_type().map_err(|e| io_error(&path, e))?;
             let found = if system && entry.file_name() == ".system" {
-                self.root(&path, source, false)?
+                self.root(&path, Source::Bundled, false)?
             } else if (kind.is_dir() || kind.is_symlink())
                 && let Ok(root) = fs::canonicalize(&path)
             {
-                self.add(root, source, None, None)?
+                self.add(root, source, None, None, Some(&path))?
             } else {
                 false
             };
@@ -256,9 +356,8 @@ impl<'a> Discovery<'a> {
     }
 
     fn codex_extras(&mut self, manager: &SkillsManager) -> Result<bool> {
-        let codex = Source::Native(Harness::Codex);
         if let Some(admin) = &manager.admin_skills
-            && self.root(admin, codex, false)?
+            && self.root(admin, Source::Admin, false)?
         {
             return Ok(true);
         }
@@ -267,7 +366,7 @@ impl<'a> Discovery<'a> {
 
     fn plugin_cache(&mut self, root: &Path, depth: usize) -> Result<bool> {
         if root.file_name().is_some_and(|name| name == "skills") {
-            return self.root(root, Source::Native(Harness::Codex), false);
+            return self.root(root, Source::CodexPlugin, false);
         }
         if depth < 10 {
             for entry in entries(root, true)? {
@@ -290,6 +389,7 @@ impl<'a> Discovery<'a> {
         source: Source,
         remote_key: Option<String>,
         hidden: Option<bool>,
+        _entry_path: Option<&Path>,
     ) -> Result<bool> {
         let dir = match content::open_root(&root) {
             Ok(dir) => dir,
@@ -324,9 +424,13 @@ impl<'a> Discovery<'a> {
             metadata.name.clone(),
             Skill {
                 metadata,
+                #[cfg(feature = "cli")]
+                entry_path: _entry_path.unwrap_or(&root).to_path_buf(),
                 root,
                 remote_key,
                 source,
+                #[cfg(feature = "cli")]
+                native: None,
             },
         );
         Ok(self.target.is_some())
@@ -342,8 +446,16 @@ fn native_visible(
     let home = &manager.home;
     match harness {
         Some(Harness::Claude) => {
-            native.root(&project.join(".claude/skills"), Source::Shared, false)?;
-            native.root(&home.join(".claude/skills"), Source::Shared, false)?;
+            native.root(
+                &project.join(".claude/skills"),
+                Source::Native(Harness::Claude),
+                false,
+            )?;
+            native.root(
+                &home.join(".claude/skills"),
+                Source::Native(Harness::Claude),
+                false,
+            )?;
         }
         Some(Harness::Grok) => {
             for kind in [".grok", ".agents"].into_iter().chain(
@@ -351,13 +463,29 @@ fn native_visible(
                     .is_ok_and(|v| v.eq_ignore_ascii_case("false")))
                 .then_some(".claude"),
             ) {
-                native.root(&project.join(kind).join("skills"), Source::Shared, false)?;
-                native.root(&home.join(kind).join("skills"), Source::Shared, false)?;
+                native.root(
+                    &project.join(kind).join("skills"),
+                    Source::Native(Harness::Grok),
+                    false,
+                )?;
+                native.root(
+                    &home.join(kind).join("skills"),
+                    Source::Native(Harness::Grok),
+                    false,
+                )?;
             }
         }
         Some(Harness::Codex) => {
-            native.root(&project.join(".codex/skills"), Source::Shared, true)?;
-            native.root(&manager.codex_home.join("skills"), Source::Shared, true)?;
+            native.root(
+                &project.join(".codex/skills"),
+                Source::Native(Harness::Codex),
+                true,
+            )?;
+            native.root(
+                &manager.codex_home.join("skills"),
+                Source::Native(Harness::Codex),
+                true,
+            )?;
             native.codex_extras(manager)?;
         }
         None => {}
@@ -403,7 +531,11 @@ fn claude_skill_tool_denied(manager: &SkillsManager) -> Result<bool> {
     Ok(false)
 }
 
-fn claude_plugins(manager: &SkillsManager, name: Option<&str>) -> Result<BTreeMap<String, Skill>> {
+pub(crate) fn claude_plugins(
+    manager: &SkillsManager,
+    name: Option<&str>,
+    include_disabled: bool,
+) -> Result<Vec<Skill>> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Settings {
@@ -411,31 +543,51 @@ fn claude_plugins(manager: &SkillsManager, name: Option<&str>) -> Result<BTreeMa
     }
 
     let claude = manager.home.join(".claude");
-    let mut discovery = Discovery::new(name);
+    let mut skills = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     if let Some(settings) = read_json::<Settings>(&claude.join("settings.json"))?
         && let Some(plugins) =
             read_json::<ClaudePlugins>(&claude.join("plugins/installed_plugins.json"))?
     {
         for (id, installs) in plugins.plugins {
-            if settings
+            let enabled = settings
                 .enabled_plugins
                 .as_ref()
                 .and_then(|plugins| plugins.get(&id))
-                == Some(&true)
-            {
-                for install in installs {
-                    if discovery.root(
-                        &install.install_path.join("skills"),
-                        Source::Native(Harness::Claude),
-                        false,
-                    )? {
-                        return Ok(discovery.skills);
+                == Some(&true);
+            if !enabled && !include_disabled {
+                continue;
+            }
+            for install in installs {
+                let mut discovery = Discovery::new(name);
+                discovery.root(
+                    &install.install_path.join("skills"),
+                    Source::ClaudePlugin,
+                    false,
+                )?;
+                for (_name, skill) in discovery.skills {
+                    let key = (id.clone(), skill.root.clone());
+                    if !seen.insert(key) {
+                        continue;
                     }
+                    #[cfg(feature = "cli")]
+                    let skill = Skill {
+                        native: Some(Native {
+                            enabled,
+                            plugin: id.clone(),
+                            ..Native::default()
+                        }),
+                        ..skill
+                    };
+                    skills.push(skill);
+                }
+                if name.is_some() && !skills.is_empty() && !include_disabled {
+                    return Ok(skills);
                 }
             }
         }
     }
-    Ok(discovery.skills)
+    Ok(skills)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {

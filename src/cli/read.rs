@@ -9,10 +9,10 @@ use std::{
 };
 
 use crate::{
-    Harness, SkillsManager, catalog, condition::Conditions, content, selection::Selections,
+    Harness, SkillsManager, catalog, condition::Conditions, content, remote, selection::Selections,
 };
 
-use super::{Result, current_manager};
+use super::{Result, current_manager, native};
 
 pub(super) fn harness_args(mut args: &[OsString]) -> Result<(Vec<Harness>, &[OsString])> {
     let mut harnesses = Vec::new();
@@ -200,7 +200,16 @@ fn line_range(value: &str) -> Result<RangeInclusive<usize>> {
 }
 
 pub(super) fn acquire(manager: &SkillsManager, name: &str) -> Result<catalog::Skill> {
-    catalog::find(manager, name).map_err(|e| acquisition_error(name, e))
+    let (skill, fallback) =
+        native::resolve(manager, name).map_err(|e| acquisition_error(name, e))?;
+    if fallback {
+        eprintln!(
+            "skills-mgr: using {} skill {name:?} at {} after an inaccessible owner",
+            skill.source.label(),
+            skill.manifest_path().display()
+        );
+    }
+    Ok(skill)
 }
 
 pub(super) fn acquisition_error(
@@ -330,7 +339,7 @@ pub(super) fn check(out: &mut impl Write, args: &[OsString]) -> Result<()> {
         };
         let skill = match resolved
             .entry(name.to_owned())
-            .or_insert_with(|| catalog::find(&manager, name))
+            .or_insert_with(|| native::resolve(&manager, name).map(|(skill, _)| skill))
         {
             Ok(skill) => skill,
             Err(error) => {
@@ -376,6 +385,13 @@ pub(super) fn complete(out: &mut impl Write, enabled_only: bool) -> Result<()> {
             continue;
         }
         writeln!(out, "{name}")?;
+    }
+    Ok(())
+}
+
+pub(super) fn complete_remote(out: &mut impl Write) -> Result<()> {
+    for (record, _) in remote::records(&remote::store_path(&current_manager()?), None)? {
+        writeln!(out, "{}", record.reference.name)?;
     }
     Ok(())
 }

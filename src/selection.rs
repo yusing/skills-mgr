@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error, remote::RemoteRef,
@@ -14,7 +14,7 @@ pub(crate) const LOCK_NAME: &str = ".skills-mgr.json";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Lock {
+struct RawLock {
     schema_revision: u32,
     skills: BTreeMap<String, Entry>,
 }
@@ -26,19 +26,23 @@ enum Entry {
     Current(Selection),
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Selection {
-    enabled: Option<Enabled>,
-    remote: Option<RemoteRef>,
+pub(crate) struct Selection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<Enabled>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<RemoteRef>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged)]
-enum Enabled {
+pub(crate) enum Enabled {
     Boolean(bool),
     Condition(String),
 }
+
+pub(crate) type Lock = BTreeMap<String, Selection>;
 
 #[derive(Default)]
 pub(crate) struct Selections {
@@ -57,69 +61,96 @@ impl Selections {
     }
 
     fn apply(&mut self, path: &Path) -> Result<()> {
-        if !present(path)? {
-            return Ok(());
-        }
-        let bytes = fs::read(path).map_err(|e| io_error(path, e))?;
-        let Lock {
-            schema_revision,
-            skills,
-        } = serde_json::from_slice(&bytes).map_err(|e| invalid_data(path, e))?;
-        if !(1..=3).contains(&schema_revision) {
-            return Err(invalid_data(
-                path,
-                format!("unsupported selection revision {schema_revision}"),
-            ));
-        }
-        for (name, entry) in skills {
-            let invalid = || invalid_data(path, format!("invalid selection for skill {name:?}"));
-            let enabled = match entry {
-                Entry::Legacy(value) if schema_revision == 1 => Some(Enabled::Boolean(value)),
-                Entry::Current(Selection { enabled, remote }) if schema_revision > 1 => {
-                    if let Some(remote) = &remote {
-                        if remote.name != name || !remote.valid() {
-                            return Err(invalid());
-                        }
-                    } else if enabled.is_none() {
-                        return Err(invalid());
-                    }
-                    if let Some(Enabled::Condition(expr)) = &enabled
-                        && (schema_revision != 3 || expr.trim().is_empty())
-                    {
-                        return Err(invalid());
-                    }
-                    enabled
-                }
-                _ => return Err(invalid()),
-            };
-            if let Some(enabled) = enabled {
-                self.entries.insert(name, enabled);
-            }
-        }
+        self.entries.extend(
+            load(path)?
+                .into_iter()
+                .filter_map(|(name, entry)| entry.enabled.map(|value| (name, value))),
+        );
         Ok(())
     }
 
     pub(crate) fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
-        match self.entries.get(&skill.metadata.name) {
-            Some(Enabled::Boolean(value)) => Ok(*value),
-            Some(Enabled::Condition(expr)) => {
-                let result = self.conditions.evaluate(manager, expr);
-                #[cfg(feature = "cli")]
-                let result = match result {
-                    Ok(None) if manager.shell_conditions => {
-                        crate::cli::shell_condition(manager, expr).map(Some)
+        evaluate(
+            &mut self.conditions,
+            manager,
+            &skill.metadata.name,
+            self.entries.get(&skill.metadata.name),
+            skill.source.is_project() || skill.metadata.hide,
+        )
+    }
+}
+
+pub(crate) fn load(path: &Path) -> Result<Lock> {
+    if !present(path)? {
+        return Ok(Lock::new());
+    }
+    let bytes = fs::read(path).map_err(|e| io_error(path, e))?;
+    let RawLock {
+        schema_revision,
+        skills,
+    } = serde_json::from_slice(&bytes).map_err(|e| invalid_data(path, e))?;
+    if !(1..=3).contains(&schema_revision) {
+        return Err(invalid_data(
+            path,
+            format!("unsupported selection revision {schema_revision}"),
+        ));
+    }
+    let mut normalized = Lock::new();
+    for (name, entry) in skills {
+        let invalid = || invalid_data(path, format!("invalid selection for skill {name:?}"));
+        let selection = match entry {
+            Entry::Legacy(value) if schema_revision == 1 => Selection {
+                enabled: Some(Enabled::Boolean(value)),
+                remote: None,
+            },
+            Entry::Current(selection) if schema_revision > 1 => {
+                if let Some(remote) = &selection.remote {
+                    if remote.name != name || !remote.valid() {
+                        return Err(invalid());
                     }
-                    result => result,
-                };
-                result
-                    .map_err(|source| Error::Condition {
-                        skill: skill.metadata.name.clone(),
-                        source,
-                    })?
-                    .ok_or_else(|| Error::UnsupportedCondition(skill.metadata.name.clone()))
+                } else if selection.enabled.is_none() {
+                    return Err(invalid());
+                }
+                if let Some(Enabled::Condition(expr)) = &selection.enabled
+                    && (schema_revision != 3 || expr.trim().is_empty())
+                {
+                    return Err(invalid());
+                }
+                selection
             }
-            None => Ok(skill.source.is_project() || skill.metadata.hide),
+            _ => return Err(invalid()),
+        };
+        normalized.insert(name, selection);
+    }
+    Ok(normalized)
+}
+
+pub(crate) fn evaluate(
+    conditions: &mut crate::condition::Conditions,
+    manager: &SkillsManager,
+    skill: &str,
+    value: Option<&Enabled>,
+    default: bool,
+) -> Result<bool> {
+    match value {
+        Some(Enabled::Boolean(value)) => Ok(*value),
+        Some(Enabled::Condition(expr)) => {
+            let result = conditions.evaluate(manager, expr);
+            #[cfg(feature = "cli")]
+            let result = match result {
+                Ok(None) if manager.shell_conditions => {
+                    crate::cli::shell_condition(manager, expr).map(Some)
+                }
+                result => result,
+            };
+            result
+                .map_err(|source| Error::Condition {
+                    skill: skill.to_owned(),
+                    source,
+                })?
+                .ok_or_else(|| Error::UnsupportedCondition(skill.to_owned()))
         }
+        None => Ok(default),
     }
 }
 
@@ -127,7 +158,7 @@ pub(crate) fn is_enabled(manager: &SkillsManager) -> Result<bool> {
     Ok(present(&manager.project.join(LOCK_NAME))? || global_path(manager)?.is_some())
 }
 
-fn global_path(manager: &SkillsManager) -> Result<Option<PathBuf>> {
+pub(crate) fn global_path(manager: &SkillsManager) -> Result<Option<PathBuf>> {
     let current = manager.manager_home().join(LOCK_NAME);
     if present(&current)? {
         return Ok(Some(current));

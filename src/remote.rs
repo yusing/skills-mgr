@@ -5,15 +5,35 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{Error, Result, SkillsManager, catalog, content::valid_name, invalid_data, io_error};
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(crate) enum Provider {
+    #[serde(rename = "skills.sh")]
+    SkillsSh,
+    #[serde(rename = "SkillsMP")]
+    SkillsMp,
+    #[serde(rename = "repository")]
+    Repository,
+}
+
+impl Provider {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::SkillsSh => "skills.sh",
+            Self::SkillsMp => "SkillsMP",
+            Self::Repository => "repository",
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemoteRef {
-    provider: String,
+    pub provider: Provider,
     id: String,
     pub name: String,
     locator: String,
@@ -21,10 +41,7 @@ pub(crate) struct RemoteRef {
 
 impl RemoteRef {
     pub(crate) fn valid(&self) -> bool {
-        matches!(
-            self.provider.as_str(),
-            "skills.sh" | "SkillsMP" | "repository"
-        ) && valid_name(&self.name)
+        valid_name(&self.name)
             && !self.id.is_empty()
             && self.id.len() <= 1024
             && !self.locator.is_empty()
@@ -36,16 +53,16 @@ impl RemoteRef {
                 .any(char::is_control)
     }
 
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         let mut hash = Sha256::new();
-        hash.update(self.provider.as_bytes());
+        hash.update(self.provider.label().as_bytes());
         hash.update([0]);
         hash.update(self.id.as_bytes());
         hex_digest(&hash.finalize())
     }
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
+pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(2 * bytes.len());
     for byte in bytes {
         write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
@@ -55,11 +72,11 @@ fn hex_digest(bytes: &[u8]) -> String {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Record {
+pub(crate) struct Record {
     schema_revision: u32,
     #[serde(flatten)]
-    reference: RemoteRef,
-    content: PathBuf,
+    pub reference: RemoteRef,
+    pub content: PathBuf,
     fetched_at: String,
     #[serde(rename = "exclude")]
     _exclude: Option<Vec<String>>,
@@ -74,12 +91,42 @@ struct Override {
 
 pub(crate) struct Entry {
     pub key: String,
+    pub provider: Provider,
     pub root: PathBuf,
     pub hide: Option<bool>,
 }
 
 pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec<Entry>> {
-    let store = manager.cache.join("skills-mgr/remote-skills");
+    let store = store_path(manager);
+    let mut discovered = Vec::new();
+    for (record, key) in records(&store, name)? {
+        let Some(root) = content_root(&store, &record.content)? else {
+            continue;
+        };
+        let path = store.join("entries").join(&key).with_extension("override");
+        let hide = read_metadata::<Override>(&path)?
+            .map(|metadata| {
+                if metadata.schema_revision != 1 {
+                    return Err(invalid_data(&path, "unsupported remote override revision"));
+                }
+                Ok(metadata.disable_model_invocation)
+            })
+            .transpose()?;
+        discovered.push(Entry {
+            key,
+            provider: record.reference.provider,
+            root,
+            hide,
+        });
+    }
+    Ok(discovered)
+}
+
+pub(crate) fn store_path(manager: &SkillsManager) -> PathBuf {
+    manager.cache.join("skills-mgr/remote-skills")
+}
+
+pub(crate) fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, String)>> {
     let mut records = Vec::new();
     for item in catalog::entries(&store.join("entries"), false)? {
         let path = item.path();
@@ -105,28 +152,13 @@ pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec
         }
     }
     records.sort_by(|(a, _), (b, _)| {
-        (&a.reference.provider, &a.reference.id).cmp(&(&b.reference.provider, &b.reference.id))
+        (a.reference.provider.label(), &a.reference.id)
+            .cmp(&(b.reference.provider.label(), &b.reference.id))
     });
-    let mut discovered = Vec::new();
-    for (record, key) in records {
-        let Some(root) = content_root(&store, &record.content)? else {
-            continue;
-        };
-        let path = store.join("entries").join(&key).with_extension("override");
-        let hide = read_metadata::<Override>(&path)?
-            .map(|metadata| {
-                if metadata.schema_revision != 1 {
-                    return Err(invalid_data(&path, "unsupported remote override revision"));
-                }
-                Ok(metadata.disable_model_invocation)
-            })
-            .transpose()?;
-        discovered.push(Entry { key, root, hide });
-    }
-    Ok(discovered)
+    Ok(records)
 }
 
-fn content_root(store: &Path, relative: &Path) -> Result<Option<PathBuf>> {
+pub(crate) fn content_root(store: &Path, relative: &Path) -> Result<Option<PathBuf>> {
     let path = store.join(relative);
     let mut parts = relative.components();
     if !matches!((parts.next(), parts.next(), parts.next()),
@@ -179,11 +211,7 @@ pub(crate) struct Patch {
 }
 
 pub(crate) fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>> {
-    let path = manager
-        .manager_home()
-        .join("skills/.remote-patches")
-        .join(key)
-        .with_extension("patch");
+    let path = patch_path(manager, key);
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err(Error::StaleRemotePatch(path)),
@@ -192,6 +220,14 @@ pub(crate) fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>>
     }
     let data = fs::read(&path).map_err(|e| io_error(&path, e))?;
     Ok(Some(Patch { path, data }))
+}
+
+pub(crate) fn patch_path(manager: &SkillsManager, key: &str) -> PathBuf {
+    manager
+        .manager_home()
+        .join("skills/.remote-patches")
+        .join(key)
+        .with_extension("patch")
 }
 
 impl Patch {

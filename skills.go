@@ -17,6 +17,7 @@ type manager struct {
 	remote               *remoteRegistry
 	skillsMP             *skillsMPRegistry
 	remoteStore          *remoteSkillStore
+	tuiCore              string
 	global               bool
 	runtimeOnce          sync.Once
 	javascriptRuntime    string

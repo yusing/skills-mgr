@@ -6,7 +6,10 @@ use std::{
     process::ExitCode,
 };
 
+mod inspect;
+mod native;
 mod read;
+mod tui;
 
 use crate::{SkillsManager, selection::LOCK_NAME};
 
@@ -45,14 +48,20 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
         [command, args @ ..] if command == "get" => read::get(out, args),
         [command, args @ ..] if command == "run" => read::run_script(args),
         [command, args @ ..] if command == "check" => read::check(out, args),
+        [command, args @ ..] if command == "inspect" => inspect::inspect(out, args),
+        [command] if command == "__tui" => tui::dispatch(out),
         [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
         [command, kind]
             if command == "__complete-skills" && (kind == "all" || kind == "enabled") =>
         {
             read::complete(out, kind == "enabled")
         }
+        [command, kind] if command == "__complete-skills" && kind == "remote" => {
+            read::complete_remote(out)
+        }
+        [] => tui::launch(false),
+        [flag] if flag == "-g" => tui::launch(true),
         [command, ..] => Err(format!("unknown command {:?}", command.to_string_lossy()).into()),
-        [] => Err("interactive mode is not available in this build".into()),
     }
 }
 
