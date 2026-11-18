@@ -395,7 +395,7 @@ fn build_snapshot(manager: &SkillsManager, global: bool, include_native: bool) -
     let project_lock = if global {
         Lock::new()
     } else {
-        selection::load(&manager.project.join(LOCK_NAME))?
+        selection::load(&manager.project().join(LOCK_NAME))?
     };
     let selection = selection_view(global_lock, project_lock, global, &skills);
     let missing = native::missing_remote(manager, None)?;

@@ -1,5 +1,3 @@
-#![cfg(feature = "cli")]
-
 use std::process::Command;
 
 fn cli() -> Command {
@@ -1049,10 +1047,9 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
         b"---\ntitle: Hidden header\n---\npublic text\n",
     );
     put(&project.join(".skills-mgr.json"), br#"{"schema_revision":3,"skills":{"off":{"enabled":false},"shell":{"enabled":"lang rust || command -v bash"}}}"#);
-    let invoke = |args: &[&str]| {
-        cli()
-            .args(args)
-            .current_dir(&project)
+    let command = || {
+        let mut cmd = cli();
+        cmd.current_dir(&project)
             .env("HOME", home.path())
             .env("XDG_CACHE_HOME", home.path().join("cache"))
             .env("CODEX_HOME", home.path().join("codex"))
@@ -1060,10 +1057,10 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
             .env_remove("GROK_AGENT")
             .env_remove("GROK_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
-            .env("SKILLS_MGR_NO_REFRESH", "1")
-            .output()
-            .unwrap()
+            .env("SKILLS_MGR_NO_REFRESH", "1");
+        cmd
     };
+    let invoke = |args: &[&str]| command().args(args).output().unwrap();
     let list = invoke(&["list"]);
     assert!(list.status.success(), "{list:?}");
     assert!(list.stderr.is_empty());
@@ -1103,6 +1100,19 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
         format!("from {}: two words\n", script.parent().unwrap().display())
     );
     assert_eq!(run.stderr, b"child stderr\n");
+
+    put(&project.join("src/main.rs"), b"");
+    put(
+        &project.join(".skills-mgr.json"),
+        br#"{"schema_revision":3,"skills":{"shell":{"enabled":"lang rust"}}}"#,
+    );
+    let native = command()
+        .args(["get", "shell"])
+        .env("PATH", "")
+        .output()
+        .unwrap();
+    assert!(native.status.success(), "{native:?}");
+    assert_eq!(native.stdout, b"shell body\n");
 
     put(
         &project.join(".agents/skills/alpha/references/empty.md"),

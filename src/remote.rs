@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::{Error, Result, SkillsManager, catalog, content::valid_name, invalid_data, io_error};
 
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
-pub(crate) enum Provider {
+pub enum Provider {
     #[serde(rename = "skills.sh")]
     SkillsSh,
     #[serde(rename = "SkillsMP")]
@@ -21,7 +21,7 @@ pub(crate) enum Provider {
 }
 
 impl Provider {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::SkillsSh => "skills.sh",
             Self::SkillsMp => "SkillsMP",
@@ -32,7 +32,7 @@ impl Provider {
 
 #[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RemoteRef {
+pub struct RemoteRef {
     pub provider: Provider,
     pub id: String,
     pub name: String,
@@ -40,7 +40,7 @@ pub(crate) struct RemoteRef {
 }
 
 impl RemoteRef {
-    pub(crate) fn valid(&self) -> bool {
+    pub fn valid(&self) -> bool {
         valid_name(&self.name)
             && !self.id.is_empty()
             && self.id.len() <= 1024
@@ -53,7 +53,7 @@ impl RemoteRef {
                 .any(char::is_control)
     }
 
-    pub(crate) fn key(&self) -> String {
+    pub fn key(&self) -> String {
         let mut hash = Sha256::new();
         hash.update(self.provider.label().as_bytes());
         hash.update([0]);
@@ -62,7 +62,7 @@ impl RemoteRef {
     }
 }
 
-pub(crate) fn hex_digest(bytes: &[u8]) -> String {
+pub fn hex_digest(bytes: &[u8]) -> String {
     let mut hex = String::with_capacity(2 * bytes.len());
     for byte in bytes {
         write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
@@ -72,7 +72,7 @@ pub(crate) fn hex_digest(bytes: &[u8]) -> String {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Record {
+pub struct Record {
     pub schema_revision: u32,
     #[serde(flatten)]
     pub reference: RemoteRef,
@@ -84,7 +84,7 @@ pub(crate) struct Record {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub(crate) struct Override {
+pub struct Override {
     pub schema_revision: u32,
     pub disable_model_invocation: bool,
 }
@@ -116,7 +116,7 @@ pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec
     Ok(discovered)
 }
 
-pub(crate) fn invocation_override(store: &Path, key: &str) -> Result<Option<bool>> {
+pub fn invocation_override(store: &Path, key: &str) -> Result<Option<bool>> {
     let path = store.join("entries").join(key).with_extension("override");
     read_metadata::<Override>(&path)?
         .map(|metadata| {
@@ -128,11 +128,11 @@ pub(crate) fn invocation_override(store: &Path, key: &str) -> Result<Option<bool
         .transpose()
 }
 
-pub(crate) fn store_path(manager: &SkillsManager) -> PathBuf {
+pub fn store_path(manager: &SkillsManager) -> PathBuf {
     manager.cache.join("skills-mgr/remote-skills")
 }
 
-pub(crate) fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, String)>> {
+pub fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, String)>> {
     let mut records = Vec::new();
     for item in catalog::entries(&store.join("entries"), false)? {
         let path = item.path();
@@ -171,8 +171,8 @@ fn read_record(path: &Path) -> Result<Option<(Record, String)>> {
     Ok(Some((record, key)))
 }
 
-#[cfg(all(feature = "cli", unix))]
-pub(crate) fn record_by_key(store: &Path, key: &str) -> Result<Option<Record>> {
+#[cfg(all(feature = "cli-support", unix))]
+pub fn record_by_key(store: &Path, key: &str) -> Result<Option<Record>> {
     if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(invalid_data(store, "invalid remote cache key"));
     }
@@ -182,7 +182,7 @@ pub(crate) fn record_by_key(store: &Path, key: &str) -> Result<Option<Record>> {
     )
 }
 
-pub(crate) fn content_root(store: &Path, relative: &Path) -> Result<Option<PathBuf>> {
+pub fn content_root(store: &Path, relative: &Path) -> Result<Option<PathBuf>> {
     let path = store.join(relative);
     let mut parts = relative.components();
     if !matches!((parts.next(), parts.next(), parts.next()),
@@ -229,12 +229,12 @@ fn read_metadata<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T
         .map_err(|e| invalid_data(path, e))
 }
 
-pub(crate) struct Patch {
+pub struct Patch {
     path: PathBuf,
     data: Vec<u8>,
 }
 
-pub(crate) fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>> {
+pub fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>> {
     let path = patch_path(manager, key);
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
@@ -246,7 +246,7 @@ pub(crate) fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>>
     Ok(Some(Patch { path, data }))
 }
 
-pub(crate) fn patch_path(manager: &SkillsManager, key: &str) -> PathBuf {
+pub fn patch_path(manager: &SkillsManager, key: &str) -> PathBuf {
     manager
         .manager_home()
         .join("skills/.remote-patches")
@@ -255,7 +255,7 @@ pub(crate) fn patch_path(manager: &SkillsManager, key: &str) -> PathBuf {
 }
 
 impl Patch {
-    pub(crate) fn apply(&self, original: &[u8]) -> Result<Vec<u8>> {
+    pub fn apply(&self, original: &[u8]) -> Result<Vec<u8>> {
         self.apply_checked(original)
             .ok_or_else(|| Error::StaleRemotePatch(self.path.clone()))
     }

@@ -100,7 +100,7 @@ pub(super) fn run(manager: &SkillsManager) -> Result<()> {
 }
 
 fn root(manager: &SkillsManager) -> PathBuf {
-    manager.cache.join("skills-mgr")
+    manager.cache().join("skills-mgr")
 }
 
 fn due(root: &Path) -> bool {

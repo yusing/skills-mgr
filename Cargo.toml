@@ -5,43 +5,51 @@ edition = "2024"
 description = "Read the skills-mgr catalog and skill files from Rust without subprocesses"
 license = "MIT"
 repository = "https://github.com/yusing/skills-mgr"
-include = ["/src", "/tests", "/completion.fish", "/README.md", "/LICENSE"]
+include = ["/src", "/tests/read_api.rs", "/README.md", "/LICENSE"]
+
+[workspace]
+members = ["crates/skills-mgr-cli"]
+resolver = "3"
 
 [features]
-cli = ["dep:jiff", "dep:percent-encoding", "dep:tempfile", "dep:toml_edit", "dep:ureq", "dep:url", "diffy/std"]
+# Internal interface for the workspace's executable, not part of the read API.
+cli-support = []
 
-[[bin]]
-name = "skills-mgr"
-path = "src/main.rs"
-required-features = ["cli"]
-
-[dependencies]
+[workspace.dependencies]
 brush-parser = "0.4.0"
 cap-std = "4.0.3"
 diffy = "0.5.2"
 dirs = "7.0.0"
+libc = "0.2.191"
+regex = "1.13.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
+sha2 = "0.11.1"
+tempfile = "3.27.0"
+toml = { version = "1.2.1", default-features = false, features = ["std", "serde", "parse"] }
+
+[dependencies]
+brush-parser.workspace = true
+cap-std.workspace = true
+diffy.workspace = true
+dirs.workspace = true
 gix-discover = "0.57.1"
 gix-hash = { version = "0.28.1", features = ["sha1", "sha256"] }
 gix-index = "0.58.0"
 gix-path = "0.14.1"
 gomod-parser = "0.6.0"
 ignore = "0.4.34"
-jiff = { version = "0.2.46", optional = true }
-percent-encoding = { version = "2.3.2", optional = true }
-regex = "1.13.2"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
-serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
-sha2 = "0.11.1"
-tempfile = { version = "3.27.0", optional = true }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+sha2.workspace = true
 thiserror = "2.0.21"
-toml = "1.2.1"
-toml_edit = { version = "0.25.19", optional = true }
-ureq = { version = "3.5.2", optional = true }
-url = { version = "2.5.8", optional = true }
+toml.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.191"
+libc.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile.workspace = true

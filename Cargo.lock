@@ -1907,6 +1907,25 @@ dependencies = [
  "gix-path",
  "gomod-parser",
  "ignore",
+ "libc",
+ "regex",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "skills-mgr-cli"
+version = "0.2.1"
+dependencies = [
+ "brush-parser",
+ "cap-std",
+ "diffy",
+ "dirs",
  "jiff",
  "libc",
  "percent-encoding",
@@ -1915,8 +1934,8 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2",
+ "skills-mgr",
  "tempfile",
- "thiserror",
  "toml",
  "toml_edit",
  "ureq",

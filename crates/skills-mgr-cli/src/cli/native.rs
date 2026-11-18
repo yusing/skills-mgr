@@ -104,7 +104,7 @@ pub(super) fn grok(manager: &SkillsManager, name: Option<&str>) -> Result<Vec<Sk
 
     let output = match Command::new("grok")
         .args(["inspect", "--json"])
-        .current_dir(&manager.project)
+        .current_dir(manager.project())
         .output()
     {
         Ok(output) if output.status.success() => output,
@@ -114,7 +114,7 @@ pub(super) fn grok(manager: &SkillsManager, name: Option<&str>) -> Result<Vec<Sk
     };
     let inspect: Inspect = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("decode grok inspect --json: {e}"))?;
-    let disabled = load_grok_disabled(&manager.home.join(".grok/config.toml"))?;
+    let disabled = load_grok_disabled(&manager.home().join(".grok/config.toml"))?;
     let mut skills = Vec::new();
     for inspected in inspect.skills {
         let source = match inspected.source.kind.as_str() {
@@ -125,7 +125,7 @@ pub(super) fn grok(manager: &SkillsManager, name: Option<&str>) -> Result<Vec<Sk
         if name.is_some_and(|name| name != inspected.name) {
             continue;
         }
-        let manifest = manager.project.join(inspected.source.path);
+        let manifest = manager.project().join(inspected.source.path);
         let root = manifest.parent().unwrap_or(Path::new(".")).to_path_buf();
         let enabled = !disabled.contains(&inspected.name);
         skills.push(Skill {

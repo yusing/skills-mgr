@@ -75,7 +75,7 @@ pub(super) fn inspect(out: &mut impl Write, args: &[OsString]) -> Result<()> {
     let manager = current_manager()?;
     let report = |resolved, candidates, fallback, warnings, error| Report {
         name: &name,
-        project: &manager.project,
+        project: manager.project(),
         resolved,
         fallback,
         candidates,
@@ -103,7 +103,7 @@ pub(super) fn inspect(out: &mut impl Write, args: &[OsString]) -> Result<()> {
             Err(e) => warnings.push(e.to_string()),
         }
     }
-    let project_path = manager.project.join(LOCK_NAME);
+    let project_path = manager.project().join(LOCK_NAME);
     let has_shared = files.iter().any(|(skill, _)| skill.native.is_none());
     let project = has_shared
         .then(|| selection::load(&project_path))
@@ -216,7 +216,7 @@ pub(super) fn inspect(out: &mut impl Write, args: &[OsString]) -> Result<()> {
                     | Source::Admin
                     | Source::CodexPlugin
             ) && !at_home(&manager)
-                && skill.root.starts_with(&manager.project))
+                && skill.root.starts_with(manager.project()))
         {
             "project"
         } else {
@@ -283,12 +283,12 @@ pub(super) fn inspect(out: &mut impl Write, args: &[OsString]) -> Result<()> {
 
 pub(super) fn at_home(manager: &SkillsManager) -> bool {
     let same = |path: &Path| {
-        path == manager.project
+        path == manager.project()
             || path
                 .canonicalize()
-                .is_ok_and(|path| path == manager.project)
+                .is_ok_and(|path| path == manager.project())
     };
-    same(&manager.home) || same(&manager.manager_home())
+    same(manager.home()) || same(&manager.managed_home())
 }
 
 pub(super) fn full_manifest(manager: &SkillsManager, skill: &Skill) -> Result<Vec<u8>> {

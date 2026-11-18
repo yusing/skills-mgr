@@ -9,9 +9,9 @@ mod content;
 mod remote;
 mod selection;
 
-#[cfg(feature = "cli")]
+#[cfg(feature = "cli-support")]
 #[doc(hidden)]
-pub mod cli;
+pub mod cli_support;
 
 use std::{
     env, io,
@@ -81,9 +81,12 @@ pub struct SkillsManager {
     cache: PathBuf,
     codex_home: PathBuf,
     admin_skills: Option<PathBuf>,
-    #[cfg(feature = "cli")]
-    shell_conditions: bool,
+    #[cfg(feature = "cli-support")]
+    condition_fallback: Option<ConditionFallback>,
 }
+
+#[cfg(feature = "cli-support")]
+type ConditionFallback = fn(&SkillsManager, &str) -> io::Result<bool>;
 
 impl SkillsManager {
     /// Use the current user's home, cache and Codex paths for the given project.
@@ -113,8 +116,8 @@ impl SkillsManager {
             home,
             cache: cache.into(),
             admin_skills: None,
-            #[cfg(feature = "cli")]
-            shell_conditions: false,
+            #[cfg(feature = "cli-support")]
+            condition_fallback: None,
         }
     }
 
@@ -162,14 +165,14 @@ impl SkillsManager {
     }
 }
 
-fn io_error(path: &Path, source: io::Error) -> Error {
+pub fn io_error(path: &Path, source: io::Error) -> Error {
     Error::Io {
         path: path.to_owned(),
         source,
     }
 }
 
-fn invalid_data(path: &Path, message: impl ToString) -> Error {
+pub fn invalid_data(path: &Path, message: impl ToString) -> Error {
     Error::InvalidData {
         path: path.to_owned(),
         message: message.to_string(),

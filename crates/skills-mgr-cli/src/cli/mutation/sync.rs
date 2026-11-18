@@ -137,7 +137,7 @@ pub(in crate::cli) fn sync(out: &mut impl Write, args: &[OsString]) -> Result<()
     // still match what was reconciled and the desired placeholders are safe.
     let _managed = managed_lock(&manager)?;
     let _global = if !scope.global {
-        Some(selection_lock(&manager, &manager.manager_home())?)
+        Some(selection_lock(&manager, &manager.managed_home())?)
     } else {
         None
     };

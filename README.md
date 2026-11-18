@@ -110,8 +110,9 @@ fn main() -> Result<()> {
 }
 ```
 
-The crate uses the same on-disk skill and selection files as the CLI but does
-not require Go, spawn processes, download skills, or write state.
+The library uses the same on-disk skill and selection files as the separate
+CLI crate. It does not require Go, spawn processes, download skills, or
+write state.
 `is_enabled()` checks for a project or user selection file, including the
 legacy global location. An empty selection counts; merely having a local
 `.agents/skills` directory does not. This check is optional: the read methods
@@ -676,14 +677,14 @@ Build a local pair with stable Rust and Go 1.26 or newer:
 
 ```sh
 mkdir -p bin
-cargo build --locked --features cli --bin skills-mgr --target-dir target
+cargo build --locked -p skills-mgr-cli --bin skills-mgr --target-dir target
 cp target/debug/skills-mgr bin/
 go build -o bin/skills-mgr-tui .
 ./bin/skills-mgr
 ```
 
-Run `cargo test --locked --features cli` for the Rust core and
-`shadowtree check` for the Go companion's vet and tests. To exercise both
+Run `cargo test --locked --workspace` for the Rust library and CLI,
+and `shadowtree check` for the Go companion's vet and tests. To exercise both
 binaries through a terminal, run `python3 tests/release_smoke.py bin`.
 Design notes are in [`doc/`](doc/).
 

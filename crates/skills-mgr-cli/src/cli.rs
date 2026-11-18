@@ -112,12 +112,10 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
 
 fn current_manager() -> Result<SkillsManager> {
     let project = env::current_dir().map_err(|e| format!("get current directory: {e}"))?;
-    let mut manager = SkillsManager::for_project(project)?;
-    manager.shell_conditions = true;
-    Ok(manager)
+    Ok(SkillsManager::for_project(project)?.with_condition_fallback(shell_condition))
 }
 
-pub(super) fn shell_condition(manager: &SkillsManager, expression: &str) -> io::Result<bool> {
+fn shell_condition(manager: &SkillsManager, expression: &str) -> io::Result<bool> {
     // The standalone CLI historically runs Bash expressions. Only use a shell
     // for syntax the in-process predicate evaluator cannot handle.
     let script = format!(
@@ -130,7 +128,7 @@ has_dependency() {{ "$0" __selection-predicate has_dependency "$@"; }}
     let status = Command::new("bash")
         .args(["--noprofile", "--norc", "-c", &script])
         .arg(env::current_exe()?)
-        .current_dir(&manager.project)
+        .current_dir(manager.project())
         .env_remove("BASH_ENV")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -223,10 +221,10 @@ fn print_help(out: &mut impl Write, target: Option<&str>) -> Result<()> {
 }
 
 fn print_info(out: &mut impl Write, manager: &SkillsManager) -> Result<()> {
-    let project = &manager.project;
-    let home = &manager.home;
-    let cache = manager.cache.join("skills-mgr");
-    let managed = manager.manager_home().join("skills");
+    let project = manager.project();
+    let home = manager.home();
+    let cache = manager.cache().join("skills-mgr");
+    let managed = manager.managed_home().join("skills");
     let path_status = |path: &Path| {
         let missing = path
             .metadata()
@@ -247,7 +245,7 @@ fn print_info(out: &mut impl Write, manager: &SkillsManager) -> Result<()> {
     writeln!(out, "Metadata:")?;
     for (label, path) in [
         ("Project selection", project.join(LOCK_NAME)),
-        ("Global selection", manager.manager_home().join(LOCK_NAME)),
+        ("Global selection", manager.managed_home().join(LOCK_NAME)),
         ("skills.sh registry", cache.join("skills-sh.json")),
         ("SkillsMP registry", cache.join("skillsmp.json")),
     ] {
@@ -263,12 +261,12 @@ fn print_info(out: &mut impl Write, manager: &SkillsManager) -> Result<()> {
         ("Project Grok", project.join(".grok/skills")),
         ("User Grok", home.join(".grok/skills")),
         ("Project Codex", project.join(".codex/skills")),
-        ("User Codex", manager.codex_home.join("skills")),
+        ("User Codex", manager.codex_home().join("skills")),
         ("Admin", "/etc/codex/skills".into()),
         ("Claude plugins", home.join(".claude/plugins")),
         (
             "Codex plugin cache",
-            manager.codex_home.join("plugins/cache"),
+            manager.codex_home().join("plugins/cache"),
         ),
     ] {
         writeln!(out, "  {label}: {}", path_status(&path))?;

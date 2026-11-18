@@ -10,7 +10,7 @@ use crate::{
     Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error, remote::RemoteRef,
 };
 
-pub(crate) const LOCK_NAME: &str = ".skills-mgr.json";
+pub const LOCK_NAME: &str = ".skills-mgr.json";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,7 +28,7 @@ enum Entry {
 
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Selection {
+pub struct Selection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<Enabled>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,21 +37,21 @@ pub(crate) struct Selection {
 
 #[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(untagged)]
-pub(crate) enum Enabled {
+pub enum Enabled {
     Boolean(bool),
     Condition(String),
 }
 
-pub(crate) type Lock = BTreeMap<String, Selection>;
+pub type Lock = BTreeMap<String, Selection>;
 
 #[derive(Default)]
-pub(crate) struct Selections {
+pub struct Selections {
     entries: Lock,
     conditions: crate::condition::Conditions,
 }
 
 impl Selections {
-    pub(crate) fn load(manager: &SkillsManager) -> Result<Self> {
+    pub fn load(manager: &SkillsManager) -> Result<Self> {
         let mut selected = Self::default();
         if let Some(global) = global_path(manager)? {
             selected.apply(&global)?;
@@ -103,7 +103,7 @@ impl Selections {
         })
     }
 
-    pub(crate) fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
+    pub fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
         evaluate(
             &mut self.conditions,
             manager,
@@ -116,13 +116,13 @@ impl Selections {
     }
 }
 
-pub(crate) fn load(path: &Path) -> Result<Lock> {
+pub fn load(path: &Path) -> Result<Lock> {
     load_with_revision(path).map(|(_, lock)| lock)
 }
 
-pub(crate) const REVISION: u32 = 3;
+pub const REVISION: u32 = 3;
 
-pub(crate) fn load_with_revision(path: &Path) -> Result<(u32, Lock)> {
+pub fn load_with_revision(path: &Path) -> Result<(u32, Lock)> {
     if !present(path)? {
         return Ok((REVISION, Lock::new()));
     }
@@ -167,7 +167,7 @@ pub(crate) fn load_with_revision(path: &Path) -> Result<(u32, Lock)> {
     Ok((schema_revision, normalized))
 }
 
-pub(crate) fn evaluate(
+pub fn evaluate(
     conditions: &mut crate::condition::Conditions,
     manager: &SkillsManager,
     skill: &str,
@@ -178,11 +178,12 @@ pub(crate) fn evaluate(
         Some(Enabled::Boolean(value)) => Ok(*value),
         Some(Enabled::Condition(expr)) => {
             let result = conditions.evaluate(manager, expr);
-            #[cfg(feature = "cli")]
+            #[cfg(feature = "cli-support")]
             let result = match result {
-                Ok(None) if manager.shell_conditions => {
-                    crate::cli::shell_condition(manager, expr).map(Some)
-                }
+                Ok(None) => manager
+                    .condition_fallback
+                    .map(|run| run(manager, expr))
+                    .transpose(),
                 result => result,
             };
             result
@@ -200,7 +201,7 @@ pub(crate) fn is_enabled(manager: &SkillsManager) -> Result<bool> {
     Ok(present(&manager.project.join(LOCK_NAME))? || global_path(manager)?.is_some())
 }
 
-pub(crate) fn global_path(manager: &SkillsManager) -> Result<Option<PathBuf>> {
+pub fn global_path(manager: &SkillsManager) -> Result<Option<PathBuf>> {
     let current = manager.manager_home().join(LOCK_NAME);
     if present(&current)? {
         return Ok(Some(current));

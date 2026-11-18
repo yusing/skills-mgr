@@ -34,8 +34,8 @@ jobs:
           go-version-file: go.mod
       - name: Set up Rust
         run: rustup update stable --no-self-update
-      - name: Test Rust core
-        run: cargo +stable test --locked --features cli
+      - name: Test Rust workspace
+        run: cargo +stable test --locked --workspace
       - name: Test Go companion
         run: go test -mod=readonly ./...
       - name: Build and smoke-test archive
@@ -46,7 +46,7 @@ jobs:
           stage="$RUNNER_TEMP/stage"
           extracted="$RUNNER_TEMP/extracted"
           mkdir -p "$stage/bin" "$extracted"
-          cargo +stable build --locked --release --features cli --bin skills-mgr
+          cargo +stable build --locked --release -p skills-mgr-cli --bin skills-mgr
           install -m 755 "$CARGO_TARGET_DIR/release/skills-mgr" "$stage/bin/skills-mgr"
           CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags='-s -w' -o "$stage/bin/skills-mgr-tui" .
           cp LICENSE "$stage/"

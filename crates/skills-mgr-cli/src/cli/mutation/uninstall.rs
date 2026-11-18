@@ -35,7 +35,7 @@ pub(in crate::cli) fn uninstall_skill(
     let _global = if scope.global {
         None
     } else {
-        let guard = selection_lock(manager, &manager.manager_home())?;
+        let guard = selection_lock(manager, &manager.managed_home())?;
         if let Some(path) = selection::global_path(manager)? {
             let (revision, global) = selection::load_with_revision(&path)?;
             if global.get(name).is_some_and(|entry| {

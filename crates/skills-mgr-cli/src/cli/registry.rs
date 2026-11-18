@@ -374,7 +374,7 @@ pub(super) fn fresh(value: &str, now: Timestamp) -> bool {
 }
 
 fn cache_file(manager: &SkillsManager, name: &str) -> PathBuf {
-    manager.cache.join("skills-mgr").join(name)
+    manager.cache().join("skills-mgr").join(name)
 }
 
 fn read_cache<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {

@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub(crate) enum Source {
+pub enum Source {
     Project,
     User,
     Managed,
@@ -24,15 +24,15 @@ pub(crate) enum Source {
     Bundled,
     CodexPlugin,
     ClaudePlugin,
-    Remote(#[cfg_attr(not(feature = "cli"), allow(dead_code))] remote::Provider),
-    #[cfg(feature = "cli")]
+    Remote(#[cfg_attr(not(feature = "cli-support"), allow(dead_code))] remote::Provider),
+    #[cfg(feature = "cli-support")]
     GrokPlugin,
-    #[cfg(feature = "cli")]
+    #[cfg(feature = "cli-support")]
     GrokBundled,
 }
 
 impl Source {
-    pub(crate) fn is_project(self) -> bool {
+    pub fn is_project(self) -> bool {
         matches!(self, Self::Project)
     }
 
@@ -43,15 +43,15 @@ impl Source {
                 Harness::Codex
             }
             Self::ClaudePlugin => Harness::Claude,
-            #[cfg(feature = "cli")]
+            #[cfg(feature = "cli-support")]
             Self::GrokPlugin | Self::GrokBundled => Harness::Grok,
             _ => return true,
         };
         harnesses.iter().all(|active| *active == harness)
     }
 
-    #[cfg(feature = "cli")]
-    pub(crate) fn label(self) -> &'static str {
+    #[cfg(feature = "cli-support")]
+    pub fn label(self) -> &'static str {
         match self {
             Self::Project => "project",
             Self::User => "user",
@@ -69,8 +69,8 @@ impl Source {
         }
     }
 
-    #[cfg(feature = "cli")]
-    pub(crate) fn editable(self) -> bool {
+    #[cfg(feature = "cli-support")]
+    pub fn editable(self) -> bool {
         matches!(
             self,
             Self::Project
@@ -83,20 +83,20 @@ impl Source {
     }
 }
 
-pub(crate) struct Skill {
+pub struct Skill {
     pub metadata: Metadata,
     pub root: PathBuf,
     pub remote_key: Option<String>,
     pub source: Source,
-    #[cfg(feature = "cli")]
+    #[cfg(feature = "cli-support")]
     pub entry_path: PathBuf,
-    #[cfg(feature = "cli")]
+    #[cfg(feature = "cli-support")]
     pub native: Option<Native>,
 }
 
-#[cfg(feature = "cli")]
+#[cfg(feature = "cli-support")]
 #[derive(Default)]
-pub(crate) struct Native {
+pub struct Native {
     pub enabled: bool,
     pub plugin: String,
     pub vendor: String,
@@ -109,7 +109,7 @@ pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<
     list_harnesses(manager, harness.as_slice())
 }
 
-pub(crate) fn list_harnesses(
+pub fn list_harnesses(
     manager: &SkillsManager,
     harnesses: &[Harness],
 ) -> Result<Vec<ListedSkill>> {
@@ -163,10 +163,7 @@ pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
     }
 }
 
-pub(crate) fn find_filesystem(
-    manager: &SkillsManager,
-    name: &str,
-) -> Result<Option<(Skill, bool)>> {
+pub fn find_filesystem(manager: &SkillsManager, name: &str) -> Result<Option<(Skill, bool)>> {
     let mut loaded = None;
     let mut skills = discover_with_selection(manager, &[], Some(name), &mut loaded)?;
     let Some(skill) = skills.remove(name) else {
@@ -222,16 +219,16 @@ impl Skill {
         Ok(None)
     }
 
-    #[cfg(feature = "cli")]
-    pub(crate) fn manifest_path(&self) -> PathBuf {
+    #[cfg(feature = "cli-support")]
+    pub fn manifest_path(&self) -> PathBuf {
         self.native
             .as_ref()
             .and_then(|native| native.manifest.clone())
             .unwrap_or_else(|| self.root.join(MANIFEST))
     }
 
-    #[cfg(feature = "cli")]
-    pub(crate) fn description(&self, manager: &SkillsManager) -> Result<std::borrow::Cow<'_, str>> {
+    #[cfg(feature = "cli-support")]
+    pub fn description(&self, manager: &SkillsManager) -> Result<std::borrow::Cow<'_, str>> {
         if matches!(self.source, Source::GrokPlugin | Source::GrokBundled) {
             return Ok(self.metadata.description.as_str().into());
         }
@@ -248,7 +245,7 @@ fn summarize_description(description: &str) -> String {
     description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-pub(crate) fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {
+pub fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     reference_files(root, dir, Path::new(""), &mut paths)?;
     paths.sort();
@@ -300,8 +297,8 @@ fn reference_files(
     Ok(())
 }
 
-#[cfg(feature = "cli")]
-pub(crate) fn discover(
+#[cfg(feature = "cli-support")]
+pub fn discover(
     manager: &SkillsManager,
     harnesses: &[Harness],
     name: Option<&str>,
@@ -309,21 +306,21 @@ pub(crate) fn discover(
     discover_with_selection(manager, harnesses, name, &mut None)
 }
 
-#[cfg(all(feature = "cli", unix))]
-pub(crate) fn discover_local(manager: &SkillsManager, name: &str) -> Result<bool> {
+#[cfg(all(feature = "cli-support", unix))]
+pub fn discover_local(manager: &SkillsManager, name: &str) -> Result<bool> {
     discovery_roots(manager, &[], Some(name), &mut None, false)
         .map(|(discovery, _)| !discovery.skills.is_empty())
 }
 
-#[cfg(all(feature = "cli", unix))]
-pub(crate) fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
+#[cfg(all(feature = "cli-support", unix))]
+pub fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
     let mut discovery = Discovery::new(None);
     discovery.root(&manager.home.join(".agents/skills"), Source::User, false)?;
     Ok(discovery.skills)
 }
 
-#[cfg(all(feature = "cli", unix))]
-pub(crate) fn managed_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
+#[cfg(all(feature = "cli-support", unix))]
+pub fn managed_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
     let mut discovery = Discovery::new(None);
     discovery.root(
         &manager.manager_home().join("skills"),
@@ -526,12 +523,12 @@ impl<'a> Discovery<'a> {
             metadata.name.clone(),
             Skill {
                 metadata,
-                #[cfg(feature = "cli")]
+                #[cfg(feature = "cli-support")]
                 entry_path: _entry_path.unwrap_or(&root).to_path_buf(),
                 root,
                 remote_key,
                 source,
-                #[cfg(feature = "cli")]
+                #[cfg(feature = "cli-support")]
                 native: None,
             },
         );
@@ -633,7 +630,7 @@ fn claude_skill_tool_denied(manager: &SkillsManager) -> Result<bool> {
     Ok(false)
 }
 
-pub(crate) fn claude_plugins(
+pub fn claude_plugins(
     manager: &SkillsManager,
     name: Option<&str>,
     include_disabled: bool,
@@ -672,7 +669,7 @@ pub(crate) fn claude_plugins(
                     if !seen.insert(key) {
                         continue;
                     }
-                    #[cfg(feature = "cli")]
+                    #[cfg(feature = "cli-support")]
                     let skill = Skill {
                         native: Some(Native {
                             enabled,

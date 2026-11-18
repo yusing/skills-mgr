@@ -1,0 +1,31 @@
+[package]
+name = "skills-mgr-cli"
+version = "0.2.1"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "skills-mgr"
+path = "src/main.rs"
+
+[dependencies]
+skills-mgr = { path = "../..", features = ["cli-support"] }
+brush-parser.workspace = true
+cap-std.workspace = true
+diffy = { workspace = true, features = ["std"] }
+dirs.workspace = true
+jiff = "0.2.46"
+percent-encoding = "2.3.2"
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+toml_edit = "0.25.19"
+ureq = "3.5.2"
+url = "2.5.8"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

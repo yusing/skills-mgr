@@ -70,9 +70,9 @@ fn adopt_skills<'a>(
 ) -> Result<()> {
     let global = load_global(manager)?.unwrap_or_default();
     let project = (!scope.global)
-        .then(|| load(&manager.project.join(LOCK_NAME)))
+        .then(|| load(&manager.project().join(LOCK_NAME)))
         .transpose()?;
-    let dest_root = manager.manager_home().join("skills");
+    let dest_root = manager.managed_home().join("skills");
     let moves = skills
         .into_iter()
         .map(|skill| Ok((skill, relocation_paths(skill, &dest_root)?)))
@@ -90,14 +90,14 @@ fn adopt_skills<'a>(
             let name = &skill.metadata.name;
             let description = &skill.metadata.description;
             plans.push(placeholder::Plan::new(
-                &manager.home,
+                manager.home(),
                 name,
                 description,
                 selected(&global, name),
             )?);
             if let Some(project) = &project {
                 plans.push(placeholder::Plan::new(
-                    &manager.project,
+                    manager.project(),
                     name,
                     description,
                     selected(project, name),
@@ -130,16 +130,16 @@ fn adopt_skills<'a>(
 fn release_skill(manager: &SkillsManager, skill: &Skill) -> Result<()> {
     let name = &skill.metadata.name;
     let description = &skill.metadata.description;
-    let (source, dest) = relocation_paths(skill, &manager.home.join(".agents/skills"))?;
+    let (source, dest) = relocation_paths(skill, &manager.home().join(".agents/skills"))?;
     let mut plans = vec![placeholder::Plan::new(
-        &manager.home,
+        manager.home(),
         name,
         description,
         false,
     )?];
-    if !same_directory(&manager.project, &manager.home)? {
+    if !same_directory(manager.project(), manager.home())? {
         plans.push(placeholder::Plan::new(
-            &manager.project,
+            manager.project(),
             name,
             description,
             false,

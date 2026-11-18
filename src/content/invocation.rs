@@ -6,7 +6,7 @@ use serde_saphyr::granit_parser::{Event, ScalarStyle};
 
 // Change one scalar or insert one key. Re-encoding the YAML would rewrite
 // comments, anchors, unrelated metadata, and possibly line endings.
-pub(crate) fn toggled_invocation(data: &[u8]) -> Result<(Vec<u8>, bool)> {
+pub fn toggled_invocation(data: &[u8]) -> Result<(Vec<u8>, bool)> {
     const KEY: &str = "disable-model-invocation";
     let path = Path::new(MANIFEST);
     let bad = |message: &str| invalid_data(path, message);

@@ -17,7 +17,7 @@ pub(in crate::cli) fn toggle_grok(manager: &SkillsManager, name: &str) -> Result
         return Err("invalid Grok skill name".into());
     }
     let _guard = exclusive_lock(&coordination_dir(manager).join("grok-config.lock"))?;
-    let path = manager.home.join(".grok/config.toml");
+    let path = manager.home().join(".grok/config.toml");
     let (previous, bytes) = snapshot(&path)?;
     let mut config = std::str::from_utf8(&bytes)?
         .parse::<DocumentMut>()

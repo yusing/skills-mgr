@@ -13,18 +13,18 @@ use serde_saphyr::granit_parser::{Event, Parser};
 
 use crate::{Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error};
 
-#[cfg(all(feature = "cli", unix))]
+#[cfg(all(feature = "cli-support", unix))]
 mod invocation;
-#[cfg(all(feature = "cli", unix))]
-pub(crate) use invocation::toggled_invocation;
+#[cfg(all(feature = "cli-support", unix))]
+pub use invocation::toggled_invocation;
 
-pub(crate) const MANIFEST: &str = "SKILL.md";
-pub(crate) const PLACEHOLDER_MARKER_NAME: &str = ".skills-mgr-placeholder";
-pub(crate) const PLACEHOLDER_MARKER: &[u8] = b"skills-mgr remote placeholder\n";
+pub const MANIFEST: &str = "SKILL.md";
+pub const PLACEHOLDER_MARKER_NAME: &str = ".skills-mgr-placeholder";
+pub const PLACEHOLDER_MARKER: &[u8] = b"skills-mgr remote placeholder\n";
 const MAX_FRONTMATTER: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize, Clone)]
-pub(crate) struct Metadata {
+pub struct Metadata {
     pub name: String,
     pub description: String,
     #[serde(default, rename = "disable-model-invocation")]
@@ -67,7 +67,7 @@ fn normalize_tagged_bools(yaml: &[u8]) -> Option<String> {
     Some(canonical)
 }
 
-pub(crate) fn valid_name(name: &str) -> bool {
+pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 80
         && name != "."
@@ -77,7 +77,7 @@ pub(crate) fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"._-:".contains(&b))
 }
 
-pub(crate) fn split_target(target: &str) -> Result<(&str, &Path)> {
+pub fn split_target(target: &str) -> Result<(&str, &Path)> {
     let (name, relative) = target.split_once('/').unwrap_or((target, MANIFEST));
     let path = Path::new(relative);
     if !valid_name(name) || relative.is_empty() || !safe_relative(path) {
@@ -91,18 +91,18 @@ pub(crate) fn safe_relative(path: &Path) -> bool {
         .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
 }
 
-pub(crate) fn is_manifest(relative: &Path) -> bool {
+pub fn is_manifest(relative: &Path) -> bool {
     relative
         .components()
         .filter(|part| *part != Component::CurDir)
         .eq([Component::Normal(MANIFEST.as_ref())])
 }
 
-pub(crate) fn open_root(root: &Path) -> Result<Dir> {
+pub fn open_root(root: &Path) -> Result<Dir> {
     Dir::open_ambient_dir(root, ambient_authority()).map_err(|e| io_error(root, e))
 }
 
-pub(crate) fn open_file(root: &Dir, relative: &Path) -> io::Result<File> {
+pub fn open_file(root: &Dir, relative: &Path) -> io::Result<File> {
     if !root.metadata(relative)?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -126,7 +126,7 @@ pub(crate) fn open_file(root: &Dir, relative: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-pub(crate) fn discover(root: &Dir) -> io::Result<Option<Metadata>> {
+pub fn discover(root: &Dir) -> io::Result<Option<Metadata>> {
     let file = match open_file(root, Path::new(MANIFEST)) {
         Ok(file) => file,
         Err(e)
@@ -194,12 +194,12 @@ fn metadata(header: Frontmatter) -> Option<Metadata> {
     .then_some(metadata)
 }
 
-pub(crate) fn patched_metadata(contents: &[u8]) -> Option<Metadata> {
+pub fn patched_metadata(contents: &[u8]) -> Option<Metadata> {
     metadata(frontmatter(&mut &*contents).ok()?)
 }
 
-#[cfg(all(feature = "cli", unix))]
-pub(crate) fn edited_metadata(mut contents: &[u8]) -> Result<Metadata> {
+#[cfg(all(feature = "cli-support", unix))]
+pub fn edited_metadata(mut contents: &[u8]) -> Result<Metadata> {
     let metadata =
         metadata(frontmatter(&mut contents).map_err(|err| io_error(Path::new(MANIFEST), err))?)
             .ok_or_else(|| {
@@ -230,7 +230,7 @@ pub(crate) fn get(
     Ok(bytes)
 }
 
-pub(crate) fn get_with_patch_error(
+pub fn get_with_patch_error(
     manager: &SkillsManager,
     skill: &Skill,
     relative: &Path,
@@ -274,8 +274,8 @@ pub(crate) fn get_with_patch_error(
     .map(|bytes| (bytes, None))
 }
 
-#[cfg(feature = "cli")]
-pub(crate) fn validate_body(bytes: &[u8], strip_header: bool) -> std::result::Result<(), String> {
+#[cfg(feature = "cli-support")]
+pub fn validate_body(bytes: &[u8], strip_header: bool) -> std::result::Result<(), String> {
     let mut body = bytes;
     if strip_header {
         match frontmatter(&mut body).map_err(|e| e.to_string())? {

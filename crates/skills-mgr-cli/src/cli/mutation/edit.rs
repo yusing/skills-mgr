@@ -327,7 +327,7 @@ fn edited_placeholders(
         plans.push(placeholder::Plan::new(base, old, description, false)?);
     } else if let Some(global) = &selection.global {
         plans.push(placeholder::Plan::new(
-            &manager.home,
+            manager.home(),
             new,
             description,
             enabled(global, new).is_some_and(wants_placeholder),

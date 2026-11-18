@@ -11,7 +11,7 @@ use evidence::{Evidence, Feature};
 use std::io;
 
 #[derive(Default)]
-pub(crate) struct Conditions {
+pub struct Conditions {
     evidence: Option<Evidence>,
     dependencies: Option<Dependencies>,
 }
@@ -129,7 +129,7 @@ impl Conditions {
         ))
     }
 
-    pub(super) fn predicate(
+    pub fn predicate(
         &mut self,
         manager: &SkillsManager,
         cmd: &str,

@@ -84,19 +84,19 @@ pub(super) struct Scope<'a> {
 impl<'a> Scope<'a> {
     pub(super) fn new(manager: &'a SkillsManager, force_global: bool) -> Result<Self> {
         let global = force_global
-            || same_directory(&manager.project, &manager.home)?
-            || same_directory(&manager.project, &manager.manager_home())?;
+            || same_directory(manager.project(), manager.home())?
+            || same_directory(manager.project(), &manager.managed_home())?;
         Ok(Self {
             global,
             selection_dir: if global {
-                manager.manager_home()
+                manager.managed_home()
             } else {
-                manager.project.clone()
+                manager.project().to_path_buf()
             },
             placeholder_base: if global {
-                &manager.home
+                manager.home()
             } else {
-                &manager.project
+                manager.project()
             },
         })
     }
@@ -120,7 +120,7 @@ fn same_directory(first: &Path, second: &Path) -> Result<bool> {
 
 // Match the Go writer's managed-then-per-directory lock order and inode key.
 fn coordination_dir(manager: &SkillsManager) -> PathBuf {
-    manager.cache.join("skills-mgr/selection-locks")
+    manager.cache().join("skills-mgr/selection-locks")
 }
 
 pub(super) fn exclusive_lock(path: &Path) -> Result<File> {
@@ -329,7 +329,7 @@ impl SelectionWrite {
         let guard = selection_lock(manager, &scope.selection_dir)?;
         let path = scope.selection_dir.join(LOCK_NAME);
         let legacy = if scope.global && symlink_metadata(&path)?.is_none() {
-            let legacy = manager.home.join(LOCK_NAME);
+            let legacy = manager.home().join(LOCK_NAME);
             match symlink_metadata(&legacy)? {
                 Some(metadata) if metadata.is_file() => Some(legacy),
                 Some(_) => {
