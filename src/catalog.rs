@@ -25,8 +25,8 @@ impl Source {
         matches!(self, Self::Project)
     }
 
-    fn visible_to(self, harness: Option<Harness>) -> bool {
-        !matches!((self, harness), (Self::Native(owner), Some(active)) if owner != active)
+    fn visible_to(self, harnesses: &[Harness]) -> bool {
+        !matches!(self, Self::Native(owner) if harnesses.iter().any(|active| *active != owner))
     }
 }
 
@@ -38,25 +38,30 @@ pub(crate) struct Skill {
 }
 
 pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<Vec<ListedSkill>> {
-    let skills = discover(manager, harness, None)?;
+    list_harnesses(manager, harness.as_slice())
+}
+
+pub(crate) fn list_harnesses(
+    manager: &SkillsManager,
+    harnesses: &[Harness],
+) -> Result<Vec<ListedSkill>> {
+    let skills = discover(manager, harnesses, None)?;
     let mut selected = Selections::load(manager)?;
-    let serves_claude = harness == Some(Harness::Claude) && claude_skill_tool_denied(manager)?;
-    let visible = if serves_claude {
-        BTreeMap::new()
-    } else {
-        native_visible(manager, harness)?
-    };
+    let serves_claude = harnesses.contains(&Harness::Claude) && claude_skill_tool_denied(manager)?;
+    let mut visible = std::collections::BTreeSet::new();
+    for harness in harnesses.iter().copied() {
+        if harness != Harness::Claude || !serves_claude {
+            visible.extend(native_visible(manager, Some(harness))?.into_keys());
+        }
+    }
     let mut listed = BTreeMap::new();
 
     for (name, skill) in skills {
-        if !skill.metadata.hide
-            && !visible.contains_key(&name)
-            && selected.enabled(manager, &skill)?
-        {
+        if !skill.metadata.hide && !visible.contains(&name) && selected.enabled(manager, &skill)? {
             listed.insert(name, skill.listed(manager)?);
         }
     }
-    if serves_claude {
+    if serves_claude && harnesses.iter().all(|harness| *harness == Harness::Claude) {
         for (name, skill) in claude_plugins(manager, None)? {
             if !skill.metadata.hide && !listed.contains_key(&name) {
                 listed.insert(name, skill.listed(manager)?);
@@ -67,7 +72,7 @@ pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<
 }
 
 pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
-    let mut skills = discover(manager, None, Some(name))?;
+    let mut skills = discover(manager, &[], Some(name))?;
     let disabled = match skills.remove(name) {
         Some(skill) if Selections::load(manager)?.enabled(manager, &skill)? => return Ok(skill),
         Some(_) => true,
@@ -163,9 +168,9 @@ fn reference_files(
     Ok(())
 }
 
-fn discover(
+pub(crate) fn discover(
     manager: &SkillsManager,
-    harness: Option<Harness>,
+    harnesses: &[Harness],
     name: Option<&str>,
 ) -> Result<BTreeMap<String, Skill>> {
     let mut discovery = Discovery::new(name);
@@ -196,12 +201,12 @@ fn discover(
             true,
         ),
     ] {
-        if source.visible_to(harness) && discovery.root(&root, source, system)? {
+        if source.visible_to(harnesses) && discovery.root(&root, source, system)? {
             return Ok(discovery.skills);
         }
     }
     let codex = Source::Native(Harness::Codex);
-    if codex.visible_to(harness) && discovery.codex_extras(manager)? {
+    if codex.visible_to(harnesses) && discovery.codex_extras(manager)? {
         return Ok(discovery.skills);
     }
     for entry in remote::entries(manager, name)? {

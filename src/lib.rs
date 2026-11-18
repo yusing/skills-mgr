@@ -81,6 +81,8 @@ pub struct SkillsManager {
     cache: PathBuf,
     codex_home: PathBuf,
     admin_skills: Option<PathBuf>,
+    #[cfg(feature = "cli")]
+    shell_conditions: bool,
 }
 
 impl SkillsManager {
@@ -111,6 +113,8 @@ impl SkillsManager {
             home,
             cache: cache.into(),
             admin_skills: None,
+            #[cfg(feature = "cli")]
+            shell_conditions: false,
         }
     }
 

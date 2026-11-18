@@ -192,6 +192,18 @@ pub(crate) fn get(
     relative: &Path,
     lines: Option<RangeInclusive<usize>>,
 ) -> Result<Vec<u8>> {
+    let (bytes, patch_error) = get_with_patch_error(manager, skill, relative, lines, false)?;
+    debug_assert!(patch_error.is_none());
+    Ok(bytes)
+}
+
+pub(crate) fn get_with_patch_error(
+    manager: &SkillsManager,
+    skill: &Skill,
+    relative: &Path,
+    lines: Option<RangeInclusive<usize>>,
+    report_original: bool,
+) -> Result<(Vec<u8>, Option<Error>)> {
     let root = open_root(&skill.root)?;
     let path = skill.root.join(relative);
     let file = open_file(&root, relative).map_err(|e| io_error(&path, e))?;
@@ -202,19 +214,25 @@ pub(crate) fn get(
 
     if let Some(key) = &skill.remote_key
         && manifest
-        && let Some(patch) = crate::remote::patch(manager, key)?
+        && let Some(patch) = crate::remote::patch(manager, key).transpose()
     {
         let mut original = Vec::new();
         (&file)
             .read_to_end(&mut original)
             .map_err(|e| io_error(&path, e))?;
-        return serve(
+        let (rendered, patch_error) = match patch.and_then(|p| p.apply(&original)) {
+            Ok(bytes) => (bytes, None),
+            Err(error) if report_original => (original, Some(error)),
+            Err(error) => return Err(error),
+        };
+        let bytes = serve(
             &path,
-            &*patch.apply(&original)?,
-            true,
+            rendered.as_slice(),
+            manifest,
             skill.metadata.hide,
             lines,
-        );
+        )?;
+        return Ok((bytes, patch_error));
     }
     serve(
         &path,
@@ -223,6 +241,7 @@ pub(crate) fn get(
         skill.metadata.hide,
         lines,
     )
+    .map(|bytes| (bytes, None))
 }
 
 fn serve(

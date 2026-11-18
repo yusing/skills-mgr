@@ -129,7 +129,12 @@ impl Conditions {
         ))
     }
 
-    fn predicate(&mut self, manager: &SkillsManager, cmd: &str, args: &[&str]) -> io::Result<bool> {
+    pub(super) fn predicate(
+        &mut self,
+        manager: &SkillsManager,
+        cmd: &str,
+        args: &[&str],
+    ) -> io::Result<bool> {
         let invalid =
             |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, format!("{cmd}: {msg}"));
         let feature = match (cmd, args) {

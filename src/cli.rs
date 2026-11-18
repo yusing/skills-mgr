@@ -6,7 +6,9 @@ use std::{
     process::ExitCode,
 };
 
-use crate::SkillsManager;
+mod read;
+
+use crate::{SkillsManager, selection::LOCK_NAME};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -37,13 +39,52 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
             Ok(())
         }
         [command, ..] if command == "completion" => Err("usage: skills-mgr completion fish".into()),
-        [command] if command == "info" => {
-            let project = env::current_dir().map_err(|e| format!("get current directory: {e}"))?;
-            print_info(out, &SkillsManager::for_project(project)?)
-        }
+        [command] if command == "info" => print_info(out, &current_manager()?),
         [command, ..] if command == "info" => Err("usage: skills-mgr info".into()),
+        [command, args @ ..] if command == "list" => read::list(out, args),
+        [command, args @ ..] if command == "get" => read::get(out, args),
+        [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
+        [command, kind]
+            if command == "__complete-skills" && (kind == "all" || kind == "enabled") =>
+        {
+            read::complete(out, kind == "enabled")
+        }
         [command, ..] => Err(format!("unknown command {:?}", command.to_string_lossy()).into()),
         [] => Err("interactive mode is not available in this build".into()),
+    }
+}
+
+fn current_manager() -> Result<SkillsManager> {
+    let project = env::current_dir().map_err(|e| format!("get current directory: {e}"))?;
+    let mut manager = SkillsManager::for_project(project)?;
+    manager.shell_conditions = true;
+    Ok(manager)
+}
+
+pub(super) fn shell_condition(manager: &SkillsManager, expression: &str) -> io::Result<bool> {
+    // The standalone CLI historically runs Bash expressions. Only use a shell
+    // for syntax the in-process predicate evaluator cannot handle.
+    let script = format!(
+        r#"lang() {{ "$0" __selection-predicate lang "$@"; }}
+tooling() {{ "$0" __selection-predicate tooling "$@"; }}
+has_dependency() {{ "$0" __selection-predicate has_dependency "$@"; }}
+{expression}"#
+    );
+    use std::process::{Command, Stdio};
+    let status = Command::new("bash")
+        .args(["--noprofile", "--norc", "-c", &script])
+        .arg(env::current_exe()?)
+        .current_dir(&manager.project)
+        .env_remove("BASH_ENV")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        Some(code) => Err(io::Error::other(format!("status {code}"))),
+        None => Err(io::Error::other(format!("shell terminated: {status}"))),
     }
 }
 
@@ -149,11 +190,8 @@ fn print_info(out: &mut impl Write, manager: &SkillsManager) -> Result<()> {
     };
     writeln!(out, "Metadata:")?;
     for (label, path) in [
-        ("Project selection", project.join(".skills-mgr.json")),
-        (
-            "Global selection",
-            manager.manager_home().join(".skills-mgr.json"),
-        ),
+        ("Project selection", project.join(LOCK_NAME)),
+        ("Global selection", manager.manager_home().join(LOCK_NAME)),
         ("skills.sh registry", cache.join("skills-sh.json")),
         ("SkillsMP registry", cache.join("skillsmp.json")),
     ] {

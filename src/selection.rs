@@ -10,7 +10,7 @@ use crate::{
     Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error, remote::RemoteRef,
 };
 
-const LOCK_NAME: &str = ".skills-mgr.json";
+pub(crate) const LOCK_NAME: &str = ".skills-mgr.json";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -102,14 +102,22 @@ impl Selections {
     pub(crate) fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
         match self.entries.get(&skill.metadata.name) {
             Some(Enabled::Boolean(value)) => Ok(*value),
-            Some(Enabled::Condition(expr)) => self
-                .conditions
-                .evaluate(manager, expr)
-                .map_err(|source| Error::Condition {
-                    skill: skill.metadata.name.clone(),
-                    source,
-                })?
-                .ok_or_else(|| Error::UnsupportedCondition(skill.metadata.name.clone())),
+            Some(Enabled::Condition(expr)) => {
+                let result = self.conditions.evaluate(manager, expr);
+                #[cfg(feature = "cli")]
+                let result = match result {
+                    Ok(None) if manager.shell_conditions => {
+                        crate::cli::shell_condition(manager, expr).map(Some)
+                    }
+                    result => result,
+                };
+                result
+                    .map_err(|source| Error::Condition {
+                        skill: skill.metadata.name.clone(),
+                        source,
+                    })?
+                    .ok_or_else(|| Error::UnsupportedCondition(skill.metadata.name.clone()))
+            }
             None => Ok(skill.source.is_project() || skill.metadata.hide),
         }
     }
