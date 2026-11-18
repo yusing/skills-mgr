@@ -66,6 +66,51 @@ completed.
 To feed this to every session automatically, see
 [Agent Integration](#agent-integration).
 
+## Use from Rust
+
+Add the library from this repository to your Cargo project:
+
+```toml
+[dependencies]
+skills-mgr = { git = "https://github.com/yusing/skills-mgr" }
+```
+
+```rust
+use skills_mgr::{Result, SkillsManager};
+
+fn main() -> Result<()> {
+    let manager = SkillsManager::for_project(".")?;
+    if !manager.is_enabled()? {
+        return Ok(());
+    }
+
+    if let Some(skill) = manager.list()?.first() {
+        let body = manager.get(&skill.name)?;
+        println!("{}", String::from_utf8_lossy(&body));
+    }
+    Ok(())
+}
+```
+
+The crate uses the same on-disk skill and selection files as the CLI but does
+not require Go, spawn processes, download skills, or write state.
+`is_enabled()` checks for a project or user selection file, including the
+legacy global location. An empty selection counts; merely having a local
+`.agents/skills` directory does not. This check is optional: the read methods
+still work with project skills that are enabled by default.
+
+`list()` returns names, descriptions, and reference paths. Use
+`list_for(Harness::Codex)` (or `Claude` or `Grok`) to omit skills the agent
+already loads. `get("name/path")` reads a reference or other skill file, and
+`get_lines("name", 1..=40)` reads an inclusive range of the served body.
+
+For conditional selections, supply `with_condition_evaluator`; the crate
+does not interpret shell expressions or run the CLI's builtins. Without an
+evaluator, a read that needs to check a condition returns an error. Grok's
+process-only native catalog is not queried. If a cached skill has a stale
+local edit, its original description remains visible in `list` and `get`
+returns an error for the manifest.
+
 ## Why skills-mgr?
 
 Each agent harness discovers skills from its own directory, so a skill
