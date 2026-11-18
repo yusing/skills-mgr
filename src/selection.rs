@@ -60,6 +60,12 @@ impl Selections {
         Ok(selected)
     }
 
+    pub(super) fn load_for_xml(manager: &SkillsManager) -> Result<Self> {
+        let mut selected = Self::load(manager)?;
+        selected.conditions.catalog = true;
+        Ok(selected)
+    }
+
     fn apply(&mut self, path: &Path) -> Result<()> {
         for (name, selection) in load(path)? {
             use std::collections::btree_map::Entry;

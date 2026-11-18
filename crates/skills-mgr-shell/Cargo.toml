@@ -1,0 +1,10 @@
+[package]
+name = "skills-mgr-shell"
+version = "0.1.0"
+edition = "2024"
+description = "Evaluate shell-style conditions in process"
+license = "MIT"
+repository = "https://github.com/yusing/skills-mgr"
+
+[dependencies]
+brush-parser.workspace = true

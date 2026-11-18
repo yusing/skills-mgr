@@ -1,7 +1,8 @@
 //! Read an existing skills-mgr selection and catalog in process.
 //!
-//! The library does not execute the Go CLI, spawn other processes, fetch skills,
-//! or change selection and cache files. Operations read the current filesystem.
+//! Structured reads do not spawn processes. The XML catalog evaluates selections
+//! in-process and may run external commands explicitly invoked by a condition.
+//! The library does not fetch skills or change selection and cache files itself.
 
 mod catalog;
 mod condition;
@@ -139,6 +140,25 @@ impl SkillsManager {
         catalog::list(self, Some(harness))
     }
 
+    /// List skills in the CLI's XML format, including grouped reference paths.
+    /// Pass an empty slice to infer the active harness as the CLI does, or pass
+    /// harnesses to filter explicitly.
+    ///
+    /// Selection expressions run in-process, without a shell wrapper. A reached
+    /// external command runs with the caller's permissions, starting in the
+    /// project directory unless the expression changes it with `cd`.
+    /// Use this method only with trusted selections.
+    pub fn list_xml(&self, harnesses: &[Harness]) -> Result<String> {
+        let inferred;
+        let harnesses = if harnesses.is_empty() {
+            inferred = infer_harness();
+            inferred.as_slice()
+        } else {
+            harnesses
+        };
+        catalog::list_xml(self, harnesses)
+    }
+
     /// Read an enabled skill's manifest or a skill-relative file.
     /// A bare name reads SKILL.md; use name/path to read another file.
     pub fn get(&self, target: &str) -> Result<Vec<u8>> {
@@ -162,6 +182,23 @@ impl SkillsManager {
 
     fn manager_home(&self) -> PathBuf {
         self.home.join(".skills-mgr")
+    }
+}
+
+fn infer_harness() -> Option<Harness> {
+    let set = |name| env::var_os(name).is_some_and(|value| !value.is_empty());
+    let mut harnesses = [
+        set("CLAUDECODE").then_some(Harness::Claude),
+        (set("GROK_AGENT") || set("GROK_SESSION_ID")).then_some(Harness::Grok),
+        set("CODEX_THREAD_ID").then_some(Harness::Codex),
+    ]
+    .into_iter()
+    .flatten();
+    let first = harnesses.next();
+    if harnesses.next().is_none() {
+        first
+    } else {
+        None
     }
 }
 

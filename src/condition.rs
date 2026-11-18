@@ -1,3 +1,4 @@
+mod catalog;
 mod dependency;
 mod evidence;
 
@@ -14,6 +15,7 @@ use std::io;
 pub struct Conditions {
     evidence: Option<Evidence>,
     dependencies: Option<Dependencies>,
+    pub(super) catalog: bool,
 }
 
 impl Conditions {
@@ -22,6 +24,9 @@ impl Conditions {
         manager: &SkillsManager,
         expr: &str,
     ) -> io::Result<Option<bool>> {
+        if self.catalog {
+            return catalog::evaluate(self, manager, expr).map(Some);
+        }
         let Ok(program) =
             brush_parser::Parser::new(expr.as_bytes(), &Default::default()).parse_program()
         else {
@@ -114,7 +119,7 @@ impl Conditions {
         let Some(cmd) = literal(&cmd.value) else {
             return Ok(None);
         };
-        if !matches!(cmd.as_str(), "lang" | "tooling" | "has_dependency") {
+        if !is_project_predicate(&cmd) {
             return Ok(None);
         }
         let Some(args) = words.into_iter().map(literal).collect::<Option<Vec<_>>>() else {
@@ -160,6 +165,10 @@ impl Conditions {
             .unwrap()
             .matches(args[0], args.get(1).copied())
     }
+}
+
+fn is_project_predicate(name: &str) -> bool {
+    matches!(name, "lang" | "tooling" | "has_dependency")
 }
 
 fn literal(raw: &str) -> Option<String> {

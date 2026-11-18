@@ -232,6 +232,37 @@ fn lists_reference_paths_and_reads_served_lines_and_binary_files() {
     ));
 }
 
+#[test]
+fn lists_xml_with_escaped_metadata_and_grouped_references() {
+    let f = Fixture::new();
+    let root = "home/.skills-mgr/skills/example";
+    f.write(
+        &format!("{root}/SKILL.md"),
+        "---\nname: example\ndescription: \"A & B < C > D \\\"quoted\\\" 'single'\"\n---\nBody\n",
+    );
+    f.write(&format!("{root}/Guide.md"), "Guide\n");
+    f.write(&format!("{root}/references/team notes/One.md"), "One\n");
+    f.write(
+        &format!("{root}/references/team notes/Two & More.md"),
+        "Two\n",
+    );
+    assert_eq!(f.manager.list_xml(&[]).unwrap(), "<skills></skills>\n");
+    f.write(
+        "project/.skills-mgr.json",
+        r#"{"schema_revision":3,"skills":{"example":{"enabled":true}}}"#,
+    );
+    assert_eq!(
+        f.manager.list_xml(&[]).unwrap(),
+        concat!(
+            "<skills>\n",
+            "  <skill name=\"example\" description=\"A &amp; B &lt; C &gt; D &#34;quoted&#34; &#39;single&#39;\">\n",
+            "    <references>Guide.md 'references/team notes'/{One,'Two &amp; More'}.md</references>\n",
+            "  </skill>\n",
+            "</skills>\n",
+        )
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_skill_roots_work_but_files_cannot_escape_the_skill() {
@@ -302,8 +333,129 @@ fn native_conditions_use_current_project_evidence_and_shell_boolean_order() {
             f.manager.list(),
             Err(Error::UnsupportedCondition(_))
         ));
+        assert!(matches!(
+            f.manager.get("managed"),
+            Err(Error::UnsupportedCondition(_))
+        ));
     }
     assert!(!f.temp.path().join("project/unexpected").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn xml_evaluates_conditions_from_the_project_without_a_shell_wrapper() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    f.skill("home/.skills-mgr/skills/managed", "managed", "Managed\n");
+    f.write(
+        "project/Cargo.toml",
+        "[package]\nname = 'fixture'\nversion = '0.1.0'\n",
+    );
+    f.write("project/sub/nested", "");
+    f.write("home/config/witness", "");
+    let probe = f.write(
+        "project/probe",
+        "#!/bin/sh\nprintf '%s\\n' \"$PWD\" > invoked\nprintf 'main\\n\\n'\nexit \"$1\"\n",
+    );
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::copy(probe, f.temp.path().join("project/sub/probe")).unwrap();
+    let invoked = f.temp.path().join("project/invoked");
+    let xml = |expr: &str| {
+        f.condition(expr);
+        f.manager.list_xml(&[Harness::Codex])
+    };
+    for (expr, visible) in [
+        (r#"[[ -f Cargo.toml && $HOME != "$PWD" ]]"#, true),
+        (r#"[[ -f Cargo.toml && $HOME == "$PWD" ]]"#, false),
+        ("test -3 -eq -3 && [ 10 -gt 2 ]", true),
+        ("[[ 10 -lt 2 || -1 -ge 0 ]]", false),
+        ("[[ 2 -le 10 && -2 -ne -3 ]]", true),
+        (
+            r#"test "${SKILLS_MGR_CATALOG_TEST_UNSET_3817:-two words}" = "two words""#,
+            true,
+        ),
+        (r#"[[ ${HOME:-$(./probe 0)} == ~ ]]"#, true),
+        (r#"[[ "~" != ~ ]] && test -f ~/config/witness"#, true),
+        (r#"cd && [[ "$PWD" == ~ ]] && test -f config/witness"#, true),
+        ("cd ~/config && test -f witness", true),
+        (r#"cd "$HOME/config" && test -f witness"#, true),
+        (
+            "lang rust && cd sub && ! lang rust && cd .. && lang rust",
+            true,
+        ),
+        ("(cd sub && test -f nested) && test -f Cargo.toml", true),
+        (
+            r#"[[ $(cd sub && pwd) == "$PWD/sub" ]] && test -f Cargo.toml"#,
+            true,
+        ),
+        ("{ cd sub; } && test -f nested", true),
+        (r#"cd "" || test -f Cargo.toml"#, true),
+        ("cd missing || test -f Cargo.toml", true),
+        (
+            "if lang rust; then test -f Cargo.toml; else false; fi",
+            true,
+        ),
+        ("if lang go; then false; else [ -f Cargo.toml ]; fi", true),
+        ("command -v ./probe", true),
+        ("lang rust || ./probe 2", true),
+        ("[[ -f Cargo.toml || $(./probe 2) == main ]]", true),
+    ] {
+        let xml = xml(expr).unwrap();
+        assert_eq!(xml.contains("name=\"managed\""), visible, "{expr}");
+        assert!(!invoked.exists(), "{expr}");
+    }
+
+    f.condition("./probe 0");
+    assert!(f.manager.is_enabled().unwrap());
+    assert!(matches!(
+        f.manager.list(),
+        Err(Error::UnsupportedCondition(_))
+    ));
+    assert!(matches!(
+        f.manager.get("managed"),
+        Err(Error::UnsupportedCondition(_))
+    ));
+    assert!(!invoked.exists());
+
+    for (expr, visible) in [
+        ("[[ $(./probe 2) == main ]]", true),
+        (
+            r#"[[ ${SKILLS_MGR_CATALOG_TEST_UNSET_3817:-$(./probe 0)} == main ]]"#,
+            true,
+        ),
+        ("lang go || ./probe 0", true),
+        ("./probe 1", false),
+        ("./probe 2 || true", true),
+    ] {
+        let xml = xml(expr).unwrap();
+        assert_eq!(xml.contains("name=\"managed\""), visible, "{expr}");
+        assert!(!xml.contains("main"), "stdout escaped into XML: {xml}");
+        assert_eq!(
+            fs::read_to_string(&invoked).unwrap().trim_end(),
+            f.temp.path().join("project").to_str().unwrap()
+        );
+        fs::remove_file(&invoked).unwrap();
+    }
+    assert!(
+        matches!(xml("./probe 2"), Err(Error::Condition {skill, source}) if skill == "managed" && source.to_string().contains("status 2"))
+    );
+    assert!(matches!(
+        xml("test not-an-integer -eq 1"),
+        Err(Error::Condition { .. })
+    ));
+    let host_cwd = std::env::current_dir().unwrap();
+    assert!(
+        xml("cd sub && ./probe 0")
+            .unwrap()
+            .contains("name=\"managed\"")
+    );
+    assert_eq!(std::env::current_dir().unwrap(), host_cwd);
+    let sub = f.temp.path().join("project/sub");
+    assert_eq!(
+        fs::read_to_string(sub.join("invoked")).unwrap().trim_end(),
+        sub.to_str().unwrap()
+    );
 }
 
 #[test]
@@ -418,6 +570,16 @@ fn harness_suppression_does_not_change_get() {
     );
     assert_eq!(f.manager.list_for(Harness::Codex).unwrap().len(), 1);
     assert!(f.manager.list_for(Harness::Grok).unwrap().is_empty());
+    assert_eq!(
+        f.manager.list_xml(&[Harness::Codex]).unwrap(),
+        "<skills>\n  <skill name=\"shared\" description=\"Useful shared skill\"></skill>\n</skills>\n"
+    );
+    assert_eq!(
+        f.manager
+            .list_xml(&[Harness::Codex, Harness::Grok])
+            .unwrap(),
+        "<skills></skills>\n"
+    );
     assert_eq!(f.manager.get("native").unwrap(), b"Codex\n");
 }
 

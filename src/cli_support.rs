@@ -8,7 +8,7 @@ pub use crate::{invalid_data, io_error};
 
 pub mod catalog {
     pub use crate::catalog::{
-        Native, Skill, Source, claude_plugins, discover, find_filesystem, list_harnesses, references,
+        Native, Skill, Source, claude_plugins, discover, find_filesystem, references,
     };
     #[cfg(unix)]
     pub use crate::catalog::{discover_local, managed_skills, user_skills};

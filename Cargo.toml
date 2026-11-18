@@ -2,13 +2,13 @@
 name = "skills-mgr"
 version = "0.2.1"
 edition = "2024"
-description = "Read the skills-mgr catalog and skill files from Rust without subprocesses"
+description = "Read the skills-mgr catalog and skill files from Rust"
 license = "MIT"
 repository = "https://github.com/yusing/skills-mgr"
 include = ["/src", "/tests/read_api.rs", "/README.md", "/LICENSE"]
 
 [workspace]
-members = ["crates/skills-mgr-cli"]
+members = ["crates/skills-mgr-cli", "crates/skills-mgr-shell"]
 resolver = "3"
 
 [features]
@@ -45,6 +45,7 @@ serde.workspace = true
 serde_json.workspace = true
 serde-saphyr.workspace = true
 sha2.workspace = true
+skills-mgr-shell = { version = "0.1.0", path = "crates/skills-mgr-shell" }
 thiserror = "2.0.21"
 toml.workspace = true
 

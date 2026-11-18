@@ -28,7 +28,7 @@ launches `skills-mgr-tui` next to it only when you open the interface.
 ```
 
 You don't need Go or Rust for the release bundle. Installing or updating
-remote skills needs Git. Shell selection expressions need Bash.
+remote skills needs Git. The `list` command does not require Bash.
 
 If upgrading from `go install`, replace that installation with the bundle
 (or switch the mise entry from the Go backend to the GitHub backend). Check
@@ -111,8 +111,8 @@ fn main() -> Result<()> {
 ```
 
 The library uses the same on-disk skill and selection files as the separate
-CLI crate. It does not require Go, spawn processes, download skills, or
-write state.
+CLI crate. It does not require Go, download skills, or write manager state.
+Structured reads do not spawn processes.
 `is_enabled()` checks for a project or user selection file, including the
 legacy global location. An empty selection counts; merely having a local
 `.agents/skills` directory does not. This check is optional: the read methods
@@ -120,7 +120,9 @@ still work with project skills that are enabled by default.
 
 `list()` returns names, descriptions, and reference paths. Use
 `list_for(Harness::Codex)` (or `Claude` or `Grok`) to omit skills the agent
-already loads. `get("name/path")` reads a reference or other skill file, and
+already loads. Use `list_xml(&[])` for the CLI's XML format and harness
+inference, including grouped reference paths, or pass a slice of harnesses to
+filter explicitly. `get("name/path")` reads a reference or other skill file, and
 `get_lines("name", 1..=40)` reads an inclusive range of the served body.
 
 Conditional selections using [`lang`, `tooling`, and `has_dependency`](#conditional-expressions)
@@ -129,11 +131,13 @@ Use literal arguments, quoting version expressions such as `'>=2 && <3'`.
 The crate supports `!`, parentheses, short-circuiting `&&` and `||`, and
 `[ "$PWD" == "$HOME" ]` to test whether the project is the configured home.
 A pipeline (`|`) of predicates uses the **last** predicate’s result; use `||`
-to match any predicate. External commands and unsupported shell syntax return
-an `UnsupportedCondition` error. Grok's
-process-only native catalog is not queried. If a cached skill has a stale
-local edit, its original description remains visible in `list` and `get`
-returns an error for the manifest.
+to match any predicate. For structured reads, external commands and other
+unsupported syntax return `UnsupportedCondition`. In contrast, `list_xml`
+evaluates the same [selection expressions](#conditional-expressions) as
+`skills-mgr list`, including reached external commands. Grok's process-only
+native catalog is not queried. If a cached skill has a stale local edit,
+its original description remains visible in `list` and `get` returns an error
+for the manifest.
 
 ## Why skills-mgr?
 
@@ -417,7 +421,7 @@ owners when none resolves. Candidates retain `get` precedence: the first
 filesystem owner, then Claude and Grok native alternatives. Each owner has
 `source`, `scope` (`project`, `shared`, or `native`), `root`, `path`,
 `disable_model_invocation`, `editable`, `enabled`, the effective `selection`
-layer and Boolean or Bash value, `body_health`, and `references`; `plugin`,
+layer and Boolean or expression value, `body_health`, and `references`; `plugin`,
 selection file `path`, `remote_key`, `content_missing`, `patch_path`, `sha256`,
 and `error` appear when applicable.
 The digest covers the complete effective manifest, including frontmatter and
@@ -509,20 +513,44 @@ when a repository should share its selection.
 
 ### Conditional Expressions
 
-> In the CLI, an `enabled` string runs as Bash, with your permissions, whenever the skill's
-> state is checked. Review committed `.skills-mgr.json` changes before running
-> `skills-mgr` in a repository you do not trust.
+> Selection expressions can run external commands with your permissions.
+> Review `.skills-mgr.json` before running the CLI or using the Rust XML
+> catalog in an untrusted repository.
 
-The string is evaluated by [`mvdan.cc/sh`](https://mvdan.cc/sh) in the project
-directory. Exit status `0` enables the skill, `1` disables it, and anything
-else is an error, which makes `list` fail. External commands work, such as
-`command -v herdr`. Three builtins inspect the project without starting a
-process:
+`skills-mgr list` and Rust's `list_xml` use the same in-process evaluator in
+the project directory. An expression that finishes with status `0` enables a
+skill, `1` disables it, and any other status is an error. Boolean operators
+short-circuit, and `command -v herdr` checks whether `herdr` is available without
+running it. A reached external command, including one inside `$(...)`, runs
+directly without a shell wrapper. Three builtins inspect the project without
+starting a process:
 
 ```sh
 lang ts && (tooling pnpm || tooling bun)
 has_dependency tauri '>=2 && <3'
 ```
+
+Catalog expressions support `if` branches and `test`, `[ ... ]`, and
+`[[ ... ]]` checks. Numeric comparisons (`-eq`, `-ne`, `-lt`, `-le`,
+`-gt`, `-ge`) take signed decimal integers, not Bash arithmetic expressions.
+Use `${VAR:-default}` for an unset or empty environment variable. Bare `~` and
+`~/path` refer to the configured home. Use `cd DIR` to change the working
+directory within the expression, or bare `cd` to use that home. The change
+stays inside the expression and does not escape parentheses or command
+substitution.
+
+```sh
+[[ -f Cargo.toml && ${CI:-false} != true ]]
+[[ $(git branch --show-current) == main ]]
+if lang rust; then command -v cargo; else tooling npm; fi
+cd ~/.config && [[ ${SKILL_LEVEL:-0} -ge 2 ]]
+```
+
+The CLI and library share the `skills-mgr-shell` crate, not a full Bash
+interpreter. Unsupported constructs such as
+redirections, assignments, and external pipelines produce an error. Other CLI
+commands still use the existing Bash fallback for conditions outside the
+project predicates.
 
 #### `has_dependency <name> ['<op><version>']`
 
@@ -668,7 +696,7 @@ placeholders. It never downloads new skills. Failures go to `refresh.log` in
 the user cache `skills-mgr` directory.
 
 Set `SKILLS_MGR_NO_REFRESH=1` on an invocation to suppress this background
-runner. This does not disable selection expressions, which run as Bash, or
+runner. This does not disable selection expressions or
 other foreground effects such as migration of a legacy global selection.
 
 ## Development

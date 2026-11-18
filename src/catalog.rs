@@ -13,6 +13,8 @@ use crate::{
     selection::Selections,
 };
 
+pub(super) mod xml;
+
 #[derive(Clone, Copy)]
 pub enum Source {
     Project,
@@ -106,14 +108,20 @@ pub struct Native {
 }
 
 pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<Vec<ListedSkill>> {
-    list_harnesses(manager, harness.as_slice())
+    list_harnesses(manager, harness.as_slice(), Selections::load(manager)?)
 }
 
-pub fn list_harnesses(
+pub(super) fn list_xml(manager: &SkillsManager, harnesses: &[Harness]) -> Result<String> {
+    let listed = list_harnesses(manager, harnesses, Selections::load_for_xml(manager)?)?;
+    Ok(xml::Catalog(&listed).to_string())
+}
+
+fn list_harnesses(
     manager: &SkillsManager,
     harnesses: &[Harness],
+    selected: Selections,
 ) -> Result<Vec<ListedSkill>> {
-    let mut loaded = Some(Selections::load(manager)?);
+    let mut loaded = Some(selected);
     let skills = discover_with_selection(manager, harnesses, None, &mut loaded)?;
     let selected = selections(manager, &mut loaded)?;
     let serves_claude = harnesses.contains(&Harness::Claude) && claude_skill_tool_denied(manager)?;

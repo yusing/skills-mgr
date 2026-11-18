@@ -1913,6 +1913,7 @@ dependencies = [
  "serde-saphyr",
  "serde_json",
  "sha2",
+ "skills-mgr-shell",
  "tempfile",
  "thiserror",
  "toml",
@@ -1940,6 +1941,13 @@ dependencies = [
  "toml_edit",
  "ureq",
  "url",
+]
+
+[[package]]
+name = "skills-mgr-shell"
+version = "0.1.0"
+dependencies = [
+ "brush-parser",
 ]
 
 [[package]]

@@ -1114,6 +1114,18 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
     assert!(native.status.success(), "{native:?}");
     assert_eq!(native.stdout, b"shell body\n");
 
+    use skills_mgr::{Harness, SkillsManager};
+    let reader = SkillsManager::new(&project, home.path(), home.path().join("cache"));
+    let combined = invoke(&["list", "--codex", "--grok"]);
+    assert!(combined.status.success(), "{combined:?}");
+    assert_eq!(
+        combined.stdout,
+        reader
+            .list_xml(&[Harness::Codex, Harness::Grok])
+            .unwrap()
+            .as_bytes()
+    );
+
     put(
         &project.join(".agents/skills/alpha/references/empty.md"),
         b"---\ntitle: Empty body\n---\n\n",
@@ -1129,6 +1141,107 @@ fn list_get_and_completion_share_selection_and_content_without_go() {
             .unwrap()
             .contains("child stderr")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn list_xml_matches_the_rust_reader_without_bash_on_path() {
+    use skills_mgr::{Harness, SkillsManager};
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("project");
+    let home = tmp.path().join("home");
+    let skill = project.join(".agents/skills/example");
+    fs::create_dir_all(&skill).unwrap();
+    fs::create_dir(&home).unwrap();
+    fs::create_dir_all(project.join("sub/bin")).unwrap();
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: example\ndescription: Example\n---\nBody\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = 'fixture'\nversion = '0.1.0'\n",
+    )
+    .unwrap();
+    let probe = project.join("probe");
+    fs::write(&probe, "#!/bin/sh\nprintf 'main\\n'\nexit \"$1\"\n").unwrap();
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::copy(probe, project.join("sub/bin/probe")).unwrap();
+
+    let reader = SkillsManager::new(&project, &home, home.join("cache"));
+    let cases = [
+        (r#"[[ -f Cargo.toml && "$HOME" != "$PWD" ]]"#, Some(true)),
+        (
+            r#"cd sub && [[ "$PWD" != "$HOME" && 10 -ge 2 ]] && [[ ${HOME:-wrong} == ~ ]]"#,
+            Some(true),
+        ),
+        (
+            r#"[[ "${SKILLS_MGR_CATALOG_TEST_EMPTY_3817:-fallback}" == fallback ]]"#,
+            Some(true),
+        ),
+        (
+            "if lang rust; then test -f Cargo.toml; else false; fi",
+            Some(true),
+        ),
+        ("[[ $(./probe 2) == main ]]", Some(true)),
+        ("command -v ./probe", Some(true)),
+        ("lang rust || ./does-not-exist", Some(true)),
+        ("./probe 1", Some(false)),
+        ("./probe 2", None),
+    ];
+    for (expr, visible) in cases {
+        fs::write(
+            project.join(".skills-mgr.json"),
+            serde_json::json!({
+                "schema_revision": 3, "skills": {"example": {"enabled": expr}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let out = cli()
+            .args(["list", "--codex"])
+            .current_dir(&project)
+            .env("HOME", &home)
+            .env("XDG_CACHE_HOME", home.join("cache"))
+            .env("CODEX_HOME", home.join(".codex"))
+            .env("SKILLS_MGR_CATALOG_TEST_EMPTY_3817", "")
+            .env("PATH", "bin")
+            .output()
+            .unwrap();
+        let xml = reader.list_xml(&[Harness::Codex]);
+        if let Some(visible) = visible {
+            assert!(out.status.success(), "{expr}: {out:?}");
+            assert!(out.stderr.is_empty(), "{expr}: {out:?}");
+            let xml = xml.unwrap();
+            assert_eq!(xml.contains("name=\"example\""), visible, "{expr}");
+            assert_eq!(out.stdout, xml.as_bytes(), "{expr}");
+        } else {
+            assert!(!out.status.success(), "{expr}: {out:?}");
+            assert!(out.stdout.is_empty(), "{expr}: {out:?}");
+            let err = xml.unwrap_err().to_string();
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains(&err),
+                "{expr}: {out:?}"
+            );
+        }
+    }
+    fs::write(project.join(".skills-mgr.json"),
+        r#"{"schema_revision":3,"skills":{"example":{"enabled":"cd sub && command -v probe && [[ $(probe 0) == main ]]"}}}"#
+    ).unwrap();
+    let output = cli()
+        .args(["list", "--codex"])
+        .current_dir(&project)
+        .env("HOME", &home)
+        .env("XDG_CACHE_HOME", home.join("cache"))
+        .env("CODEX_HOME", home.join(".codex"))
+        .env("PATH", "bin")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("name=\"example\""));
 }
 
 #[cfg(target_os = "linux")]
