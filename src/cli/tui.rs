@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     SkillsManager,
     catalog::{self, Skill, Source},
+    remote::RemoteRef,
     selection::{self, Enabled, LOCK_NAME, Lock},
 };
 
@@ -28,14 +29,31 @@ enum Request {
     SetEnabled {
         global: bool,
         name: String,
+        #[serde(default)]
         path: PathBuf,
+        #[serde(default)]
+        key: String,
         value: Option<Enabled>,
     },
     #[cfg(unix)]
     Toggle {
         global: bool,
         name: String,
+        #[serde(default)]
         path: PathBuf,
+        #[serde(default)]
+        key: String,
+    },
+    #[cfg(unix)]
+    ToggleRemote {
+        global: bool,
+        reference: RemoteRef,
+    },
+    #[cfg(unix)]
+    Uninstall {
+        global: bool,
+        name: String,
+        key: String,
     },
     #[cfg(unix)]
     Edit {
@@ -67,6 +85,7 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             global,
             name,
             path,
+            key,
             value,
         } => {
             let manager = current_manager()?;
@@ -76,7 +95,7 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
                 &manager,
                 &scope,
                 &name,
-                Some(&path),
+                Some((&path, &key)),
                 EnabledChange::Set(value),
             )?;
             let (global, project) = if scope.global {
@@ -87,12 +106,51 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             reply(out, &selection_view(global, project, scope.global, &skills))
         }
         #[cfg(unix)]
-        Request::Toggle { global, name, path } => {
+        Request::Toggle {
+            global,
+            name,
+            path,
+            key,
+        } => {
             let manager = current_manager()?;
             let scope = Scope::new(&manager, global)?;
-            let changed =
-                mutation::set_enabled(&manager, &scope, &name, Some(&path), EnabledChange::Toggle)?;
+            let changed = mutation::set_enabled(
+                &manager,
+                &scope,
+                &name,
+                Some((&path, &key)),
+                EnabledChange::Toggle,
+            )?;
             reply(out, &changed.enabled.expect("toggle always sets a Boolean"))
+        }
+        #[cfg(unix)]
+        Request::ToggleRemote { global, reference } => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Toggled {
+                enabled: bool,
+                #[serde(flatten)]
+                snapshot: Snapshot,
+            }
+            super::cancel::install()?;
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            let enabled = mutation::toggle_remote(&manager, &scope, reference)?;
+            reply(
+                out,
+                &Toggled {
+                    enabled,
+                    snapshot: build_snapshot(&manager, scope.global, false)?,
+                },
+            )
+        }
+        #[cfg(unix)]
+        Request::Uninstall { global, name, key } => {
+            super::cancel::install()?;
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            mutation::uninstall_skill(&manager, &scope, &name, Some(&key))?;
+            reply(out, &build_snapshot(&manager, scope.global, false)?)
         }
         #[cfg(unix)]
         Request::Edit {
@@ -252,9 +310,9 @@ struct Snapshot {
 struct SelectionView {
     selected: BTreeMap<String, bool>,
     global_selected: BTreeMap<String, bool>,
-    project_selected: BTreeMap<String, bool>,
+    project_selected: Option<BTreeMap<String, bool>>,
     global_expressions: BTreeMap<String, String>,
-    project_expressions: BTreeMap<String, String>,
+    project_expressions: Option<BTreeMap<String, String>>,
 }
 
 fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Result<()> {
@@ -335,9 +393,9 @@ fn selection_view(
     SelectionView {
         selected,
         global_selected,
-        project_selected,
+        project_selected: (!global).then_some(project_selected),
         global_expressions: expressions(global_lock),
-        project_expressions: expressions(project_lock),
+        project_expressions: (!global).then(|| expressions(project_lock)),
     }
 }
 

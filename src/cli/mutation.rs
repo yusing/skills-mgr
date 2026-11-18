@@ -26,6 +26,7 @@ mod exclusion;
 mod install;
 mod placeholder;
 mod relocate;
+mod remote_select;
 mod repository;
 mod store;
 mod sync;
@@ -33,8 +34,9 @@ mod uninstall;
 pub(super) use edit::{edit, edit_draft, toggle_invocation};
 pub(super) use install::install;
 pub(super) use relocate::{adopt, relocate};
+pub(super) use remote_select::toggle_remote;
 pub(super) use sync::sync;
-pub(super) use uninstall::uninstall;
+pub(super) use uninstall::{uninstall, uninstall_skill};
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
     let usage = "usage: skills-mgr set [-g] <skill> <true|false|condition|inherit>";
@@ -172,7 +174,7 @@ pub(super) fn set_enabled(
     manager: &SkillsManager,
     scope: &Scope<'_>,
     name: &str,
-    expected: Option<&Path>,
+    expected: Option<(&Path, &str)>,
     change: EnabledChange,
 ) -> Result<ChangedSelection> {
     if let EnabledChange::Set(Some(Enabled::Condition(value))) = &change {
@@ -184,13 +186,40 @@ pub(super) fn set_enabled(
             .map_err(|err| format!("invalid selection condition: {err}"))?;
     }
     let _guard = managed_lock(manager)?;
-    let skill = catalog::discover(manager, &[], Some(name))?
-        .remove(name)
-        .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
-    if expected.is_some_and(|path| skill.manifest_path() != path || skill.remote_key.is_some()) {
+    let skill = catalog::discover(manager, &[], Some(name))?.remove(name);
+    let missing_key = expected
+        .filter(|(path, key)| path.as_os_str().is_empty() && !key.is_empty())
+        .map(|(_, key)| key);
+    let remote_key = skill
+        .as_ref()
+        .and_then(|skill| skill.remote_key.as_deref())
+        .or(missing_key);
+    if skill.is_none() && missing_key.is_none() {
+        return Err(format!("skill {name:?} was not discovered").into());
+    }
+    if expected.is_some_and(|(path, key)| {
+        skill
+            .as_ref()
+            .is_some_and(|skill| skill.manifest_path() != path)
+            || remote_key.unwrap_or_default() != key
+    }) {
         return Err(format!("skill {name:?} changed ownership since the catalog was read").into());
     }
     let mut write = SelectionWrite::open(manager, scope)?;
+    let store = store::Store::new(manager);
+    let _store = remote_key.map(|_| store.lock()).transpose()?;
+    let reference = remote_key
+        .map(|key| -> Result<_> {
+            let record = remote::record_by_key(&store.root, key)?
+                .filter(|record| record.reference.name == name)
+                .ok_or_else(|| format!("persisted remote skill {name:?} changed identity"))?;
+            let root = remote::content_root(&store.root, &record.content)?;
+            if root.as_deref() != skill.as_ref().map(|skill| skill.root.as_path()) {
+                return Err(format!("persisted remote skill {name:?} changed content").into());
+            }
+            Ok(record.reference)
+        })
+        .transpose()?;
     let lock = &mut write.layer;
     let mut entry = lock.remove(name).unwrap_or(Selection {
         enabled: None,
@@ -206,20 +235,30 @@ pub(super) fn set_enabled(
         EnabledChange::Toggle => {
             let current = entry.enabled.as_ref().or(inherited);
             let enabled = current.map_or_else(
-                || !scope.global && (skill.source.is_project() || skill.metadata.hide),
+                || {
+                    !scope.global
+                        && skill
+                            .as_ref()
+                            .is_some_and(|skill| skill.source.is_project() || skill.metadata.hide)
+                },
                 wants_placeholder,
             );
             Some(Enabled::Boolean(!enabled))
         }
     };
-    let changed = entry.enabled != desired || (is_toggle && entry.remote.is_some());
-    entry.enabled = desired;
-    if is_toggle {
+    let old_remote = entry.remote.clone();
+    if reference.is_some() && (is_toggle || desired.is_some()) {
+        entry.remote = reference;
+    } else if is_toggle {
         entry.remote = None;
     }
+    let changed = entry.enabled != desired || entry.remote != old_remote;
+    entry.enabled = desired;
     let effective = entry.enabled.as_ref().or(inherited);
     let enabled = effective.map(wants_placeholder);
-    let placeholders = if matches!(skill.source, Source::Managed | Source::Remote(_)) {
+    let placeholders = if let Some(skill) = skill.as_ref()
+        && matches!(skill.source, Source::Managed | Source::Remote(_))
+    {
         Some(placeholder::Plan::new(
             scope.placeholder_base,
             name,

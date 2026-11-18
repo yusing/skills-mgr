@@ -350,9 +350,9 @@ func (m *manager) applyEnabledDraft(
 			desired.Expression = draftValue
 		}
 	}
-	if m.tuiCore != "" && skill.RemoteKey == "" {
+	if m.tuiCore != "" {
 		var selection tuiCoreSelection
-		request := tuiCoreRequest{Op: "set_enabled", Name: skill.Name, Path: skill.Path}
+		request := tuiCoreRequest{Op: "set_enabled", Name: skill.Name, Path: skill.Path, Key: skill.RemoteKey}
 		if desiredExists {
 			request.Value = &desired
 		}

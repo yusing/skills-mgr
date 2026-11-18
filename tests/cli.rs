@@ -3,7 +3,28 @@
 use std::process::Command;
 
 fn cli() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_skills-mgr"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_skills-mgr"));
+    cmd.env("SKILLS_MGR_NO_REFRESH", "1");
+    cmd
+}
+
+#[cfg(target_os = "linux")]
+fn tui_request(mut cmd: Command, input: serde_json::Value) -> std::process::Output {
+    use std::{io::Write, process::Stdio};
+    let mut child = cmd
+        .arg("__tui")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
 }
 
 #[cfg(target_os = "linux")]
@@ -116,7 +137,7 @@ fn set_updates_the_selected_layer_and_owned_placeholders_without_go() {
 #[cfg(target_os = "linux")]
 #[test]
 fn tui_selection_requests_reject_stale_owners_and_return_configured_values() {
-    use std::{fs, io::Write, process::Stdio};
+    use std::fs;
 
     let home = tempfile::tempdir().unwrap();
     let project = home.path().join("project");
@@ -126,24 +147,12 @@ fn tui_selection_requests_reject_stale_owners_and_return_configured_values() {
     fs::create_dir_all(&skill).unwrap();
     fs::write(&path, "---\nname: alpha\ndescription: Alpha\n---\nbody\n").unwrap();
     let request = |input: serde_json::Value| {
-        let mut child = cli()
-            .current_dir(&project)
+        let mut cmd = cli();
+        cmd.current_dir(&project)
             .env("HOME", home.path())
             .env("CODEX_HOME", home.path().join(".codex"))
-            .env("XDG_CACHE_HOME", home.path().join("cache"))
-            .arg("__tui")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.to_string().as_bytes())
-            .unwrap();
-        child.wait_with_output().unwrap()
+            .env("XDG_CACHE_HOME", home.path().join("cache"));
+        tui_request(cmd, input)
     };
     let toggle = |path: &std::path::Path| {
         request(serde_json::json!({"op":"toggle", "global":false, "name":"alpha", "path":path}))
@@ -482,7 +491,7 @@ fn repository_lifecycle_preserves_selection_and_exclusions() {
         "fixture",
     ]);
     let address = "https://github.com/fixture/demo";
-    let run = |args: &[&str]| {
+    let remote_cli = || {
         let mut cmd = cli();
         isolated_git(&mut cmd);
         cmd.current_dir(&project)
@@ -497,11 +506,10 @@ fn repository_lifecycle_preserves_selection_and_exclusions() {
             )
             .env("GIT_CONFIG_VALUE_0", format!("{address}.git"))
             .env("GIT_CONFIG_KEY_1", "protocol.file.allow")
-            .env("GIT_CONFIG_VALUE_1", "always")
-            .args(args)
-            .output()
-            .unwrap()
+            .env("GIT_CONFIG_VALUE_1", "always");
+        cmd
     };
+    let run = |args: &[&str]| remote_cli().args(args).output().unwrap();
     let invalid = run(&["install", "--exclude", "[", address]);
     assert!(!invalid.status.success());
     assert!(invalid.stdout.is_empty());
@@ -640,6 +648,61 @@ fn repository_lifecycle_preserves_selection_and_exclusions() {
         let removed = run(&["uninstall", "alpha"]);
         assert!(removed.status.success(), "{provider}: {removed:?}");
     }
+
+    let reference = serde_json::json!({
+        "provider":"skills.sh", "id":"fixture/demo/alpha",
+        "name":"alpha", "locator":"fixture/demo/alpha"
+    });
+    let toggle = || {
+        tui_request(
+            remote_cli(),
+            serde_json::json!({
+                "op":"toggle_remote", "global":false, "reference": reference
+            }),
+        )
+    };
+    let enabled = toggle();
+    assert!(enabled.status.success(), "{enabled:?}");
+    let snapshot: serde_json::Value = serde_json::from_slice(&enabled.stdout).unwrap();
+    let row = &snapshot["Skills"][0];
+    assert_eq!(row["Name"], "alpha");
+    assert_eq!(snapshot["Enabled"], true);
+    let key = row["RemoteKey"].as_str().unwrap();
+    let path = row["Path"].as_str().unwrap();
+    let disabled = toggle();
+    assert!(disabled.status.success(), "{disabled:?}");
+    let snapshot: serde_json::Value = serde_json::from_slice(&disabled.stdout).unwrap();
+    assert_eq!(snapshot["Enabled"], false);
+    let edited = tui_request(
+        remote_cli(),
+        serde_json::json!({
+            "op":"set_enabled", "global":false, "name":"alpha", "key":key, "path":path,
+            "value": "test -d ."
+        }),
+    );
+    assert!(edited.status.success(), "{edited:?}");
+    assert_eq!(run(&["get", "alpha"]).stdout, b"Installed instructions.\n");
+    let record_path = cache.join(format!("entries/{key}.json"));
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(record_path).unwrap()).unwrap();
+    fs::remove_dir_all(cache.join(record["content"].as_str().unwrap())).unwrap();
+    let missing = tui_request(
+        remote_cli(),
+        serde_json::json!({
+            "op":"toggle", "global":false, "name":"alpha", "key":key
+        }),
+    );
+    assert!(missing.status.success(), "{missing:?}");
+    assert_eq!(missing.stdout, b"false\n");
+    let removed = tui_request(
+        remote_cli(),
+        serde_json::json!({
+            "op":"uninstall", "global":false, "name":"alpha", "key":key
+        }),
+    );
+    assert!(removed.status.success(), "{removed:?}");
+    let snapshot: serde_json::Value = serde_json::from_slice(&removed.stdout).unwrap();
+    assert_eq!(snapshot["Skills"], serde_json::json!([]));
 }
 
 #[test]

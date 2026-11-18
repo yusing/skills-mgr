@@ -35,13 +35,15 @@ func (s tuiCoreSelection) state() selectionState {
 }
 
 type tuiCoreRequest struct {
-	Op     string        `json:"op"`
-	Global bool          `json:"global"`
-	Name   string        `json:"name,omitempty"`
-	Path   string        `json:"path,omitempty"`
-	Value  *enabledValue `json:"value,omitempty"`
-	Draft  string        `json:"draft,omitempty"`
-	Digest string        `json:"digest,omitempty"`
+	Op     string          `json:"op"`
+	Global bool            `json:"global"`
+	Name   string          `json:"name,omitempty"`
+	Path   string          `json:"path,omitempty"`
+	Value  *enabledValue   `json:"value,omitempty"`
+	Draft  string          `json:"draft,omitempty"`
+	Digest string          `json:"digest,omitempty"`
+	Key    string          `json:"key,omitempty"`
+	Remote *remoteSkillRef `json:"reference,omitempty"`
 }
 
 func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState, error) {
@@ -65,14 +67,38 @@ func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState
 }
 
 func (m *manager) tuiToggle(project string, skill discoveredSkill) (bool, error) {
-	if m.tuiCore == "" || skill.RemoteKey != "" {
+	if m.tuiCore == "" {
 		return m.toggle(project, skill.Name, skill.RemoteKey)
 	}
 	var enabled bool
 	err := m.callTUICore(project, tuiCoreRequest{
-		Op: "toggle", Name: skill.Name, Path: skill.Path,
+		Op: "toggle", Name: skill.Name, Path: skill.Path, Key: skill.RemoteKey,
 	}, &enabled)
 	return enabled, err
+}
+
+func (m *manager) tuiToggleRemote(ctx context.Context, project string, ref remoteSkillRef) (remoteToggleResult, error) {
+	if m.tuiCore == "" {
+		return m.toggleRemote(ctx, project, ref)
+	}
+	var reply struct {
+		Enabled bool
+		tuiCoreSnapshot
+	}
+	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{Op: "toggle_remote", Remote: &ref}, &reply)
+	return newRemoteToggleResult(ref.Name, reply.Enabled, reply.Skills, reply.Selected), err
+}
+
+func (m *manager) tuiUninstall(ctx context.Context, project, name, key string) (remoteUninstallResult, error) {
+	if m.tuiCore == "" {
+		return m.uninstallRemote(ctx, project, name, key)
+	}
+	var reply tuiCoreSnapshot
+	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{Op: "uninstall", Name: name, Key: key}, &reply)
+	return remoteUninstallResult{
+		Skill: name, Skills: reply.Skills, Selected: reply.Selected,
+		GlobalSelected: reply.GlobalSelected, ProjectSelected: reply.ProjectSelected,
+	}, err
 }
 
 func (m *manager) callTUICore(project string, input tuiCoreRequest, response any) error {

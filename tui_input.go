@@ -162,7 +162,7 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.busyCancel = cancel
 		return m, func() tea.Msg {
-			result, err := m.manager.uninstallRemote(
+			result, err := m.manager.tuiUninstall(
 				ctx,
 				m.project,
 				skill.Name,
@@ -282,7 +282,7 @@ func relocateSelectedSkill(m model) (tea.Model, tea.Cmd) {
 func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 	if !isLocalTab(m.tab) {
 		ref, ok := remoteRefAtCursor(m)
-		if !ok || m.manager == nil || m.manager.remoteStore == nil {
+		if !ok || m.manager == nil {
 			return m, nil
 		}
 		enabled := m.remoteSelected[ref.key()]
@@ -290,7 +290,13 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 		status := "disabling "
 		if !enabled {
 			var err error
-			refresh, err = m.manager.remoteStore.needsRefresh(ref)
+			if m.manager.tuiCore != "" {
+				refresh = true
+			} else if m.manager.remoteStore != nil {
+				refresh, err = m.manager.remoteStore.needsRefresh(ref)
+			} else {
+				return m, nil
+			}
 			if err != nil {
 				m.status = "error: " + err.Error()
 				return m, nil
@@ -307,9 +313,12 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 		if refresh {
 			m.progressTitle = "Installing " + ref.Name
 			m.progressDetail = "Cloning with git --depth 1…"
+			if m.manager.tuiCore != "" {
+				m.progressDetail = "Checking cached content and downloading if needed…"
+			}
 		}
 		return m, func() tea.Msg {
-			result, err := m.manager.toggleRemote(
+			result, err := m.manager.tuiToggleRemote(
 				ctx,
 				m.project,
 				ref,
