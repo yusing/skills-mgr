@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, Result, SkillsManager, catalog, content::valid_name, invalid_data, io_error};
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
 pub(crate) enum Provider {
     #[serde(rename = "skills.sh")]
     SkillsSh,
@@ -30,7 +30,7 @@ impl Provider {
     }
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemoteRef {
     pub provider: Provider,

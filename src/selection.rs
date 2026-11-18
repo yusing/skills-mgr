@@ -35,7 +35,7 @@ pub(crate) struct Selection {
     pub remote: Option<RemoteRef>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(untagged)]
 pub(crate) enum Enabled {
     Boolean(bool),
@@ -117,15 +117,21 @@ impl Selections {
 }
 
 pub(crate) fn load(path: &Path) -> Result<Lock> {
+    load_with_revision(path).map(|(_, lock)| lock)
+}
+
+pub(crate) const REVISION: u32 = 3;
+
+pub(crate) fn load_with_revision(path: &Path) -> Result<(u32, Lock)> {
     if !present(path)? {
-        return Ok(Lock::new());
+        return Ok((REVISION, Lock::new()));
     }
     let bytes = fs::read(path).map_err(|e| io_error(path, e))?;
     let RawLock {
         schema_revision,
         skills,
     } = serde_json::from_slice(&bytes).map_err(|e| invalid_data(path, e))?;
-    if !(1..=3).contains(&schema_revision) {
+    if !(1..=REVISION).contains(&schema_revision) {
         return Err(invalid_data(
             path,
             format!("unsupported selection revision {schema_revision}"),
@@ -148,7 +154,7 @@ pub(crate) fn load(path: &Path) -> Result<Lock> {
                     return Err(invalid());
                 }
                 if let Some(Enabled::Condition(expr)) = &selection.enabled
-                    && (schema_revision != 3 || expr.trim().is_empty())
+                    && (schema_revision != REVISION || expr.trim().is_empty())
                 {
                     return Err(invalid());
                 }
@@ -158,7 +164,7 @@ pub(crate) fn load(path: &Path) -> Result<Lock> {
         };
         normalized.insert(name, selection);
     }
-    Ok(normalized)
+    Ok((schema_revision, normalized))
 }
 
 pub(crate) fn evaluate(

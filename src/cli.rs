@@ -7,6 +7,8 @@ use std::{
 };
 
 mod inspect;
+#[cfg(unix)]
+mod mutation;
 mod native;
 mod read;
 mod tui;
@@ -49,6 +51,8 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
         [command, args @ ..] if command == "run" => read::run_script(args),
         [command, args @ ..] if command == "check" => read::check(out, args),
         [command, args @ ..] if command == "inspect" => inspect::inspect(out, args),
+        #[cfg(unix)]
+        [command, args @ ..] if command == "set" => mutation::set(out, args),
         [command] if command == "__tui" => tui::dispatch(out),
         [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
         [command, kind]

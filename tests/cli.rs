@@ -6,6 +6,113 @@ fn cli() -> Command {
     Command::new(env!("CARGO_BIN_EXE_skills-mgr"))
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn set_updates_the_selected_layer_and_owned_placeholders_without_go() {
+    use std::fs;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let manager = home.path().join(".skills-mgr");
+    let skill = manager.join("skills/alpha");
+    let manifest = "---\nname: alpha\ndescription: Test skill\n---\nA body.\n";
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(skill.join("SKILL.md"), manifest).unwrap();
+    let project_selection = project.join(".skills-mgr.json");
+    let global_selection = manager.join(".skills-mgr.json");
+    let legacy = home.path().join(".skills-mgr.json");
+    fs::write(&legacy, br#"{"schema_revision":1,"skills":{"alpha":true}}"#).unwrap();
+    let run = |cwd: &std::path::Path, args: &[&str]| {
+        cli()
+            .current_dir(cwd)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let read_json = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    };
+    let outcome = run(home.path(), &["set", "alpha", "true"]);
+    assert!(outcome.status.success(), "{outcome:?}");
+    assert_eq!(outcome.stdout, b"Updated alpha (global selection)\n");
+    assert!(!legacy.exists());
+    assert_eq!(read_json(&global_selection)["schema_revision"], 3);
+    assert_eq!(
+        read_json(&global_selection)["skills"]["alpha"]["enabled"],
+        true
+    );
+
+    fs::write(
+        &project_selection,
+        br#"{"schema_revision":2,"skills":{"unrelated":{"enabled":false}}}"#,
+    )
+    .unwrap();
+    let condition = "  test -f marker  ";
+    let outcome = run(&project, &["set", "alpha", condition]);
+    assert!(outcome.status.success(), "{outcome:?}");
+    let selection = read_json(&project_selection);
+    assert_eq!(selection["skills"]["alpha"]["enabled"], condition);
+    assert_eq!(selection["skills"]["unrelated"]["enabled"], false);
+    let disabled = run(&project, &["get", "alpha"]);
+    assert!(!disabled.status.success());
+    fs::write(project.join("marker"), "").unwrap();
+    assert_eq!(run(&project, &["get", "alpha"]).stdout, b"A body.\n");
+    for harness in [".agents", ".claude"] {
+        let dir = project.join(harness).join("skills/alpha");
+        let stub = fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        assert!(stub.contains("disable-model-invocation: true"));
+        assert!(!stub.contains("A body."));
+        assert_eq!(
+            fs::read(dir.join(".skills-mgr-placeholder")).unwrap(),
+            b"skills-mgr remote placeholder\n"
+        );
+    }
+
+    let before = fs::read(&project_selection).unwrap();
+    for args in [["set", "alpha", "if then"], ["set", "missing", "true"]] {
+        let outcome = run(&project, &args);
+        assert!(!outcome.status.success(), "{outcome:?}");
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(fs::read(&project_selection).unwrap(), before);
+    }
+    let outcome = run(&project, &["set", "alpha", "false"]);
+    assert!(outcome.status.success(), "{outcome:?}");
+    let agent_skills = project.join(".agents/skills/alpha");
+    let claude_skills = project.join(".claude/skills/alpha");
+    assert!(!agent_skills.exists());
+    assert!(!claude_skills.exists());
+    fs::create_dir_all(&claude_skills).unwrap();
+    fs::write(claude_skills.join("SKILL.md"), "Unowned notes").unwrap();
+    let before = fs::read(&project_selection).unwrap();
+    let collision = run(&project, &["set", "alpha", "inherit"]);
+    assert!(!collision.status.success(), "{collision:?}");
+    assert!(!agent_skills.exists());
+    assert_eq!(fs::read(&project_selection).unwrap(), before);
+    assert_eq!(
+        fs::read(claude_skills.join("SKILL.md")).unwrap(),
+        b"Unowned notes"
+    );
+    fs::remove_file(claude_skills.join("SKILL.md")).unwrap();
+    let outcome = run(&project, &["set", "alpha", "inherit"]);
+    assert!(outcome.status.success(), "{outcome:?}");
+    assert!(
+        read_json(&project_selection)["skills"]
+            .get("alpha")
+            .is_none()
+    );
+    assert!(agent_skills.join("SKILL.md").is_file());
+    assert!(claude_skills.join("SKILL.md").is_file());
+    assert_eq!(run(&project, &["get", "alpha"]).stdout, b"A body.\n");
+    assert_eq!(
+        fs::read_to_string(skill.join("SKILL.md")).unwrap(),
+        manifest
+    );
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();

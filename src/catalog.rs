@@ -451,15 +451,14 @@ impl<'a> Discovery<'a> {
             Err(Error::Io { source, .. }) if skippable_root(&source) => return Ok(false),
             Err(err) => return Err(err),
         };
-        const MARKER: &[u8] = b"skills-mgr remote placeholder\n";
-        if let Ok(file) = content::open_file(&dir, Path::new(".skills-mgr-placeholder")) {
+        if let Ok(file) = content::open_file(&dir, Path::new(content::PLACEHOLDER_MARKER_NAME)) {
             let mut marker = Vec::new();
             use io::Read;
             if file
-                .take(MARKER.len() as u64 + 1)
+                .take(content::PLACEHOLDER_MARKER.len() as u64 + 1)
                 .read_to_end(&mut marker)
                 .is_ok()
-                && marker == MARKER
+                && marker == content::PLACEHOLDER_MARKER
             {
                 return Ok(false);
             }

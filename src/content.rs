@@ -14,6 +14,8 @@ use serde_saphyr::granit_parser::{Event, Parser};
 use crate::{Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error};
 
 pub(crate) const MANIFEST: &str = "SKILL.md";
+pub(crate) const PLACEHOLDER_MARKER_NAME: &str = ".skills-mgr-placeholder";
+pub(crate) const PLACEHOLDER_MARKER: &[u8] = b"skills-mgr remote placeholder\n";
 const MAX_FRONTMATTER: usize = 64 * 1024;
 
 #[derive(Debug, Deserialize)]

@@ -1,0 +1,289 @@
+use std::{
+    collections::BTreeMap,
+    ffi::OsString,
+    fs::{self, DirBuilder, File, Metadata, OpenOptions, Permissions},
+    io::{self, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+};
+
+use serde::Serialize;
+
+use crate::{
+    SkillsManager, catalog,
+    catalog::Source,
+    content::valid_name,
+    io_error, remote,
+    selection::{self, Enabled, LOCK_NAME, Lock, REVISION, Selection},
+};
+
+use super::{Result, current_manager};
+
+mod placeholder;
+
+pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
+    let usage = "usage: skills-mgr set [-g] <skill> <true|false|condition|inherit>";
+    let (force_global, args) = global_flag(args);
+    let [name, value] = args else {
+        return Err(usage.into());
+    };
+    let name = name.to_str().filter(|name| valid_name(name));
+    let (Some(name), Some(value)) = (name, value.to_str()) else {
+        return Err(usage.into());
+    };
+    let desired = match value {
+        "inherit" => None,
+        "true" | "false" => Some(Enabled::Boolean(value == "true")),
+        value if value.trim().is_empty() => {
+            return Err("selection condition is empty; use inherit to remove the override".into());
+        }
+        value => {
+            brush_parser::Parser::new(value.as_bytes(), &Default::default())
+                .parse_program()
+                .map_err(|err| format!("invalid selection condition: {err}"))?;
+            Some(Enabled::Condition(value.to_owned()))
+        }
+    };
+    let manager = current_manager()?;
+    let scope = Scope::new(&manager, force_global)?;
+    set_enabled(&manager, &scope, name, desired)?;
+    let layer = if scope.global { "global" } else { "project" };
+    writeln!(out, "Updated {name} ({layer} selection)")?;
+    Ok(())
+}
+
+fn global_flag(args: &[OsString]) -> (bool, &[OsString]) {
+    match args {
+        [flag, rest @ ..] if flag == "-g" => (true, rest),
+        _ => (false, args),
+    }
+}
+
+struct Scope<'a> {
+    global: bool,
+    selection_dir: PathBuf,
+    placeholder_base: &'a Path,
+}
+
+impl<'a> Scope<'a> {
+    fn new(manager: &'a SkillsManager, force_global: bool) -> Result<Self> {
+        let global = force_global
+            || same_directory(&manager.project, &manager.home)?
+            || same_directory(&manager.project, &manager.manager_home())?;
+        Ok(Self {
+            global,
+            selection_dir: if global {
+                manager.manager_home()
+            } else {
+                manager.project.clone()
+            },
+            placeholder_base: if global {
+                &manager.home
+            } else {
+                &manager.project
+            },
+        })
+    }
+}
+
+fn same_identity(a: &Metadata, b: &Metadata) -> bool {
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+fn same_directory(first: &Path, second: &Path) -> Result<bool> {
+    if first == second {
+        return Ok(true);
+    }
+    let first = fs::metadata(first).map_err(|err| io_error(first, err))?;
+    match fs::metadata(second) {
+        Ok(second) => Ok(same_identity(&first, &second)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(io_error(second, err).into()),
+    }
+}
+
+// Match the Go writer's managed-then-per-directory lock order and inode key.
+fn coordination_dir(manager: &SkillsManager) -> PathBuf {
+    manager.cache.join("skills-mgr/selection-locks")
+}
+
+fn exclusive_lock(path: &Path) -> Result<File> {
+    let parent = path.parent().expect("coordination files have a parent");
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .map_err(|err| io_error(parent, err))?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|err| io_error(path, err))?;
+    file.lock().map_err(|err| io_error(path, err))?;
+    Ok(file)
+}
+
+fn selection_lock(manager: &SkillsManager, dir: &Path) -> Result<File> {
+    fs::create_dir_all(dir).map_err(|err| io_error(dir, err))?;
+    let metadata = fs::metadata(dir).map_err(|err| io_error(dir, err))?;
+    let name = format!("{:x}-{:x}.lock", metadata.dev(), metadata.ino());
+    exclusive_lock(&coordination_dir(manager).join(name))
+}
+
+fn symlink_metadata(path: &Path) -> Result<Option<Metadata>> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(io_error(path, err).into()),
+    }
+}
+
+fn set_enabled(
+    manager: &SkillsManager,
+    scope: &Scope<'_>,
+    name: &str,
+    desired: Option<Enabled>,
+) -> Result<()> {
+    let _guard = exclusive_lock(&coordination_dir(manager).join("managed-mutation.lock"))?;
+    let skill = catalog::discover(manager, &[], Some(name))?
+        .remove(name)
+        .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
+    let _lock = selection_lock(manager, &scope.selection_dir)?;
+    let path = scope.selection_dir.join(LOCK_NAME);
+    let legacy = if scope.global && symlink_metadata(&path)?.is_none() {
+        let legacy = manager.home.join(LOCK_NAME);
+        match symlink_metadata(&legacy)? {
+            Some(metadata) if metadata.is_file() => Some(legacy),
+            Some(_) => {
+                return Err(format!(
+                    "legacy selection {} is not a regular file",
+                    legacy.display()
+                )
+                .into());
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    let (revision, mut lock) = selection::load_with_revision(legacy.as_deref().unwrap_or(&path))?;
+    let global = if scope.global {
+        None
+    } else {
+        selection::global_path(manager)?
+            .as_deref()
+            .map(selection::load)
+            .transpose()?
+    };
+    if revision == 1 {
+        migrate_legacy(manager, &mut lock, global.as_ref())?;
+    }
+
+    let current = lock.get(name).and_then(|entry| entry.enabled.as_ref());
+    let changed = current != desired.as_ref() || revision != REVISION;
+    let mut entry = lock.remove(name).unwrap_or(Selection {
+        enabled: None,
+        remote: None,
+    });
+    entry.enabled = desired;
+    let effective = entry
+        .enabled
+        .as_ref()
+        .or_else(|| global.as_ref()?.get(name)?.enabled.as_ref());
+    let placeholders = if matches!(skill.source, Source::Managed | Source::Remote(_)) {
+        Some(placeholder::Plan::new(
+            scope.placeholder_base,
+            name,
+            &skill.metadata.description,
+            effective.is_some_and(|flag| *flag != Enabled::Boolean(false)),
+        )?)
+    } else {
+        None
+    };
+    if entry.enabled.is_some() || entry.remote.is_some() {
+        lock.insert(name.to_owned(), entry);
+    }
+    let publish = || {
+        if let Some(legacy) = &legacy {
+            fs::rename(legacy, &path).map_err(|err| io_error(legacy, err))?;
+        }
+        if changed && let Err(err) = save_selection(&path, &lock) {
+            if let Some(legacy) = &legacy
+                && let Err(rollback) = fs::rename(&path, legacy)
+            {
+                return Err(format!("{err}; restore {}: {rollback}", legacy.display()).into());
+            }
+            return Err(err);
+        }
+        Ok(())
+    };
+    match placeholders {
+        Some(plan) => plan.publish(publish),
+        None => publish(),
+    }
+}
+
+fn migrate_legacy(manager: &SkillsManager, lock: &mut Lock, global: Option<&Lock>) -> Result<()> {
+    let mut references = BTreeMap::new();
+    for (record, _) in remote::records(&remote::store_path(manager), None)? {
+        let reference = record.reference;
+        if let Some(previous) = references.insert(reference.name.clone(), reference.clone())
+            && previous != reference
+        {
+            return Err(format!(
+                "multiple persisted remote identities for skill {:?}",
+                reference.name
+            )
+            .into());
+        }
+    }
+    for (name, reference) in references {
+        if let Some(entry) = lock.get_mut(&name) {
+            entry.remote = Some(reference);
+        } else if global
+            .and_then(|lock| lock.get(&name))
+            .is_some_and(|entry| entry.enabled.is_some())
+        {
+            lock.insert(
+                name,
+                Selection {
+                    enabled: None,
+                    remote: Some(reference),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn save_selection(path: &Path, skills: &Lock) -> Result<()> {
+    #[derive(Serialize)]
+    struct Document<'a> {
+        schema_revision: u32,
+        skills: &'a Lock,
+    }
+    let mut data = serde_json::to_vec_pretty(&Document {
+        schema_revision: REVISION,
+        skills,
+    })?;
+    data.push(b'\n');
+    atomic_write(path, &data, 0o644)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+    let write = || -> io::Result<()> {
+        let mut file = tempfile::Builder::new()
+            .prefix(".skills-mgr-")
+            .tempfile_in(path.parent().expect("publication path has a parent"))?;
+        file.write_all(bytes)?;
+        file.as_file()
+            .set_permissions(Permissions::from_mode(mode))?;
+        file.as_file().sync_all()?;
+        file.persist(path).map_err(|err| err.error)?;
+        Ok(())
+    };
+    write().map_err(|err| io_error(path, err).into())
+}
