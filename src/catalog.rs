@@ -39,7 +39,7 @@ pub(crate) struct Skill {
 
 pub(crate) fn list(manager: &SkillsManager, harness: Option<Harness>) -> Result<Vec<ListedSkill>> {
     let skills = discover(manager, harness, None)?;
-    let selected = Selections::load(manager)?;
+    let mut selected = Selections::load(manager)?;
     let serves_claude = harness == Some(Harness::Claude) && claude_skill_tool_denied(manager)?;
     let visible = if serves_claude {
         BTreeMap::new()

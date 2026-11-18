@@ -1,6 +1,6 @@
 [package]
 name = "skills-mgr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Read the skills-mgr catalog and skill files from Rust without subprocesses"
 license = "MIT"
@@ -8,14 +8,23 @@ repository = "https://github.com/yusing/skills-mgr"
 include = ["/src", "/tests", "/README.md", "/LICENSE"]
 
 [dependencies]
+brush-parser = "0.4.0"
 cap-std = "4.0.3"
 diffy = "0.5.2"
 dirs = "7.0.0"
+gix-discover = "0.57.1"
+gix-hash = { version = "0.28.1", features = ["sha1", "sha256"] }
+gix-index = "0.58.0"
+gix-path = "0.14.1"
+gomod-parser = "0.6.0"
+ignore = "0.4.34"
+regex = "1.13.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 serde-saphyr = { version = "2.1.1", default-features = false, features = ["deserialize", "serialize"] }
 sha2 = "0.11.1"
 thiserror = "2.0.21"
+toml = "1.2.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

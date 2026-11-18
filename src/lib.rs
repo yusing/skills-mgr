@@ -4,6 +4,7 @@
 //! or change selection and cache files. Operations read the current filesystem.
 
 mod catalog;
+mod condition;
 mod content;
 mod remote;
 mod selection;
@@ -51,8 +52,8 @@ pub enum Error {
     NotFound(String),
     #[error("skill {0:?} is not enabled")]
     NotEnabled(String),
-    #[error("skill {0:?} has a conditional selection; supply a condition evaluator")]
-    ConditionNeedsEvaluator(String),
+    #[error("skill {0:?} has an unsupported selection expression")]
+    UnsupportedCondition(String),
     #[error("evaluate selection for skill {skill:?}: {source}")]
     Condition {
         skill: String,
@@ -69,8 +70,6 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-type ConditionEvaluator = dyn Fn(&Path, &str) -> io::Result<bool> + Send + Sync;
-
 /// A read-only view of a project's skills, including inherited user selections.
 pub struct SkillsManager {
     project: PathBuf,
@@ -78,7 +77,6 @@ pub struct SkillsManager {
     cache: PathBuf,
     codex_home: PathBuf,
     admin_skills: Option<PathBuf>,
-    evaluate: Option<Box<ConditionEvaluator>>,
 }
 
 impl SkillsManager {
@@ -109,19 +107,7 @@ impl SkillsManager {
             home,
             cache: cache.into(),
             admin_skills: None,
-            evaluate: None,
         }
-    }
-
-    /// Supply caller-owned evaluation for selection expressions. The evaluator
-    /// receives the project directory and the stored expression. Without one,
-    /// an operation that needs to evaluate a condition returns an error.
-    pub fn with_condition_evaluator(
-        mut self,
-        evaluator: impl Fn(&Path, &str) -> io::Result<bool> + Send + Sync + 'static,
-    ) -> Self {
-        self.evaluate = Some(Box::new(evaluator));
-        self
     }
 
     /// Whether a project, global, or legacy global selection file is present.

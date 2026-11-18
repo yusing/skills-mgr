@@ -41,7 +41,10 @@ enum Enabled {
 }
 
 #[derive(Default)]
-pub(crate) struct Selections(BTreeMap<String, Enabled>);
+pub(crate) struct Selections {
+    entries: BTreeMap<String, Enabled>,
+    conditions: crate::condition::Conditions,
+}
 
 impl Selections {
     pub(crate) fn load(manager: &SkillsManager) -> Result<Self> {
@@ -90,25 +93,23 @@ impl Selections {
                 _ => return Err(invalid()),
             };
             if let Some(enabled) = enabled {
-                self.0.insert(name, enabled);
+                self.entries.insert(name, enabled);
             }
         }
         Ok(())
     }
 
-    pub(crate) fn enabled(&self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
-        match self.0.get(&skill.metadata.name) {
+    pub(crate) fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
+        match self.entries.get(&skill.metadata.name) {
             Some(Enabled::Boolean(value)) => Ok(*value),
-            Some(Enabled::Condition(expr)) => {
-                let evaluate = manager
-                    .evaluate
-                    .as_ref()
-                    .ok_or_else(|| Error::ConditionNeedsEvaluator(skill.metadata.name.clone()))?;
-                evaluate(&manager.project, expr).map_err(|source| Error::Condition {
+            Some(Enabled::Condition(expr)) => self
+                .conditions
+                .evaluate(manager, expr)
+                .map_err(|source| Error::Condition {
                     skill: skill.metadata.name.clone(),
                     source,
-                })
-            }
+                })?
+                .ok_or_else(|| Error::UnsupportedCondition(skill.metadata.name.clone())),
             None => Ok(skill.source.is_project() || skill.metadata.hide),
         }
     }

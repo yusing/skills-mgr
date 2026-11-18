@@ -104,9 +104,14 @@ still work with project skills that are enabled by default.
 already loads. `get("name/path")` reads a reference or other skill file, and
 `get_lines("name", 1..=40)` reads an inclusive range of the served body.
 
-For conditional selections, supply `with_condition_evaluator`; the crate
-does not interpret shell expressions or run the CLI's builtins. Without an
-evaluator, a read that needs to check a condition returns an error. Grok's
+Conditional selections using [`lang`, `tooling`, and `has_dependency`](#conditional-expressions)
+are evaluated natively, for example `lang ts && (tooling pnpm || tooling bun)`.
+Use literal arguments, quoting version expressions such as `'>=2 && <3'`.
+The crate supports `!`, parentheses, short-circuiting `&&` and `||`, and
+`[ "$PWD" == "$HOME" ]` to test whether the project is the configured home.
+A pipeline (`|`) of predicates uses the **last** predicate’s result; use `||`
+to match any predicate. External commands and unsupported shell syntax return
+an `UnsupportedCondition` error. Grok's
 process-only native catalog is not queried. If a cached skill has a stale
 local edit, its original description remains visible in `list` and `get`
 returns an error for the manifest.
@@ -484,7 +489,7 @@ when a repository should share its selection.
 
 ### Conditional Expressions
 
-> An `enabled` string runs as Bash, with your permissions, whenever the skill's
+> In the CLI, an `enabled` string runs as Bash, with your permissions, whenever the skill's
 > state is checked. Review committed `.skills-mgr.json` changes before running
 > `skills-mgr` in a repository you do not trust.
 

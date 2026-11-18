@@ -10,6 +10,30 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn condition(&self, expr: &str) {
+        self.write(
+            "home/.skills-mgr/.skills-mgr.json",
+            json!({
+                "schema_revision":3, "skills":{"managed":{"enabled":expr}}
+            })
+            .to_string(),
+        );
+    }
+
+    fn assert_condition(&self, expr: &str, want: bool) {
+        self.condition(expr);
+        assert_eq!(
+            self.names().contains(&"managed".to_string()),
+            want,
+            "list: {expr}"
+        );
+        match self.manager.get("managed") {
+            Ok(body) if want => assert_eq!(body, b"Managed\n"),
+            Err(Error::NotEnabled(_)) if !want => {}
+            other => panic!("get: {expr}: {other:?}"),
+        }
+    }
+
     fn new() -> Self {
         let temp = tempdir().unwrap();
         let manager = SkillsManager::new(
@@ -231,30 +255,145 @@ fn symlinked_skill_roots_work_but_files_cannot_escape_the_skill() {
 }
 
 #[test]
-fn condition_evaluation_is_explicit_and_shared_by_list_and_get() {
+fn native_conditions_use_current_project_evidence_and_shell_boolean_order() {
     let f = Fixture::new();
-    f.skill("project/.agents/skills/local", "local", "Local\n");
     f.skill("home/.skills-mgr/skills/managed", "managed", "Managed\n");
-    f.write(
-        "project/.skills-mgr.json",
-        r#"{"schema_revision":3,"skills":{"managed":{"enabled":"custom predicate"}}}"#,
-    );
+    f.write("project/src/index.TSX", "");
+    f.write("project/src/foo.C", "");
+    f.write("project/config/Chart.yaml", "");
+    f.write("project/compose.yml", "");
+    f.write("project/src/.gitignore", "*.py\n");
+    f.write("project/src/generated.py", "");
+    f.write("project/node_modules/leak.go", "");
+    f.write("project/target/leak.rs", "");
+    f.write("project/package.json", "not json");
+    for expr in [
+        "lang ts && lang tsx && tooling k8s",
+        "lang 'c++' && ! lang c",
+        "tooling docker && tooling docker-compose",
+        "! (lang python || lang go || lang rust)",
+        "lang js || (lang ts && ! tooling npm)",
+        "lang ts || has_dependency missing",
+    ] {
+        f.assert_condition(expr, true);
+    }
+    f.assert_condition("lang ts || lang js && tooling pnpm", false);
+    f.assert_condition(r#"[ "$PWD" == "$HOME" ] || lang js"#, false);
+    f.assert_condition("lang ts | lang js", false);
+    f.assert_condition("! lang ts | lang js", true);
+    f.write("project/pnpm-lock.yaml", "");
+    f.assert_condition("lang ts || lang js && tooling pnpm", true);
+    f.condition("has_dependency missing");
     assert!(
-        matches!(f.manager.list(), Err(Error::ConditionNeedsEvaluator(name)) if name == "managed")
+        matches!(f.manager.get("managed"),Err(Error::Condition {skill,source}) if skill=="managed" && source.to_string().contains("package.json"))
     );
-    assert!(matches!(
-        f.manager.get("managed"),
-        Err(Error::ConditionNeedsEvaluator(_))
-    ));
-    assert_eq!(f.manager.get("local").unwrap(), b"Local\n");
-    let project = f.temp.path().join("project");
-    let manager = f.manager.with_condition_evaluator(move |dir, expression| {
-        assert_eq!(dir, project);
-        assert_eq!(expression, "custom predicate");
-        Ok(true)
-    });
-    assert_eq!(manager.list().unwrap()[1].name, "managed");
-    assert_eq!(manager.get("managed").unwrap(), b"Managed\n");
+    for expr in ["tooling unknown", "lang", "lang unknown", "has_dependency"] {
+        f.condition(expr);
+        assert!(matches!(f.manager.list(),Err(Error::Condition {skill,..}) if skill=="managed"));
+    }
+    for expr in [
+        "lang $(touch unexpected)",
+        "lang ts; touch unexpected",
+        "lang *",
+        "lang \"$NAME\"",
+    ] {
+        f.condition(expr);
+        assert!(matches!(
+            f.manager.list(),
+            Err(Error::UnsupportedCondition(_))
+        ));
+    }
+    assert!(!f.temp.path().join("project/unexpected").exists());
+}
+
+#[test]
+fn native_scan_at_home_only_counts_direct_files() {
+    let mut f = Fixture::new();
+    let home = f.temp.path().join("home");
+    f.manager = SkillsManager::new(&home, &home, f.temp.path().join("cache"));
+    f.skill("home/.skills-mgr/skills/managed", "managed", "Managed\n");
+    f.write("home/src/index.ts", "");
+    f.write("home/pnpm-lock.yaml", "");
+    f.assert_condition("tooling pnpm && ! lang ts", true);
+    f.assert_condition(r#"[ "$PWD" == "$HOME" ] || has_dependency missing"#, true);
+}
+
+#[test]
+fn native_dependencies_match_one_declaration_and_all_its_numeric_bounds() {
+    let f = Fixture::new();
+    f.skill("home/.skills-mgr/skills/managed", "managed", "Managed\n");
+    f.write("project/go.mod","module example.com/app\n\nrequire (\n example.com/direct v2.3.1\n example.com/other v2.0.0 // indirect\n)\n");
+    f.write("project/web/package.json",r#"{"dependencies":{"@scope/core":"workspace:^2.3.4","split":"1"},"devDependencies":{"dev":"2 || 3"},"optionalDependencies":{"opt":">=2 <4"},"peerDependencies":{"peer":"1"}}"#);
+    f.write(
+        "project/Cargo.toml",
+        r#"
+[dependencies]
+split="3.1"
+[dev-dependencies]
+fixture={path="local"}
+[build-dependencies]
+builder="1"
+[workspace.dependencies]
+shared={version="~3.4"}
+[target.'cfg(unix)'.dependencies]
+system="4"
+[target.'cfg(unix)'.dev-dependencies]
+debug="5"
+[target.'cfg(unix)'.build-dependencies]
+generate="6"
+"#,
+    );
+    for expr in [
+        "has_dependency example.com/direct '==2.3' && ! has_dependency example.com/other",
+        "has_dependency '@scope/core' '<2 || >=2 && <=2.3'",
+        "has_dependency dev '>=2' && ! has_dependency dev '==2'",
+        "has_dependency opt && ! has_dependency opt '<3' && ! has_dependency peer",
+        "! has_dependency split '>=2 && <3'",
+        "has_dependency fixture && ! has_dependency fixture '>=0'",
+        "has_dependency builder && has_dependency shared '==3' && has_dependency system && has_dependency debug && has_dependency generate",
+    ] {
+        f.assert_condition(expr, true);
+    }
+    f.condition("has_dependency split '>1'");
+    assert!(matches!(f.manager.list(), Err(Error::Condition { .. })));
+}
+
+#[test]
+fn native_scan_honors_parent_ignores_excludes_and_tracked_exceptions() {
+    let f = Fixture::new();
+    f.skill("home/.skills-mgr/skills/managed", "managed", "Managed\n");
+    f.write("project/.gitignore", "*\n!allowed/\n!allowed/keep.ts\n");
+    f.write("project/allowed/keep.ts", "");
+    f.write("project/hidden/app.go", "");
+    f.write("project/hidden/pnpm-lock.yaml", "");
+    f.write(
+        "project/hidden/package.json",
+        r#"{"dependencies":{"tracked":"2"}}"#,
+    );
+    f.write("project/excluded.rs", "");
+    let git = |args: &[&str]| {
+        assert!(
+            std::process::Command::new("git")
+                .current_dir(f.temp.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", f.temp.path().join("no-config"))
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-f", "project/hidden/package.json"]);
+    f.assert_condition(
+        "lang ts && lang node && has_dependency tracked && ! tooling pnpm && ! lang go",
+        true,
+    );
+    f.write("project/.gitignore", "");
+    f.write(".git/info/exclude", "*.rs\n");
+    f.assert_condition("! lang rust && lang go", true);
+    f.write(".gitignore", "project/\n");
+    f.assert_condition("lang node && ! lang ts && ! tooling pnpm", true);
 }
 
 #[test]
