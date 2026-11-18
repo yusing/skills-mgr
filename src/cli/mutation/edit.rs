@@ -85,6 +85,34 @@ pub(in crate::cli) fn edit_draft(
     )
 }
 
+pub(in crate::cli) fn prepare_edit(
+    manager: &SkillsManager,
+    name: &str,
+    draft: &Path,
+) -> Result<(PathBuf, [u8; 32])> {
+    let skill = catalog::discover(manager, &[], Some(name))?
+        .remove(name)
+        .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
+    let path = skill.manifest_path();
+    let contents = if let Some(key) = &skill.remote_key {
+        Store::new(manager).editable_contents(&skill, key)?
+    } else {
+        LocalManifest::open(manager, &skill, Some(&path))?.original
+    };
+    let mut file = OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(draft)
+        .map_err(|err| io_error(draft, err))?;
+    if !file.metadata()?.is_file() {
+        return Err("edit draft is not a regular file".into());
+    }
+    file.set_len(0)?;
+    file.write_all(&contents)
+        .map_err(|err| io_error(draft, err))?;
+    Ok((path, Sha256::digest(&contents).into()))
+}
+
 fn read_edit_file(path: &Path) -> Result<Vec<u8>> {
     let mut file = OpenOptions::new()
         .read(true)

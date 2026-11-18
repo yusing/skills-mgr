@@ -299,6 +299,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case grokToggleDone:
 		m.busy = false
+		if m.busyCancel != nil {
+			m.busyCancel()
+			m.busyCancel = nil
+		}
 		if message.err != nil {
 			m.status = "error: " + message.err.Error()
 			break

@@ -422,6 +422,12 @@ impl<'a> Store<'a> {
         Ok((record, content))
     }
 
+    pub(super) fn editable_contents(&self, skill: &Skill, key: &str) -> Result<Vec<u8>> {
+        let _guard = self.lock()?;
+        let (_, root) = self.owner(skill, key, None)?;
+        self.layered(key, &read_base(&root)?)
+    }
+
     pub(super) fn save_patch(
         &self,
         skill: &Skill,

@@ -18,6 +18,31 @@ func configuredEditor(file string) (*exec.Cmd, error) {
 }
 
 func (m model) editor(skill string) (_ skillEdit, retErr error) {
+	if m.manager.tuiCore != "" {
+		temporary, err := os.CreateTemp("", "skills-mgr-skill-*.md")
+		if err != nil {
+			return skillEdit{}, fmt.Errorf("create skill edit: %w", err)
+		}
+		draft := temporary.Name()
+		defer func() {
+			if retErr != nil {
+				_ = os.Remove(draft)
+			}
+		}()
+		if err := temporary.Close(); err != nil {
+			return skillEdit{}, err
+		}
+		var prepared struct {
+			Path   string
+			Digest [sha256.Size]byte
+		}
+		if err := m.manager.callTUICore(m.project, tuiCoreRequest{Op: "prepare_edit", Name: skill, Draft: draft}, &prepared); err != nil {
+			return skillEdit{}, err
+		}
+		command, err := configuredEditor(draft)
+		return skillEdit{command: command, draft: draft, layeredDigest: prepared.Digest,
+			source: discoveredSkill{Name: skill, Path: prepared.Path}}, err
+	}
 	discovered, err := m.manager.findSkill(m.project, skill)
 	if err != nil {
 		return skillEdit{}, err
@@ -30,7 +55,7 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 		return skillEdit{}, fmt.Errorf("missing %s", file)
 	}
 	edit := skillEdit{source: discovered}
-	if discovered.RemoteKey != "" || m.manager.tuiCore != "" {
+	if discovered.RemoteKey != "" {
 		contents, err := os.ReadFile(file)
 		if err != nil {
 			return skillEdit{}, fmt.Errorf("read skill: %w", err)
@@ -73,11 +98,23 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 }
 
 func (m model) enabledEditor(skill string) (_ *exec.Cmd, draft string, retErr error) {
-	value, err := loadLock(m.manager.lockDir(m.project))
-	if err != nil {
-		return nil, "", err
+	var current enabledValue
+	var configured bool
+	if m.manager.tuiCore != "" {
+		var value *enabledValue
+		if err := m.manager.callTUICore(m.project, tuiCoreRequest{Op: "enabled_value", Name: skill}, &value); err != nil {
+			return nil, "", err
+		}
+		if value != nil {
+			current, configured = *value, true
+		}
+	} else {
+		value, err := loadLock(m.manager.lockDir(m.project))
+		if err != nil {
+			return nil, "", err
+		}
+		current, configured = value.enabled(skill)
 	}
-	current, configured := value.enabled(skill)
 	temp, err := os.CreateTemp("", "skills-mgr-enabled-*.json")
 	if err != nil {
 		return nil, "", fmt.Errorf("create enabled editor draft: %w", err)

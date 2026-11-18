@@ -63,12 +63,30 @@ enum Request {
         query: Option<String>,
     },
     #[cfg(unix)]
+    ToggleGrok {
+        #[serde(rename = "global")]
+        _global: bool,
+        name: String,
+    },
+    #[cfg(unix)]
     Edit {
         global: bool,
         name: String,
         path: PathBuf,
         draft: PathBuf,
         digest: String,
+    },
+    #[cfg(unix)]
+    PrepareEdit {
+        #[serde(rename = "global")]
+        _global: bool,
+        name: String,
+        draft: PathBuf,
+    },
+    #[cfg(unix)]
+    EnabledValue {
+        global: bool,
+        name: String,
     },
     #[cfg(unix)]
     Relocate {
@@ -182,6 +200,28 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             reply(out, &build_snapshot(&manager, scope.global, false)?)
         }
         #[cfg(unix)]
+        Request::PrepareEdit {
+            _global: _,
+            name,
+            draft,
+        } => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Prepared {
+                path: PathBuf,
+                digest: [u8; 32],
+            }
+            super::cancel::install()?;
+            let (path, digest) = mutation::prepare_edit(&current_manager()?, &name, &draft)?;
+            reply(out, &Prepared { path, digest })
+        }
+        #[cfg(unix)]
+        Request::EnabledValue { global, name } => {
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            reply(out, &mutation::configured_value(&manager, &scope, &name)?)
+        }
+        #[cfg(unix)]
         Request::Relocate { global, name, path } => {
             #[derive(Serialize)]
             #[serde(rename_all = "PascalCase")]
@@ -202,6 +242,11 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
                     snapshot: build_snapshot(&manager, scope.global, false)?,
                 },
             )
+        }
+        #[cfg(unix)]
+        Request::ToggleGrok { _global: _, name } => {
+            super::cancel::install()?;
+            reply(out, &mutation::toggle_grok(&current_manager()?, &name)?)
         }
         #[cfg(unix)]
         Request::ToggleInvocation { global, name, path } => {
@@ -332,6 +377,8 @@ struct SelectionView {
 }
 
 fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Result<()> {
+    #[cfg(unix)]
+    let global = Scope::new(manager, global)?.global;
     reply(out, &build_snapshot(manager, global, true)?)
 }
 

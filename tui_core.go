@@ -91,6 +91,15 @@ func (m *manager) tuiToggleRemote(ctx context.Context, project string, ref remot
 	return newRemoteToggleResult(ref.Name, reply.Enabled, reply.Skills, reply.Selected), err
 }
 
+func (m *manager) tuiToggleGrok(ctx context.Context, project, name string) (bool, error) {
+	if m.tuiCore == "" {
+		return m.toggleGrokSkill(name)
+	}
+	var enabled bool
+	err := m.callTUICoreContext(ctx, project, tuiCoreRequest{Op: "toggle_grok", Name: name}, &enabled)
+	return enabled, err
+}
+
 func (m *manager) tuiUninstall(ctx context.Context, project, name, key string) (remoteUninstallResult, error) {
 	if m.tuiCore == "" {
 		return m.uninstallRemote(ctx, project, name, key)

@@ -338,8 +338,10 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 	if isGrokNativeSkill(skill) {
 		m.busy = true
 		m.status = "updating " + skill.Name + " in Grok"
+		ctx, cancel := context.WithCancel(context.Background())
+		m.busyCancel = cancel
 		return m, func() tea.Msg {
-			enabled, err := m.manager.toggleGrokSkill(skill.Name)
+			enabled, err := m.manager.tuiToggleGrok(ctx, m.project, skill.Name)
 			return grokToggleDone{skill: skill.Name, enabled: enabled, err: err}
 		}
 	}

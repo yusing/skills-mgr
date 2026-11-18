@@ -23,6 +23,7 @@ use super::{Result, current_manager};
 
 mod edit;
 mod exclusion;
+mod grok;
 mod install;
 mod maintain;
 mod placeholder;
@@ -32,7 +33,8 @@ mod repository;
 mod store;
 mod sync;
 mod uninstall;
-pub(super) use edit::{edit, edit_draft, toggle_invocation};
+pub(super) use edit::{edit, edit_draft, prepare_edit, toggle_invocation};
+pub(super) use grok::toggle_grok;
 pub(super) use install::install;
 pub(super) use maintain::{refresh_remotes, repair_managed};
 pub(super) use relocate::{adopt, relocate};
@@ -300,6 +302,19 @@ fn load_global(manager: &SkillsManager) -> Result<Option<Lock>> {
         .transpose()?)
 }
 
+pub(super) fn configured_value(
+    manager: &SkillsManager,
+    scope: &Scope<'_>,
+    name: &str,
+) -> Result<Option<Enabled>> {
+    let mut lock = if scope.global {
+        load_global(manager)?.unwrap_or_default()
+    } else {
+        selection::load(&scope.selection_dir.join(LOCK_NAME))?
+    };
+    Ok(lock.remove(name).and_then(|entry| entry.enabled))
+}
+
 struct SelectionWrite {
     _guard: File,
     path: PathBuf,
@@ -415,7 +430,16 @@ fn save_selection(path: &Path, skills: &Lock) -> Result<()> {
 }
 
 pub(super) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
-    let write = || -> io::Result<()> {
+    atomic_write_checked(path, bytes, mode, || Ok(()))
+}
+
+fn atomic_write_checked(
+    path: &Path,
+    bytes: &[u8],
+    mode: u32,
+    verify: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let write = || -> io::Result<tempfile::NamedTempFile> {
         let mut file = tempfile::Builder::new()
             .prefix(".skills-mgr-")
             .tempfile_in(path.parent().expect("publication path has a parent"))?;
@@ -423,8 +447,11 @@ pub(super) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
         file.as_file()
             .set_permissions(Permissions::from_mode(mode))?;
         file.as_file().sync_all()?;
-        file.persist(path).map_err(|err| err.error)?;
-        Ok(())
+        Ok(file)
     };
-    write().map_err(|err| io_error(path, err).into())
+    let file = write().map_err(|err| io_error(path, err))?;
+    verify()?;
+    file.persist(path)
+        .map_err(|err| io_error(path, err.error))?;
+    Ok(())
 }

@@ -731,6 +731,68 @@ fn seed_registry_topics(cache: &std::path::Path) {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn grok_toggle_edits_only_native_disabled_configuration() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let config = home.path().join(".grok/config.toml");
+    fs::create_dir(&project).unwrap();
+    fs::create_dir(config.parent().unwrap()).unwrap();
+    let request = || {
+        let mut cmd = cli();
+        cmd.current_dir(&project)
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join("cache"));
+        tui_request(
+            cmd,
+            serde_json::json!({"op":"toggle_grok", "global":false, "name":"alpha"}),
+        )
+    };
+    let original = "# retained\nskills = { disabled = [\"alpha\", \"other\"] }\n\n[other]\nvalue = 1 # retained\n";
+    fs::write(&config, original).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o640)).unwrap();
+    let enabled = request();
+    assert!(enabled.status.success(), "{enabled:?}");
+    assert_eq!(enabled.stdout, b"true\n");
+    let updated = fs::read_to_string(&config).unwrap();
+    let structure = |text: &str| {
+        let (prefix, contents) = text.split_once("disabled = [").unwrap();
+        let (_, suffix) = contents.split_once(']').unwrap();
+        format!("{prefix}{suffix}")
+    };
+    assert_eq!(structure(&updated), structure(original));
+    assert_eq!(
+        updated.parse::<toml::Table>().unwrap()["skills"]["disabled"]
+            .as_array()
+            .unwrap()[0]
+            .as_str(),
+        Some("other")
+    );
+    assert_eq!(
+        fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert!(!project.join(".skills-mgr.json").exists());
+    let disabled = request();
+    assert!(disabled.status.success(), "{disabled:?}");
+    assert_eq!(disabled.stdout, b"false\n");
+    let parsed = fs::read_to_string(&config)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        parsed["skills"]["disabled"].as_array().unwrap()[1].as_str(),
+        Some("alpha")
+    );
+
+    let malformed = b"[skills]\ndisabled = 5\n";
+    fs::write(&config, malformed).unwrap();
+    assert!(!request().status.success());
+    assert_eq!(fs::read(&config).unwrap(), malformed);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
     use std::{
         fs, thread,
