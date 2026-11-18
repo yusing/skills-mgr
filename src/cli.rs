@@ -59,6 +59,8 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
         [command, args @ ..] if command == "edit" => mutation::edit(out, args),
         #[cfg(unix)]
         [command, args @ ..] if command == "adopt" => mutation::adopt(out, args),
+        #[cfg(unix)]
+        [command, args @ ..] if command == "install" => mutation::install(out, args),
         [command] if command == "__tui" => tui::dispatch(out),
         [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
         [command, kind]

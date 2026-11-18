@@ -424,6 +424,112 @@ fn remote_edit_saves_and_replaces_only_the_local_patch() {
     assert_eq!(fs::read(&manifest).unwrap(), original);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn install_downloads_tracked_files_and_atomically_replaces_exclusions() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let home = scratch.path().join("home");
+    let project = scratch.path().join("project");
+    let repo = scratch.path().join("repository");
+    let skill = repo.join("skills/alpha");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    for directory in ["examples", "scripts"] {
+        fs::create_dir_all(skill.join(directory)).unwrap();
+    }
+    fs::write(
+        skill.join("SKILL.md"),
+        b"---\nname: alpha\ndescription: Remote Alpha\n---\nInstalled instructions.\n",
+    )
+    .unwrap();
+    fs::write(skill.join("examples/demo.md"), b"Demo.\n").unwrap();
+    fs::write(
+        skill.join("scripts/tool.sh"),
+        b"#!/bin/sh\necho not-run-on-install\n",
+    )
+    .unwrap();
+    fs::set_permissions(
+        skill.join("scripts/tool.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let isolated_git = |cmd: &mut Command| {
+        cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE");
+    };
+    let git = |args: &[&str]| {
+        let mut cmd = Command::new("git");
+        isolated_git(&mut cmd);
+        let output = cmd.current_dir(&repo).args(args).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+    };
+    git(&["init", "--quiet", "--initial-branch=main"]);
+    git(&["add", "."]);
+    git(&[
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "fixture",
+    ]);
+    let address = "https://github.com/fixture/demo";
+    let run = |args: &[&str]| {
+        let mut cmd = cli();
+        isolated_git(&mut cmd);
+        cmd.current_dir(&project)
+            .env("HOME", &home)
+            .env("CODEX_HOME", home.join(".codex"))
+            .env("XDG_CACHE_HOME", home.join("cache"))
+            .env("GIT_CONFIG_COUNT", "2")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!("url.file://{}.insteadOf", repo.display()),
+            )
+            .env("GIT_CONFIG_VALUE_0", format!("{address}.git"))
+            .env("GIT_CONFIG_KEY_1", "protocol.file.allow")
+            .env("GIT_CONFIG_VALUE_1", "always")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let invalid = run(&["install", "--exclude", "[", address]);
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
+    assert!(!home.join("cache").exists());
+    let installed = run(&["install", "--exclude", "examples", address, "alpha"]);
+    assert!(installed.status.success(), "{installed:?}");
+    assert_eq!(installed.stdout, b"Installed alpha (project selection)\n");
+    assert_eq!(run(&["get", "alpha"]).stdout, b"Installed instructions.\n");
+    assert!(!run(&["get", "alpha/examples/demo.md"]).status.success());
+    assert!(run(&["get", "alpha/scripts/tool.sh"]).status.success());
+    let config = project.join(".skills-mgr.json");
+    let before = fs::read(&config).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    assert_eq!(json["skills"]["alpha"]["remote"]["locator"], address);
+    assert!(
+        project
+            .join(".claude/skills/alpha/.skills-mgr-placeholder")
+            .is_file()
+    );
+    let failed = run(&["install", "--exclude", "SKILL.md", address, "alpha"]);
+    assert!(!failed.status.success(), "{failed:?}");
+    assert_eq!(fs::read(&config).unwrap(), before);
+    assert_eq!(run(&["get", "alpha"]).stdout, b"Installed instructions.\n");
+    assert!(!run(&["get", "alpha/examples/demo.md"]).status.success());
+    let reinstalled = run(&["install", address]);
+    assert!(reinstalled.status.success(), "{reinstalled:?}");
+    assert_eq!(run(&["get", "alpha/examples/demo.md"]).stdout, b"Demo.\n");
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();

@@ -22,10 +22,14 @@ use crate::{
 use super::{Result, current_manager};
 
 mod edit;
+mod exclusion;
+mod install;
 mod placeholder;
 mod relocate;
+mod repository;
 mod store;
 pub(super) use edit::{edit, edit_draft, toggle_invocation};
+pub(super) use install::install;
 pub(super) use relocate::{adopt, relocate};
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {

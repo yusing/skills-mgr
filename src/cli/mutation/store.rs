@@ -1,7 +1,8 @@
 use std::{
-    fs::{self, DirBuilder, File},
+    collections::HashSet,
+    fs::{self, DirBuilder, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::DirBuilderExt,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt, symlink},
     path::{Path, PathBuf},
 };
 
@@ -13,10 +14,18 @@ use crate::{
     catalog::Skill,
     content::{self, MANIFEST, Metadata},
     io_error,
-    remote::{self, Record, hex_digest},
+    remote::{self, Record, RemoteRef, hex_digest},
 };
 
+use super::exclusion::Exclusion;
+use super::repository::{MAX_BYTES, MAX_FILES, RemoteFile, valid_file_path};
 use super::{Result, atomic_write, exclusive_lock};
+
+pub(super) struct Prepared {
+    dir: tempfile::TempDir,
+    pub(super) record: Record,
+    pub(super) metadata: Metadata,
+}
 
 pub(super) struct Store<'a> {
     manager: &'a SkillsManager,
@@ -33,6 +42,166 @@ impl<'a> Store<'a> {
 
     pub(super) fn lock(&self) -> Result<File> {
         exclusive_lock(&self.root.join(".lock"))
+    }
+
+    // Read canonical identities even when their content is no longer cached.
+    pub(super) fn find(&self, reference: &RemoteRef) -> Result<Option<Record>> {
+        let mut result = None;
+        for (record, _) in remote::records(&self.root, None)? {
+            if record.reference.provider == reference.provider
+                && record.reference.id == reference.id
+            {
+                if record.reference != *reference {
+                    return Err(format!(
+                        "remote skill {:?} identity conflicts with persisted reference",
+                        reference.name
+                    )
+                    .into());
+                }
+                result = Some(record);
+            } else if record.reference.name == reference.name {
+                return Err(format!(
+                    "remote skill name {:?} is already persisted from {}",
+                    reference.name,
+                    record.reference.provider.label()
+                )
+                .into());
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn prepare(
+        &self,
+        reference: RemoteRef,
+        files: Vec<RemoteFile>,
+        patterns: Vec<String>,
+    ) -> Result<Prepared> {
+        let name = &reference.name;
+        if files.is_empty() || files.len() > MAX_FILES {
+            return Err(format!(
+                "remote skill {name:?} must contain between 1 and {MAX_FILES} files"
+            )
+            .into());
+        }
+        let content = self.root.join("content");
+        create_private_dir(&content)?;
+        let dir = tempfile::Builder::new()
+            .prefix(&format!("{}-", reference.key()))
+            .tempdir_in(&content)
+            .map_err(|err| io_error(&content, err))?;
+        let mut seen = HashSet::new();
+        let mut alias = false;
+        let mut total = 0;
+        for file in &files {
+            crate::cli::cancel::check()?;
+            valid_file_path(&file.path)?;
+            if !seen.insert(file.path.as_str()) {
+                return Err(format!(
+                    "remote skill {name:?} contains duplicate path {:?}",
+                    file.path
+                )
+                .into());
+            }
+            total += file.data.len();
+            if total > MAX_BYTES {
+                return Err(format!("remote skill {name:?} exceeds {MAX_BYTES} bytes").into());
+            }
+            if file.path == content::PLACEHOLDER_MARKER_NAME
+                && file.data == content::PLACEHOLDER_MARKER
+            {
+                return Err(
+                    format!("remote skill {name:?} is marked as a manager placeholder").into(),
+                );
+            }
+            if file.claude_alias {
+                if file.path != "CLAUDE.md" || file.data != b"AGENTS.md" {
+                    return Err("unsupported remote link".into());
+                }
+                alias = true;
+                continue;
+            }
+            let path = dir.path().join(&file.path);
+            create_private_dir(path.parent().expect("content path has a parent"))?;
+            let write = || -> io::Result<()> {
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(if file.executable { 0o700 } else { 0o600 })
+                    .open(&path)?;
+                output.write_all(&file.data)?;
+                output.sync_all()
+            };
+            write().map_err(|err| io_error(&path, err))?;
+        }
+        if alias && !seen.contains("AGENTS.md") {
+            return Err(
+                format!("remote skill {name:?} CLAUDE.md link is missing AGENTS.md").into(),
+            );
+        }
+        if seen.contains("AGENTS.md") && (!seen.contains("CLAUDE.md") || alias) {
+            let path = dir.path().join("CLAUDE.md");
+            symlink("AGENTS.md", &path).map_err(|err| io_error(&path, err))?;
+        }
+        let root = content::open_root(dir.path())?;
+        let metadata = content::discover(&root)
+            .map_err(|err| io_error(&dir.path().join(MANIFEST), err))?
+            .filter(|metadata| metadata.name == *name)
+            .ok_or_else(|| format!("remote skill {name:?} is missing a matching valid SKILL.md"))?;
+        let relative = dir.path().strip_prefix(&self.root)?.to_owned();
+        let record = Record {
+            schema_revision: 1,
+            reference,
+            content: relative,
+            fetched_at: jiff::Timestamp::now().to_string(),
+            exclude: (!patterns.is_empty()).then_some(patterns),
+        };
+        Ok(Prepared {
+            dir,
+            record,
+            metadata,
+        })
+    }
+
+    // The caller holds the store lock. Until the record and its dependent
+    // transaction both publish, Prepared owns and cleans up the new tree.
+    pub(super) fn publish(
+        &self,
+        prepared: Prepared,
+        first: bool,
+        replace_exclusion: Option<&Exclusion>,
+        done: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        let key = prepared.record.reference.key();
+        let entries = self.root.join("entries");
+        let record = entries.join(&key).with_extension("json");
+        let mut changes = FileChanges::default();
+        let result = (|| {
+            crate::cli::cancel::check()?;
+            if first {
+                changes.remove(&entries.join(&key).with_extension("override"))?;
+            }
+            if let Some(exclusion) = replace_exclusion {
+                let path = remote::patch_path(self.manager, &key).with_extension("exclude");
+                if exclusion.patterns.is_empty() {
+                    changes.remove(&path)?;
+                } else {
+                    changes.write(
+                        &path,
+                        format!("{}\n", exclusion.patterns.join("\n")).as_bytes(),
+                    )?;
+                }
+            }
+            changes.write(&record, &json_bytes(&prepared.record)?)?;
+            done()
+        })();
+        match result {
+            Ok(()) => {
+                let _ = prepared.dir.keep();
+                Ok(())
+            }
+            Err(err) => Err(changes.rollback(err)),
+        }
     }
 
     fn owner(
@@ -169,17 +338,84 @@ fn read_base(root: &Path) -> Result<Vec<u8>> {
 }
 
 pub(super) fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    save_private(path, &json_bytes(value)?)
+}
+
+fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
     let mut data = serde_json::to_vec_pretty(value)?;
     data.push(b'\n');
-    save_private(path, &data)
+    Ok(data)
 }
 
 fn save_private(path: &Path, data: &[u8]) -> Result<()> {
     let dir = path.parent().expect("metadata has a parent");
+    create_private_dir(dir)?;
+    atomic_write(path, data, 0o600)
+}
+
+fn create_private_dir(dir: &Path) -> Result<()> {
     DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
         .map_err(|err| io_error(dir, err))?;
-    atomic_write(path, data, 0o600)
+    Ok(())
+}
+
+type SavedFile = (Vec<u8>, u32);
+
+#[derive(Default)]
+struct FileChanges(Vec<(PathBuf, Option<SavedFile>)>);
+
+impl FileChanges {
+    fn write(&mut self, path: &Path, data: &[u8]) -> Result<()> {
+        let previous = read_saved(path)?;
+        save_private(path, data)?;
+        self.0.push((path.to_owned(), previous));
+        Ok(())
+    }
+
+    fn remove(&mut self, path: &Path) -> Result<()> {
+        let Some(previous) = read_saved(path)? else {
+            return Ok(());
+        };
+        fs::remove_file(path).map_err(|err| io_error(path, err))?;
+        self.0.push((path.to_owned(), Some(previous)));
+        Ok(())
+    }
+
+    fn rollback(self, error: Box<dyn std::error::Error>) -> Box<dyn std::error::Error> {
+        let failures: Vec<_> = self
+            .0
+            .into_iter()
+            .rev()
+            .filter_map(|(path, previous)| {
+                let result = match previous {
+                    Some((bytes, mode)) => atomic_write(&path, &bytes, mode),
+                    None => fs::remove_file(&path).map_err(|err| io_error(&path, err).into()),
+                };
+                result.err().map(|err| err.to_string())
+            })
+            .collect();
+        if failures.is_empty() {
+            error
+        } else {
+            format!(
+                "{error}; remote metadata rollback failed: {}",
+                failures.join("; ")
+            )
+            .into()
+        }
+    }
+}
+
+fn read_saved(path: &Path) -> Result<Option<SavedFile>> {
+    match super::symlink_metadata(path)? {
+        Some(metadata) if metadata.is_file() => Ok(Some((
+            fs::read(path).map_err(|err| io_error(path, err))?,
+            metadata.permissions().mode() & 0o777,
+        ))),
+        Some(_) => Err(format!("remote metadata {} is not a regular file", path.display()).into()),
+        None => Ok(None),
+    }
 }

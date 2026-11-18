@@ -70,16 +70,16 @@ pub(crate) fn hex_digest(bytes: &[u8]) -> String {
     hex
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Record {
-    schema_revision: u32,
+    pub schema_revision: u32,
     #[serde(flatten)]
     pub reference: RemoteRef,
     pub content: PathBuf,
-    fetched_at: String,
-    #[serde(rename = "exclude")]
-    _exclude: Option<Vec<String>>,
+    pub fetched_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Serialize)]
