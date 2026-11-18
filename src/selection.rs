@@ -26,7 +26,7 @@ enum Entry {
     Current(Selection),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Selection {
     #[serde(skip_serializing_if = "Option::is_none")]

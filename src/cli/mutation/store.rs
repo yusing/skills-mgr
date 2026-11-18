@@ -44,6 +44,96 @@ impl<'a> Store<'a> {
         exclusive_lock(&self.root.join(".lock"))
     }
 
+    pub(super) fn ensure(&self, reference: &RemoteRef) -> Result<Metadata> {
+        if !reference.valid() {
+            return Err("invalid remote skill reference".into());
+        }
+        let exclusion = {
+            let _guard = self.lock()?;
+            let record = self.find(reference)?;
+            let exclusion = self.exclusion(reference)?;
+            if let Some(metadata) = self.fresh(record.as_ref(), &exclusion)? {
+                return Ok(metadata);
+            }
+            exclusion
+        };
+        let files = super::repository::fetch(reference, &exclusion)?;
+        let prepared = self.prepare(reference.clone(), files, exclusion.patterns.clone())?;
+        let _guard = self.lock()?;
+        let current = self.find(reference)?;
+        let current_exclusion = self.exclusion(reference)?;
+        if let Some(metadata) = self.fresh(current.as_ref(), &current_exclusion)? {
+            return Ok(metadata);
+        }
+        if current_exclusion.patterns != exclusion.patterns {
+            return Err(
+                "remote skill exclusions changed during download; retry the operation".into(),
+            );
+        }
+        let metadata = prepared.metadata.clone();
+        self.publish(prepared, current.is_none(), None, || Ok(()))?;
+        Ok(metadata)
+    }
+
+    fn exclusion(&self, reference: &RemoteRef) -> Result<Exclusion> {
+        const LIMIT: u64 = 64 * 1024;
+        let path = remote::patch_path(self.manager, &reference.key()).with_extension("exclude");
+        let Some(metadata) = super::symlink_metadata(&path)? else {
+            return Exclusion::new(Vec::new());
+        };
+        if !metadata.is_file() {
+            return Err(format!(
+                "remote skill exclusion {} is not a regular file",
+                path.display()
+            )
+            .into());
+        }
+        let mut value = String::new();
+        File::open(&path)
+            .and_then(|file| file.take(LIMIT + 1).read_to_string(&mut value))
+            .map_err(|err| io_error(&path, err))?;
+        if value.len() as u64 > LIMIT {
+            return Err(format!(
+                "remote skill exclusion {} exceeds {LIMIT} bytes",
+                path.display()
+            )
+            .into());
+        }
+        let value = value.strip_suffix('\n').unwrap_or(&value);
+        let patterns = if value.is_empty() {
+            Vec::new()
+        } else {
+            value.split('\n').map(str::to_owned).collect()
+        };
+        Exclusion::new(patterns)
+    }
+
+    fn fresh(&self, record: Option<&Record>, exclusion: &Exclusion) -> Result<Option<Metadata>> {
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        let Some(root) = remote::content_root(&self.root, &record.content)? else {
+            return Ok(None);
+        };
+        let fetched: jiff::Timestamp = record.fetched_at.parse()?;
+        if fetched.duration_until(jiff::Timestamp::now()).as_secs() >= 3 * 60 * 60
+            || record.exclude.as_deref().unwrap_or_default() != exclusion.patterns
+        {
+            return Ok(None);
+        }
+        let dir = content::open_root(&root)?;
+        let metadata = content::discover(&dir)
+            .map_err(|err| io_error(&root.join(MANIFEST), err))?
+            .filter(|metadata| metadata.name == record.reference.name)
+            .ok_or_else(|| {
+                format!(
+                    "persisted remote skill {:?} has an invalid SKILL.md",
+                    record.reference.name
+                )
+            })?;
+        Ok(Some(metadata))
+    }
+
     // Read canonical identities even when their content is no longer cached.
     pub(super) fn find(&self, reference: &RemoteRef) -> Result<Option<Record>> {
         let mut result = None;
@@ -202,6 +292,55 @@ impl<'a> Store<'a> {
             }
             Err(err) => Err(changes.rollback(err)),
         }
+    }
+
+    // Stage metadata by rename, not by parsing it: uninstall is also the
+    // recovery path for missing content and malformed sidecars.
+    pub(super) fn remove(&self, record: &Record, done: impl FnOnce() -> Result<()>) -> Result<()> {
+        let key = record.reference.key();
+        let entry = self.root.join("entries").join(&key);
+        let patch = remote::patch_path(self.manager, &key);
+        let mut backups = Vec::new();
+        let result = (|| {
+            crate::cli::cancel::check()?;
+            for path in [
+                entry.with_extension("override"),
+                patch.with_extension("exclude"),
+                patch,
+                entry.with_extension("json"),
+            ] {
+                if super::symlink_metadata(&path)?.is_none() {
+                    continue;
+                }
+                let parent = path.parent().expect("remote metadata has a parent");
+                let backup = tempfile::Builder::new()
+                    .prefix(".remove-")
+                    .tempdir_in(parent)
+                    .map_err(|err| io_error(parent, err))?;
+                fs::rename(&path, backup.path().join("metadata"))
+                    .map_err(|err| io_error(&path, err))?;
+                backups.push((path, backup));
+            }
+            done()
+        })();
+        if let Err(err) = result {
+            let mut failures = Vec::new();
+            for (path, backup) in backups.into_iter().rev() {
+                if let Err(rollback) = fs::rename(backup.path().join("metadata"), &path) {
+                    let recovery = backup.keep();
+                    failures.push(format!(
+                        "restore {} from {}: {rollback}",
+                        path.display(),
+                        recovery.display()
+                    ));
+                }
+            }
+            if !failures.is_empty() {
+                return Err(format!("{err}; {}", failures.join("; ")).into());
+            }
+            return Err(err);
+        }
+        Ok(())
     }
 
     fn owner(

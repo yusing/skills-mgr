@@ -1,6 +1,6 @@
 use std::{
     ffi::OsString,
-    io::{Read, Seek, Write},
+    io::{self, Read, Seek, Write},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -188,6 +188,106 @@ pub(super) fn install_files(
     Ok((reference, checkout.files(source, exclusion)?))
 }
 
+pub(super) fn fetch(reference: &RemoteRef, exclusion: &Exclusion) -> Result<Vec<RemoteFile>> {
+    match reference.provider {
+        Provider::Repository => {
+            let (resolved, files) = install_files(
+                &reference.locator,
+                Some(&reference.name),
+                exclusion,
+                &mut io::sink(),
+            )?;
+            if resolved != *reference {
+                return Err("repository skill identity changed".into());
+            }
+            Ok(files)
+        }
+        Provider::SkillsSh => {
+            let parts: Vec<_> = reference.id.split('/').collect();
+            if reference.id != reference.locator
+                || parts.len() < 3
+                || !parts.iter().all(|part| github_part(part))
+            {
+                return Err("invalid skills.sh skill identifier".into());
+            }
+            let checkout = Checkout::new(
+                &format!("https://github.com/{}/{}.git", parts[0], parts[1]),
+                "",
+            )?;
+            let path = parts[2..].join("/");
+            let prefix = format!("{path}/");
+            let explicit = parts.len() > 3
+                || checkout
+                    .tracked
+                    .iter()
+                    .any(|file| file.starts_with(&prefix));
+            let manifests = || {
+                checkout
+                    .tracked
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|file| leaf(file) == MANIFEST)
+            };
+            let mut candidates: Vec<_> = manifests()
+                .filter(|file| {
+                    if explicit {
+                        file.starts_with(&prefix)
+                    } else {
+                        leaf(parent(file)) == reference.name
+                    }
+                })
+                .collect();
+            if !explicit && candidates.is_empty() {
+                candidates.extend(manifests());
+            }
+            let source = checkout.locate_catalog_skill(candidates, &reference.name, true)?;
+            checkout.files(source, exclusion)
+        }
+        Provider::SkillsMp => {
+            let location = skills_mp_location(&reference.locator)?;
+            let checkout = Checkout::new(&location.clone_url, &location.branch)?;
+            let source = if location.path.is_empty() {
+                let candidates = checkout.tracked.iter().map(String::as_str).filter(|file| {
+                    *file == MANIFEST
+                        || matches!(file.split('/').collect::<Vec<_>>().as_slice(),
+                            [root, "skills", name, MANIFEST] if root.starts_with('.') && root.len() > 1 && *name == reference.name)
+                });
+                checkout.locate_catalog_skill(candidates.collect(), &reference.name, false)?
+            } else {
+                &location.path
+            };
+            checkout.files(source, exclusion)
+        }
+    }
+}
+
+fn skills_mp_location(locator: &str) -> Result<Location> {
+    let invalid = "unsupported SkillsMP GitHub URL";
+    let locator = locator.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = locator
+        .strip_prefix("https://")
+        .and_then(|value| value.split_once('/'))
+        .ok_or(invalid)?;
+    let url = Url::parse(locator)?;
+    if !url
+        .host_str()
+        .is_some_and(|host| host.eq_ignore_ascii_case("github.com"))
+        || authority.contains('@')
+        || path.contains("%2f")
+        || path.contains("%2F")
+        || path
+            .trim_matches('/')
+            .split('/')
+            .nth(2)
+            .is_some_and(|kind| {
+                percent_decode_str(kind).decode_utf8().ok().as_deref() != Some("tree")
+            })
+    {
+        return Err(invalid.into());
+    }
+    Location::parse(&format!("https://github.com/{path}"))
+}
+
 struct Checkout {
     // The directory (including its Git data) dies only after the subprocess
     // group has exited or been canceled and the fetched skill has been read.
@@ -280,6 +380,37 @@ impl Checkout {
             "repository has {} matching skills; supply a skill name or a skill directory URL; available: {}",
             matches.len(), available.join(", ")
         ).into())
+    }
+
+    fn locate_catalog_skill<'a>(
+        &self,
+        candidates: Vec<&'a str>,
+        name: &str,
+        first: bool,
+    ) -> Result<&'a str> {
+        if candidates.len() > MAX_MANIFESTS {
+            return Err(
+                format!("repository contains more than {MAX_MANIFESTS} skill manifests").into(),
+            );
+        }
+        let mut total = 0;
+        let mut found = None;
+        for path in candidates {
+            if self
+                .read_manifest(path, &mut total)?
+                .is_some_and(|metadata| metadata.name == name)
+            {
+                if first {
+                    return Ok(parent(path));
+                }
+                if found.replace(parent(path)).is_some() {
+                    return Err(
+                        format!("repository contains multiple skills named {name:?}").into(),
+                    );
+                }
+            }
+        }
+        found.ok_or_else(|| format!("repository does not contain skill {name:?}").into())
     }
 
     fn read_manifest(&self, path: &str, total: &mut u64) -> Result<Option<Metadata>> {

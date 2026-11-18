@@ -426,7 +426,7 @@ fn remote_edit_saves_and_replaces_only_the_local_patch() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn install_downloads_tracked_files_and_atomically_replaces_exclusions() {
+fn repository_lifecycle_preserves_selection_and_exclusions() {
     use std::{fs, os::unix::fs::PermissionsExt};
 
     let scratch = tempfile::tempdir().unwrap();
@@ -489,6 +489,7 @@ fn install_downloads_tracked_files_and_atomically_replaces_exclusions() {
             .env("HOME", &home)
             .env("CODEX_HOME", home.join(".codex"))
             .env("XDG_CACHE_HOME", home.join("cache"))
+            .env("GIT_ALLOW_PROTOCOL", "file")
             .env("GIT_CONFIG_COUNT", "2")
             .env(
                 "GIT_CONFIG_KEY_0",
@@ -528,6 +529,117 @@ fn install_downloads_tracked_files_and_atomically_replaces_exclusions() {
     let reinstalled = run(&["install", address]);
     assert!(reinstalled.status.success(), "{reinstalled:?}");
     assert_eq!(run(&["get", "alpha/examples/demo.md"]).stdout, b"Demo.\n");
+
+    let installed = run(&["install", "-g", "--exclude", "examples", address, "alpha"]);
+    assert!(installed.status.success(), "{installed:?}");
+    let manager = home.join(".skills-mgr");
+    let global = manager.join(".skills-mgr.json");
+    let mut global_selection: serde_json::Value =
+        serde_json::from_slice(&fs::read(&global).unwrap()).unwrap();
+    global_selection["skills"]["alpha"]["enabled"] = serde_json::json!("exit 23");
+    fs::write(&global, serde_json::to_vec(&global_selection).unwrap()).unwrap();
+    fs::write(
+        &config,
+        br#"{"schema_revision":1,"skills":{"alpha":false}}"#,
+    )
+    .unwrap();
+    let failed_uninstall = run(&["uninstall", "alpha"]);
+    assert!(!failed_uninstall.status.success(), "{failed_uninstall:?}");
+    assert!(String::from_utf8_lossy(&failed_uninstall.stderr).contains("configured globally"));
+
+    let cache = home.join("cache/skills-mgr/remote-skills");
+    let entry_path = fs::read_dir(cache.join("entries"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .unwrap();
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&entry_path).unwrap()).unwrap();
+    let content = cache.join(record["content"].as_str().unwrap());
+    fs::remove_dir_all(&content).unwrap();
+    let legacy = fs::read(&config).unwrap();
+    let before_global = fs::read(&global).unwrap();
+    fs::rename(&repo, scratch.path().join("unavailable")).unwrap();
+    let failed = run(&["sync"]);
+    assert!(!failed.status.success(), "{failed:?}");
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("alpha"));
+    assert_eq!(fs::read(&config).unwrap(), legacy);
+    assert_eq!(fs::read(&global).unwrap(), before_global);
+    fs::rename(scratch.path().join("unavailable"), &repo).unwrap();
+
+    let restored = run(&["sync"]);
+    assert!(restored.status.success(), "{restored:?}");
+    assert_eq!(restored.stdout, b"alpha\n");
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&entry_path).unwrap()).unwrap();
+    let content = cache.join(record["content"].as_str().unwrap());
+    assert!(content.join("scripts/tool.sh").is_file());
+    assert!(!content.join("examples/demo.md").exists());
+    let after: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    assert_eq!(after["skills"]["alpha"]["enabled"], false);
+    assert_eq!(
+        after["skills"]["alpha"]["remote"],
+        global_selection["skills"]["alpha"]["remote"]
+    );
+    assert_eq!(fs::read(&global).unwrap(), before_global);
+    fs::rename(&repo, scratch.path().join("unavailable")).unwrap();
+    assert_eq!(run(&["sync"]).stdout, b"alpha\n");
+
+    let malformed = entry_path.with_extension("override");
+    fs::create_dir(&malformed).unwrap();
+    fs::write(malformed.join("not-json"), b"malformed override").unwrap();
+    fs::remove_dir_all(&content).unwrap();
+    let uninstalled = run(&["uninstall", "-g", "alpha"]);
+    assert!(uninstalled.status.success(), "{uninstalled:?}");
+    assert_eq!(uninstalled.stdout, b"Uninstalled alpha\n");
+    assert!(!entry_path.exists());
+    assert!(!malformed.exists());
+    let key = entry_path.file_stem().unwrap().to_str().unwrap();
+    assert!(
+        !manager
+            .join(format!(".remote-patches/{key}.exclude"))
+            .exists()
+    );
+    assert!(
+        !home
+            .join(".claude/skills/alpha/.skills-mgr-placeholder")
+            .exists()
+    );
+    let after_global: serde_json::Value =
+        serde_json::from_slice(&fs::read(&global).unwrap()).unwrap();
+    assert!(after_global["skills"].as_object().unwrap().is_empty());
+
+    fs::rename(scratch.path().join("unavailable"), &repo).unwrap();
+    for (provider, id, locator) in [
+        ("skills.sh", "fixture/demo/alpha", "fixture/demo/alpha"),
+        (
+            "SkillsMP",
+            "fixture-alpha",
+            "https://github.com/fixture/demo/tree/main/skills/alpha?tab=readme",
+        ),
+    ] {
+        let locks = serde_json::json!({
+            "schema_revision": 3,
+            "skills": {
+                "alpha": {"enabled": "test -d .", "remote": {
+                    "provider": provider, "id": id, "name": "alpha", "locator": locator
+                }},
+                "skip": {"enabled": false, "remote": {
+                    "provider": "skills.sh", "id": "not-a-repository", "name": "skip",
+                    "locator": "not-a-repository"
+                }}
+            }
+        });
+        let before = serde_json::to_vec(&locks).unwrap();
+        fs::write(&config, &before).unwrap();
+        let synced = run(&["sync"]);
+        assert!(synced.status.success(), "{provider}: {synced:?}");
+        assert_eq!(synced.stdout, b"alpha\n");
+        assert_eq!(fs::read(&config).unwrap(), before);
+        assert_eq!(run(&["get", "alpha"]).stdout, b"Installed instructions.\n");
+        let removed = run(&["uninstall", "alpha"]);
+        assert!(removed.status.success(), "{provider}: {removed:?}");
+    }
 }
 
 #[test]

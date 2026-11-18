@@ -304,6 +304,12 @@ pub(crate) fn discover(
 }
 
 #[cfg(all(feature = "cli", unix))]
+pub(crate) fn discover_local(manager: &SkillsManager, name: &str) -> Result<bool> {
+    discovery_roots(manager, &[], Some(name), &mut None, false)
+        .map(|(discovery, _)| !discovery.skills.is_empty())
+}
+
+#[cfg(all(feature = "cli", unix))]
 pub(crate) fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
     let mut discovery = Discovery::new(None);
     discovery.root(&manager.home.join(".agents/skills"), Source::User, false)?;
@@ -316,6 +322,38 @@ fn discover_with_selection(
     name: Option<&str>,
     loaded: &mut Option<Selections>,
 ) -> Result<BTreeMap<String, Skill>> {
+    let (mut discovery, found) = discovery_roots(manager, harnesses, name, loaded, true)?;
+    if found {
+        return Ok(discovery.skills);
+    }
+    for entry in remote::entries(manager, name)? {
+        let prefer = (discovery
+            .skills
+            .get(&entry.name)
+            .is_some_and(|skill| matches!(skill.source, Source::CodexDirectory))
+            && selections(manager, loaded)?.prefers_remote(&entry.name, &entry.key))
+        .then_some(entry.name.as_str());
+        if discovery.add(
+            entry.root,
+            Source::Remote(entry.provider),
+            Some(entry.key),
+            entry.hide,
+            None,
+            prefer,
+        )? {
+            break;
+        }
+    }
+    Ok(discovery.skills)
+}
+
+fn discovery_roots<'a>(
+    manager: &SkillsManager,
+    harnesses: &[Harness],
+    name: Option<&'a str>,
+    loaded: &mut Option<Selections>,
+    prefer_remote: bool,
+) -> Result<(Discovery<'a>, bool)> {
     let mut discovery = Discovery::new(name);
     let project = &manager.project;
     let home = &manager.home;
@@ -346,13 +384,14 @@ fn discover_with_selection(
     ] {
         if source.visible_to(harnesses) && discovery.root(&root, source, system)? {
             let name = name.expect("root stops only for a named lookup");
-            if matches!(discovery.skills[name].source, Source::CodexDirectory)
+            if prefer_remote
+                && matches!(discovery.skills[name].source, Source::CodexDirectory)
                 && selections(manager, loaded)?.may_prefer_remote(name)
             {
                 // Keep the Codex copy if the persisted selection is unavailable.
                 break;
             }
-            return Ok(discovery.skills);
+            return Ok((discovery, true));
         }
     }
     let codex = Source::Native(Harness::Codex);
@@ -360,27 +399,9 @@ fn discover_with_selection(
         && codex.visible_to(harnesses)
         && discovery.codex_extras(manager)?
     {
-        return Ok(discovery.skills);
+        return Ok((discovery, true));
     }
-    for entry in remote::entries(manager, name)? {
-        let prefer = (discovery
-            .skills
-            .get(&entry.name)
-            .is_some_and(|skill| matches!(skill.source, Source::CodexDirectory))
-            && selections(manager, loaded)?.prefers_remote(&entry.name, &entry.key))
-        .then_some(entry.name.as_str());
-        if discovery.add(
-            entry.root,
-            Source::Remote(entry.provider),
-            Some(entry.key),
-            entry.hide,
-            None,
-            prefer,
-        )? {
-            break;
-        }
-    }
-    Ok(discovery.skills)
+    Ok((discovery, false))
 }
 
 struct Discovery<'a> {

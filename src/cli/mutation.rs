@@ -28,9 +28,13 @@ mod placeholder;
 mod relocate;
 mod repository;
 mod store;
+mod sync;
+mod uninstall;
 pub(super) use edit::{edit, edit_draft, toggle_invocation};
 pub(super) use install::install;
 pub(super) use relocate::{adopt, relocate};
+pub(super) use sync::sync;
+pub(super) use uninstall::uninstall;
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
     let usage = "usage: skills-mgr set [-g] <skill> <true|false|condition|inherit>";
