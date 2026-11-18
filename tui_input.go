@@ -337,7 +337,7 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 	m.busy = true
 	m.status = "updating " + skill.Name
 	return m, func() tea.Msg {
-		enabled, err := m.manager.toggle(m.project, skill.Name, skill.RemoteKey)
+		enabled, err := m.manager.tuiToggle(m.project, skill)
 
 		return toggleDone{skill: skill.Name, enabled: enabled, err: err}
 	}

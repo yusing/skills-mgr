@@ -37,16 +37,11 @@ pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
         value if value.trim().is_empty() => {
             return Err("selection condition is empty; use inherit to remove the override".into());
         }
-        value => {
-            brush_parser::Parser::new(value.as_bytes(), &Default::default())
-                .parse_program()
-                .map_err(|err| format!("invalid selection condition: {err}"))?;
-            Some(Enabled::Condition(value.to_owned()))
-        }
+        value => Some(Enabled::Condition(value.to_owned())),
     };
     let manager = current_manager()?;
     let scope = Scope::new(&manager, force_global)?;
-    set_enabled(&manager, &scope, name, desired)?;
+    set_enabled(&manager, &scope, name, None, EnabledChange::Set(desired))?;
     let layer = if scope.global { "global" } else { "project" };
     writeln!(out, "Updated {name} ({layer} selection)")?;
     Ok(())
@@ -59,14 +54,14 @@ fn global_flag(args: &[OsString]) -> (bool, &[OsString]) {
     }
 }
 
-struct Scope<'a> {
-    global: bool,
+pub(super) struct Scope<'a> {
+    pub(super) global: bool,
     selection_dir: PathBuf,
     placeholder_base: &'a Path,
 }
 
 impl<'a> Scope<'a> {
-    fn new(manager: &'a SkillsManager, force_global: bool) -> Result<Self> {
+    pub(super) fn new(manager: &'a SkillsManager, force_global: bool) -> Result<Self> {
         let global = force_global
             || same_directory(&manager.project, &manager.home)?
             || same_directory(&manager.project, &manager.manager_home())?;
@@ -141,16 +136,39 @@ fn symlink_metadata(path: &Path) -> Result<Option<Metadata>> {
     }
 }
 
-fn set_enabled(
+pub(super) enum EnabledChange {
+    Set(Option<Enabled>),
+    Toggle,
+}
+
+pub(super) struct ChangedSelection {
+    pub(super) enabled: Option<bool>,
+    pub(super) layer: Lock,
+    pub(super) inherited: Option<Lock>,
+}
+
+pub(super) fn set_enabled(
     manager: &SkillsManager,
     scope: &Scope<'_>,
     name: &str,
-    desired: Option<Enabled>,
-) -> Result<()> {
+    expected: Option<&Path>,
+    change: EnabledChange,
+) -> Result<ChangedSelection> {
+    if let EnabledChange::Set(Some(Enabled::Condition(value))) = &change {
+        if value.trim().is_empty() {
+            return Err("selection condition is empty".into());
+        }
+        brush_parser::Parser::new(value.as_bytes(), &Default::default())
+            .parse_program()
+            .map_err(|err| format!("invalid selection condition: {err}"))?;
+    }
     let _guard = exclusive_lock(&coordination_dir(manager).join("managed-mutation.lock"))?;
     let skill = catalog::discover(manager, &[], Some(name))?
         .remove(name)
         .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
+    if expected.is_some_and(|path| skill.manifest_path() != path || skill.remote_key.is_some()) {
+        return Err(format!("skill {name:?} changed ownership since the catalog was read").into());
+    }
     let _lock = selection_lock(manager, &scope.selection_dir)?;
     let path = scope.selection_dir.join(LOCK_NAME);
     let legacy = if scope.global && symlink_metadata(&path)?.is_none() {
@@ -182,23 +200,39 @@ fn set_enabled(
         migrate_legacy(manager, &mut lock, global.as_ref())?;
     }
 
-    let current = lock.get(name).and_then(|entry| entry.enabled.as_ref());
-    let changed = current != desired.as_ref() || revision != REVISION;
     let mut entry = lock.remove(name).unwrap_or(Selection {
         enabled: None,
         remote: None,
     });
-    entry.enabled = desired;
-    let effective = entry
-        .enabled
+    let inherited = global
         .as_ref()
-        .or_else(|| global.as_ref()?.get(name)?.enabled.as_ref());
+        .and_then(|lock| lock.get(name)?.enabled.as_ref());
+    let is_toggle = matches!(&change, EnabledChange::Toggle);
+    let desired = match change {
+        EnabledChange::Set(value) => value,
+        EnabledChange::Toggle => {
+            let current = entry.enabled.as_ref().or(inherited);
+            let enabled = current.map_or_else(
+                || !scope.global && (skill.source.is_project() || skill.metadata.hide),
+                wants_placeholder,
+            );
+            Some(Enabled::Boolean(!enabled))
+        }
+    };
+    let changed =
+        entry.enabled != desired || revision != REVISION || (is_toggle && entry.remote.is_some());
+    entry.enabled = desired;
+    if is_toggle {
+        entry.remote = None;
+    }
+    let effective = entry.enabled.as_ref().or(inherited);
+    let enabled = effective.map(wants_placeholder);
     let placeholders = if matches!(skill.source, Source::Managed | Source::Remote(_)) {
         Some(placeholder::Plan::new(
             scope.placeholder_base,
             name,
             &skill.metadata.description,
-            effective.is_some_and(|flag| *flag != Enabled::Boolean(false)),
+            enabled.unwrap_or(false),
         )?)
     } else {
         None
@@ -223,7 +257,16 @@ fn set_enabled(
     match placeholders {
         Some(plan) => plan.publish(publish),
         None => publish(),
-    }
+    }?;
+    Ok(ChangedSelection {
+        enabled,
+        layer: lock,
+        inherited: global,
+    })
+}
+
+fn wants_placeholder(value: &Enabled) -> bool {
+    *value != Enabled::Boolean(false)
 }
 
 fn migrate_legacy(manager: &SkillsManager, lock: &mut Lock, global: Option<&Lock>) -> Result<()> {

@@ -14,17 +14,66 @@ use crate::{
     selection::{self, Enabled, LOCK_NAME, Lock},
 };
 
+#[cfg(unix)]
+use super::mutation::{self, EnabledChange, Scope};
 use super::{Result, current_manager, native};
 
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
-    Snapshot { global: bool },
+    Snapshot {
+        global: bool,
+    },
+    #[cfg(unix)]
+    SetEnabled {
+        global: bool,
+        name: String,
+        path: PathBuf,
+        value: Option<Enabled>,
+    },
+    #[cfg(unix)]
+    Toggle {
+        global: bool,
+        name: String,
+        path: PathBuf,
+    },
 }
 
 pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
     match serde_json::from_reader(io::stdin().lock())? {
         Request::Snapshot { global } => snapshot(out, &current_manager()?, global),
+        #[cfg(unix)]
+        Request::SetEnabled {
+            global,
+            name,
+            path,
+            value,
+        } => {
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            let skills = catalog::discover(&manager, &[], None)?;
+            let changed = mutation::set_enabled(
+                &manager,
+                &scope,
+                &name,
+                Some(&path),
+                EnabledChange::Set(value),
+            )?;
+            let (global, project) = if scope.global {
+                (changed.layer, Lock::new())
+            } else {
+                (changed.inherited.unwrap_or_default(), changed.layer)
+            };
+            reply(out, &selection_view(global, project, scope.global, &skills))
+        }
+        #[cfg(unix)]
+        Request::Toggle { global, name, path } => {
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            let changed =
+                mutation::set_enabled(&manager, &scope, &name, Some(&path), EnabledChange::Toggle)?;
+            reply(out, &changed.enabled.expect("toggle always sets a Boolean"))
+        }
     }
 }
 
@@ -116,6 +165,13 @@ impl Row {
 #[serde(rename_all = "PascalCase")]
 struct Snapshot {
     skills: Vec<Row>,
+    #[serde(flatten)]
+    selection: SelectionView,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct SelectionView {
     selected: BTreeMap<String, bool>,
     global_selected: BTreeMap<String, bool>,
     project_selected: BTreeMap<String, bool>,
@@ -135,6 +191,32 @@ fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Resu
     } else {
         selection::load(&manager.project.join(LOCK_NAME))?
     };
+    let selection = selection_view(global_lock, project_lock, global, &skills);
+    let missing = native::missing_remote(manager, None)?;
+    let claude = catalog::claude_plugins(manager, None, true)?;
+    let grok = native::grok(manager, None)?;
+    let rows = skills
+        .into_values()
+        .map(|skill| (skill, false))
+        .chain(missing.into_iter().map(|skill| (skill, true)))
+        .chain(claude.into_iter().chain(grok).map(|skill| (skill, false)))
+        .map(|(skill, missing)| Row::from_skill(manager, skill, missing))
+        .collect::<Result<Vec<_>>>()?;
+    reply(
+        out,
+        &Snapshot {
+            skills: rows,
+            selection,
+        },
+    )
+}
+
+fn selection_view(
+    global_lock: Lock,
+    project_lock: Lock,
+    global: bool,
+    skills: &BTreeMap<String, Skill>,
+) -> SelectionView {
     let flags = |lock: &Lock| {
         lock.iter()
             .filter_map(|(name, entry)| {
@@ -160,31 +242,23 @@ fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Resu
             .map(|(name, flag)| (name.clone(), *flag)),
     );
     if !global {
-        for (name, skill) in &skills {
+        for (name, skill) in skills {
             if matches!(skill.source, Source::Project) || skill.metadata.hide {
                 selected.entry(name.clone()).or_insert(true);
             }
         }
     }
-    let missing = native::missing_remote(manager, None)?;
-    let claude = catalog::claude_plugins(manager, None, true)?;
-    let grok = native::grok(manager, None)?;
-    let rows = skills
-        .into_values()
-        .map(|skill| (skill, false))
-        .chain(missing.into_iter().map(|skill| (skill, true)))
-        .chain(claude.into_iter().chain(grok).map(|skill| (skill, false)))
-        .map(|(skill, missing)| Row::from_skill(manager, skill, missing))
-        .collect::<Result<Vec<_>>>()?;
-    let snapshot = Snapshot {
-        skills: rows,
+    SelectionView {
         selected,
         global_selected,
         project_selected,
         global_expressions: expressions(global_lock),
         project_expressions: expressions(project_lock),
-    };
-    serde_json::to_writer(&mut *out, &snapshot)?;
+    }
+}
+
+fn reply(out: &mut impl Write, value: &impl Serialize) -> Result<()> {
+    serde_json::to_writer(&mut *out, value)?;
     writeln!(out)?;
     Ok(())
 }

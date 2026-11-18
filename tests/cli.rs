@@ -113,6 +113,60 @@ fn set_updates_the_selected_layer_and_owned_placeholders_without_go() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn tui_selection_requests_reject_stale_owners_and_return_configured_values() {
+    use std::{fs, io::Write, process::Stdio};
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let skill = project.join(".agents/skills/alpha");
+    let path = skill.join("SKILL.md");
+    let selection = project.join(".skills-mgr.json");
+    fs::create_dir_all(&skill).unwrap();
+    fs::write(&path, "---\nname: alpha\ndescription: Alpha\n---\nbody\n").unwrap();
+    let request = |input: serde_json::Value| {
+        let mut child = cli()
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .arg("__tui")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.to_string().as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let toggle = |path: &std::path::Path| {
+        request(serde_json::json!({"op":"toggle", "global":false, "name":"alpha", "path":path}))
+    };
+    let stale = toggle(&skill.join("moved.md"));
+    assert!(!stale.status.success());
+    assert!(stale.stdout.is_empty());
+    assert!(!selection.exists());
+
+    let toggled = toggle(&path);
+    assert!(toggled.status.success(), "{toggled:?}");
+    assert_eq!(toggled.stdout, b"false\n", "project skill starts enabled");
+    let edited = request(serde_json::json!({
+        "op":"set_enabled", "global":false, "name":"alpha", "path":path, "value":"test -f marker"
+    }));
+    assert!(edited.status.success(), "{edited:?}");
+    let response: serde_json::Value = serde_json::from_slice(&edited.stdout).unwrap();
+    assert_eq!(response["ProjectExpressions"]["alpha"], "test -f marker");
+    let configured: serde_json::Value =
+        serde_json::from_slice(&fs::read(selection).unwrap()).unwrap();
+    assert_eq!(configured["skills"]["alpha"]["enabled"], "test -f marker");
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();
