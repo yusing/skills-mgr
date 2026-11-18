@@ -195,7 +195,7 @@ impl Skill {
         let references = references(&self.root, &dir)?;
         Ok(ListedSkill {
             name: self.metadata.name,
-            description,
+            description: summarize_description(&description),
             references,
         })
     }
@@ -232,14 +232,20 @@ impl Skill {
 
     #[cfg(feature = "cli")]
     pub(crate) fn description(&self, manager: &SkillsManager) -> Result<std::borrow::Cow<'_, str>> {
-        if self.remote_key.is_some()
-            && let Some(description) =
-                self.patched_description(manager, &content::open_root(&self.root)?)?
-        {
-            return Ok(description.into());
+        if matches!(self.source, Source::GrokPlugin | Source::GrokBundled) {
+            return Ok(self.metadata.description.as_str().into());
         }
-        Ok(self.metadata.description.as_str().into())
+        let patched = if self.remote_key.is_some() {
+            self.patched_description(manager, &content::open_root(&self.root)?)?
+        } else {
+            None
+        };
+        Ok(summarize_description(patched.as_deref().unwrap_or(&self.metadata.description)).into())
     }
+}
+
+fn summarize_description(description: &str) -> String {
+    description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub(crate) fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {

@@ -804,44 +804,76 @@ fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
     let home = tempfile::tempdir().unwrap();
     let project = home.path().join("project");
     let manager = home.path().join(".skills-mgr");
-    let skill = manager.join("skills/managed");
     let cache = home.path().join("cache/skills-mgr");
-    let placeholder = home.path().join(".claude/skills/managed");
-    for directory in [&project, &skill, &cache, &placeholder] {
+    for directory in [&project, &cache] {
         fs::create_dir_all(directory).unwrap();
     }
-    let quoted_fields = "name: \"managed\"\ndescription: \"Repair: keep \\\"# text\\\"\"\n";
-    fs::write(
-        skill.join("SKILL.md"),
-        format!("---\n{quoted_fields}---\nbody\n"),
-    )
-    .unwrap();
-    fs::write(
-        placeholder.join("SKILL.md"),
-        format!("---\n{quoted_fields}disable-model-invocation: true\n---\n"),
-    )
-    .unwrap();
-    fs::write(
-        placeholder.join(".skills-mgr-placeholder"),
-        b"skills-mgr remote placeholder\n",
-    )
-    .unwrap();
+    let descriptions = [
+        (
+            "managed",
+            "\"Repair: keep \\\"# text\\\"\"",
+            "Repair: keep \"# text\"",
+            "Repair: keep \"# text\"",
+        ),
+        (
+            "literal",
+            "|\n  First line: keep # this\n  Second line",
+            "First line: keep # this\nSecond line\n",
+            "First line: keep # this Second line",
+        ),
+        (
+            "folded",
+            ">\n  First folded line\n  Second folded line",
+            "First folded line Second folded line\n",
+            "First folded line Second folded line",
+        ),
+    ];
+    for (name, source, _, summary) in descriptions {
+        let skill = manager.join("skills").join(name);
+        let placeholder = home.path().join(".agents/skills").join(name);
+        fs::create_dir_all(&skill).unwrap();
+        fs::create_dir_all(&placeholder).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {source}\n---\nbody\n"),
+        )
+        .unwrap();
+        fs::write(
+            placeholder.join("SKILL.md"),
+            format!(
+                "---\nname: \"{name}\"\ndescription: {}\ndisable-model-invocation: true\n---\n",
+                serde_json::to_string(summary).unwrap()
+            ),
+        )
+        .unwrap();
+        fs::write(
+            placeholder.join(".skills-mgr-placeholder"),
+            b"skills-mgr remote placeholder\n",
+        )
+        .unwrap();
+    }
     let selection = manager.join(".skills-mgr.json");
     let before = br#"{"schema_revision":3,"skills":{
       "managed":{"enabled":true},
+      "literal":{"enabled":true},
+      "folded":{"enabled":true},
       "missing":{"enabled":true,"remote":{"provider":"skills.sh","id":"example/repo/missing","name":"missing","locator":"example/repo/missing"}}
     }}"#;
     fs::write(&selection, before).unwrap();
     seed_registry_topics(&cache);
-    let run = |args: &[&str]| {
-        cli()
-            .env_remove("SKILLS_MGR_NO_REFRESH")
-            .env_remove("_SKILLS_MGR_REFRESH_FD")
-            .current_dir(&project)
+    let command = || {
+        let mut cmd = cli();
+        cmd.current_dir(&project)
             .env("HOME", home.path())
             .env("CODEX_HOME", home.path().join(".codex"))
             .env("XDG_CACHE_HOME", cache.parent().unwrap())
-            .env("GIT_ALLOW_PROTOCOL", "")
+            .env("GIT_ALLOW_PROTOCOL", "");
+        cmd
+    };
+    let run = |args: &[&str]| {
+        command()
+            .env_remove("SKILLS_MGR_NO_REFRESH")
+            .env_remove("_SKILLS_MGR_REFRESH_FD")
             .args(args)
             .output()
             .unwrap()
@@ -851,30 +883,47 @@ fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
     assert!(!stamp.exists());
     let list = run(&["list"]);
     assert!(list.status.success(), "{list:?}");
+    let list = String::from_utf8(list.stdout).unwrap();
+    assert!(list.contains(r#"name="literal" description="First line: keep # this Second line""#));
+    assert!(list.contains(r#"name="folded" description="First folded line Second folded line""#));
     let deadline = Instant::now() + Duration::from_secs(4);
     while !stamp.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
     let completed = fs::read(&stamp).unwrap();
-    let stub = fs::read_to_string(placeholder.join("SKILL.md")).unwrap();
-    assert!(stub.starts_with("---\nname: managed\n"), "{stub}");
-    let yaml = stub
-        .strip_prefix("---\n")
-        .unwrap()
-        .strip_suffix("---\n")
-        .unwrap();
-    assert_eq!(
-        serde_saphyr::from_str::<serde_json::Value>(yaml).unwrap(),
-        serde_json::json!({
-            "name": "managed",
-            "description": "Repair: keep \"# text\"",
-            "disable-model-invocation": true
-        })
+    let snapshot = tui_request(
+        command(),
+        serde_json::json!({"op":"snapshot", "global":true}),
     );
-    assert!(placeholder.join(".skills-mgr-placeholder").is_file());
+    assert!(snapshot.status.success(), "{snapshot:?}");
+    let snapshot: serde_json::Value = serde_json::from_slice(&snapshot.stdout).unwrap();
+    let rows = snapshot["Skills"].as_array().unwrap();
+    for (name, _, exact, summary) in descriptions {
+        for harness in [".agents", ".claude"] {
+            let placeholder = home.path().join(harness).join("skills").join(name);
+            let stub = fs::read_to_string(placeholder.join("SKILL.md")).unwrap();
+            assert!(stub.starts_with(&format!("---\nname: {name}\n")), "{stub}");
+            let yaml = stub
+                .strip_prefix("---\n")
+                .unwrap()
+                .strip_suffix("---\n")
+                .unwrap();
+            assert_eq!(
+                serde_saphyr::from_str::<serde_json::Value>(yaml).unwrap(),
+                serde_json::json!({
+                    "name": name,
+                    "description": exact,
+                    "disable-model-invocation": true
+                })
+            );
+            assert!(placeholder.join(".skills-mgr-placeholder").is_file());
+        }
+        let row = rows.iter().find(|row| row["Name"] == name).unwrap();
+        assert_eq!(row["Description"], summary);
+        assert_eq!(run(&["get", name]).stdout, b"body\n");
+    }
     assert!(!cache.join("remote-skills").exists());
     assert_eq!(fs::read(&selection).unwrap(), before);
-    assert_eq!(run(&["get", "managed"]).stdout, b"body\n");
     assert_eq!(fs::read(&stamp).unwrap(), completed);
 }
 

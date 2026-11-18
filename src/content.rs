@@ -185,14 +185,12 @@ fn metadata(header: Frontmatter) -> Option<Metadata> {
     };
     let mut metadata: Metadata = decode_yaml(&yaml).ok()?;
     metadata.name = metadata.name.trim().to_owned();
-    metadata.description = metadata
-        .description
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
     (valid_name(&metadata.name)
-        && !metadata.description.is_empty()
-        && !metadata.description.chars().any(char::is_control))
+        && !metadata.description.trim().is_empty()
+        && !metadata
+            .description
+            .chars()
+            .any(|c| c.is_control() && !c.is_whitespace()))
     .then_some(metadata)
 }
 

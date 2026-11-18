@@ -59,7 +59,7 @@ impl Plan {
             }
 
             let mut options = serde_saphyr::SerializerOptions::default();
-            options.prefer_block_scalars = false;
+            options.prefer_block_scalars = description.contains('\n');
             let yaml = serde_saphyr::to_string_with_options(
                 &Frontmatter {
                     name,
