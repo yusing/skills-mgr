@@ -56,6 +56,13 @@ enum Request {
         key: String,
     },
     #[cfg(unix)]
+    Registry {
+        #[serde(rename = "global")]
+        _global: bool,
+        provider: crate::remote::Provider,
+        query: Option<String>,
+    },
+    #[cfg(unix)]
     Edit {
         global: bool,
         name: String,
@@ -152,6 +159,15 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             mutation::uninstall_skill(&manager, &scope, &name, Some(&key))?;
             reply(out, &build_snapshot(&manager, scope.global, false)?)
         }
+        #[cfg(unix)]
+        Request::Registry {
+            _global: _,
+            provider,
+            query,
+        } => reply(
+            out,
+            &super::registry::browse(&current_manager()?, provider, query.as_deref())?,
+        ),
         #[cfg(unix)]
         Request::Edit {
             global,

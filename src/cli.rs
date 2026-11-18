@@ -13,6 +13,10 @@ mod inspect;
 mod mutation;
 mod native;
 mod read;
+#[cfg(unix)]
+mod refresh;
+#[cfg(unix)]
+mod registry;
 mod tui;
 
 use crate::{SkillsManager, selection::LOCK_NAME};
@@ -32,6 +36,29 @@ pub fn main() -> ExitCode {
 }
 
 fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
+    #[cfg(unix)]
+    if env::var_os("SKILLS_MGR_NO_REFRESH").as_deref() != Some(std::ffi::OsStr::new("1"))
+        && !args.iter().any(|arg| arg == "--help")
+        && matches!(
+            args.first().and_then(|arg| arg.to_str()),
+            None | Some(
+                "-g" | "list"
+                    | "get"
+                    | "run"
+                    | "check"
+                    | "inspect"
+                    | "set"
+                    | "edit"
+                    | "adopt"
+                    | "install"
+                    | "uninstall"
+                    | "sync"
+            )
+        )
+        && let Ok(manager) = current_manager()
+    {
+        refresh::maybe_start(&manager);
+    }
     match args {
         [command] if command == "help" || command == "--help" => print_help(out, None),
         [command, target] if command == "help" => print_help(out, Some(&target.to_string_lossy())),
@@ -65,6 +92,8 @@ fn dispatch(args: &[OsString], out: &mut impl Write) -> Result<()> {
         [command, args @ ..] if command == "sync" => mutation::sync(out, args),
         #[cfg(unix)]
         [command, args @ ..] if command == "uninstall" => mutation::uninstall(out, args),
+        #[cfg(unix)]
+        [command] if command == "refresh-runner" => refresh::run(&current_manager()?),
         [command] if command == "__tui" => tui::dispatch(out),
         [command, args @ ..] if command == "__selection-predicate" => read::predicate(args),
         [command, kind]

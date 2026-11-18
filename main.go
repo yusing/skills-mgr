@@ -85,16 +85,19 @@ func run(args []string) error {
 		}
 		return manager.completeSkills(context.Background(), project, args[1] == "enabled", os.Stdout)
 	}
-	if err := paths.relocateGlobalLock(); err != nil {
-		return err
-	}
-	if os.Getenv("SKILLS_MGR_NO_REFRESH") != "1" && (len(args) == 0 || args[0] != refreshRunnerCommand) {
-		maybeStartRefreshRunner(manager)
+	core := os.Getenv("_SKILLS_MGR_TUI_CORE")
+	if core == "" || (len(args) != 0 && !global) {
+		if err := paths.relocateGlobalLock(); err != nil {
+			return err
+		}
+		if os.Getenv("SKILLS_MGR_NO_REFRESH") != "1" && (len(args) == 0 || args[0] != refreshRunnerCommand) {
+			maybeStartRefreshRunner(manager)
+		}
 	}
 
 	switch {
 	case len(args) == 0 || global:
-		manager.tuiCore = os.Getenv("_SKILLS_MGR_TUI_CORE")
+		manager.tuiCore = core
 		project, err := currentProject()
 		if err != nil {
 			return err

@@ -35,15 +35,17 @@ func (s tuiCoreSelection) state() selectionState {
 }
 
 type tuiCoreRequest struct {
-	Op     string          `json:"op"`
-	Global bool            `json:"global"`
-	Name   string          `json:"name,omitempty"`
-	Path   string          `json:"path,omitempty"`
-	Value  *enabledValue   `json:"value,omitempty"`
-	Draft  string          `json:"draft,omitempty"`
-	Digest string          `json:"digest,omitempty"`
-	Key    string          `json:"key,omitempty"`
-	Remote *remoteSkillRef `json:"reference,omitempty"`
+	Op       string          `json:"op"`
+	Global   bool            `json:"global"`
+	Name     string          `json:"name,omitempty"`
+	Path     string          `json:"path,omitempty"`
+	Value    *enabledValue   `json:"value,omitempty"`
+	Draft    string          `json:"draft,omitempty"`
+	Digest   string          `json:"digest,omitempty"`
+	Key      string          `json:"key,omitempty"`
+	Remote   *remoteSkillRef `json:"reference,omitempty"`
+	Provider string          `json:"provider,omitempty"`
+	Query    *string         `json:"query,omitempty"`
 }
 
 func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState, error) {

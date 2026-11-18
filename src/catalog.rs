@@ -316,6 +316,17 @@ pub(crate) fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Sk
     Ok(discovery.skills)
 }
 
+#[cfg(all(feature = "cli", unix))]
+pub(crate) fn managed_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
+    let mut discovery = Discovery::new(None);
+    discovery.root(
+        &manager.manager_home().join("skills"),
+        Source::Managed,
+        false,
+    )?;
+    Ok(discovery.skills)
+}
+
 fn discover_with_selection(
     manager: &SkillsManager,
     harnesses: &[Harness],

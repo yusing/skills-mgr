@@ -179,6 +179,9 @@ func (m *model) startRegistrySearch(tab int, query string) tea.Cmd {
 	m.registryCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
+		if m.manager != nil && m.manager.tuiCore != "" {
+			return m.coreRegistry(ctx, request, tab, &query)
+		}
 		provider := m.registryProvider(tab)
 		if provider == nil {
 			return registrySearchDone{
@@ -223,6 +226,9 @@ func (m *model) startSkillsMPCatalog() tea.Cmd {
 	m.registryCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
+		if m.manager != nil && m.manager.tuiCore != "" {
+			return m.coreRegistry(ctx, request, skillsMPTab, nil)
+		}
 		if m.manager == nil || m.manager.skillsMP == nil {
 			return registrySearchDone{
 				request: request, tab: skillsMPTab,
@@ -235,6 +241,16 @@ func (m *model) startSkillsMPCatalog() tea.Cmd {
 			skills: presentSkillsMP(skills), err: err,
 		}
 	}
+}
+
+func (m *model) coreRegistry(ctx context.Context, request uint64, tab int, query *string) registrySearchDone {
+	op := tuiCoreRequest{Op: "registry", Provider: registryName(tab), Query: query}
+	result := registrySearchDone{request: request, tab: tab}
+	if query != nil {
+		result.query = *query
+	}
+	result.err = m.manager.callTUICoreContext(ctx, m.project, op, &result.skills)
+	return result
 }
 
 func (m *model) cancelRegistryRequest() {

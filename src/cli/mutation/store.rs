@@ -45,15 +45,28 @@ impl<'a> Store<'a> {
     }
 
     pub(super) fn ensure(&self, reference: &RemoteRef) -> Result<Metadata> {
+        self.ensure_impl(reference, false)?
+            .ok_or_else(|| "remote skill could not be installed".into())
+    }
+
+    pub(super) fn refresh(&self, reference: &RemoteRef) -> Result<()> {
+        self.ensure_impl(reference, true)?;
+        Ok(())
+    }
+
+    fn ensure_impl(&self, reference: &RemoteRef, existing_only: bool) -> Result<Option<Metadata>> {
         if !reference.valid() {
             return Err("invalid remote skill reference".into());
         }
         let exclusion = {
             let _guard = self.lock()?;
             let record = self.find(reference)?;
+            if existing_only && record.is_none() {
+                return Ok(None);
+            }
             let exclusion = self.exclusion(reference)?;
             if let Some(metadata) = self.fresh(record.as_ref(), &exclusion)? {
-                return Ok(metadata);
+                return Ok(Some(metadata));
             }
             exclusion
         };
@@ -61,9 +74,12 @@ impl<'a> Store<'a> {
         let prepared = self.prepare(reference.clone(), files, exclusion.patterns.clone())?;
         let _guard = self.lock()?;
         let current = self.find(reference)?;
+        if existing_only && current.is_none() {
+            return Ok(None);
+        }
         let current_exclusion = self.exclusion(reference)?;
         if let Some(metadata) = self.fresh(current.as_ref(), &current_exclusion)? {
-            return Ok(metadata);
+            return Ok(Some(metadata));
         }
         if current_exclusion.patterns != exclusion.patterns {
             return Err(
@@ -72,7 +88,48 @@ impl<'a> Store<'a> {
         }
         let metadata = prepared.metadata.clone();
         self.publish(prepared, current.is_none(), None, || Ok(()))?;
-        Ok(metadata)
+        Ok(Some(metadata))
+    }
+
+    pub(super) fn cleanup(&self) -> Result<()> {
+        use std::time::{Duration, SystemTime};
+
+        let content = self.root.join("content");
+        let Some(metadata) = super::symlink_metadata(&content)? else {
+            return Ok(());
+        };
+        if !metadata.is_dir() {
+            return Err(format!("remote content {} is not a directory", content.display()).into());
+        }
+        let _guard = self.lock()?;
+        let live: HashSet<_> = remote::records(&self.root, None)?
+            .into_iter()
+            .map(|(record, _)| self.root.join(record.content))
+            .collect();
+        let now = SystemTime::now();
+        for entry in fs::read_dir(&content).map_err(|err| io_error(&content, err))? {
+            crate::cli::cancel::check()?;
+            let entry = entry.map_err(|err| io_error(&content, err))?;
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let name = name.strip_prefix('.').unwrap_or(&name);
+            let owned = name.split_once('-').is_some_and(|(key, suffix)| {
+                key.len() == 64
+                    && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !suffix.is_empty()
+            });
+            if !owned || live.contains(&path) || !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if now
+                .duration_since(entry.metadata()?.modified()?)
+                .is_ok_and(|age| age > Duration::from_secs(6 * 60 * 60))
+            {
+                fs::remove_dir_all(&path).map_err(|err| io_error(&path, err))?;
+            }
+        }
+        Ok(())
     }
 
     fn exclusion(&self, reference: &RemoteRef) -> Result<Exclusion> {

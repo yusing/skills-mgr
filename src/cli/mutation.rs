@@ -24,6 +24,7 @@ use super::{Result, current_manager};
 mod edit;
 mod exclusion;
 mod install;
+mod maintain;
 mod placeholder;
 mod relocate;
 mod remote_select;
@@ -33,6 +34,7 @@ mod sync;
 mod uninstall;
 pub(super) use edit::{edit, edit_draft, toggle_invocation};
 pub(super) use install::install;
+pub(super) use maintain::{refresh_remotes, repair_managed};
 pub(super) use relocate::{adopt, relocate};
 pub(super) use remote_select::toggle_remote;
 pub(super) use sync::sync;
@@ -119,7 +121,7 @@ fn coordination_dir(manager: &SkillsManager) -> PathBuf {
     manager.cache.join("skills-mgr/selection-locks")
 }
 
-fn exclusive_lock(path: &Path) -> Result<File> {
+pub(super) fn exclusive_lock(path: &Path) -> Result<File> {
     let parent = path.parent().expect("coordination files have a parent");
     DirBuilder::new()
         .recursive(true)
@@ -412,7 +414,7 @@ fn save_selection(path: &Path, skills: &Lock) -> Result<()> {
     atomic_write(path, &data, 0o644)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
     let write = || -> io::Result<()> {
         let mut file = tempfile::Builder::new()
             .prefix(".skills-mgr-")

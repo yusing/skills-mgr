@@ -590,6 +590,18 @@ fn repository_lifecycle_preserves_selection_and_exclusions() {
         global_selection["skills"]["alpha"]["remote"]
     );
     assert_eq!(fs::read(&global).unwrap(), before_global);
+    let mut stale = record;
+    stale["fetchedAt"] = serde_json::json!("2020-01-01T00:00:00Z");
+    fs::write(&entry_path, serde_json::to_vec(&stale).unwrap()).unwrap();
+    seed_registry_topics(cache.parent().unwrap());
+    let refreshed = run(&["refresh-runner"]);
+    assert!(refreshed.status.success(), "{refreshed:?}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&entry_path).unwrap()).unwrap();
+    assert_ne!(record["content"], stale["content"]);
+    let content = cache.join(record["content"].as_str().unwrap());
+    assert!(!content.join("examples/demo.md").exists());
+    assert_eq!(fs::read(&global).unwrap(), before_global);
     fs::rename(&repo, scratch.path().join("unavailable")).unwrap();
     assert_eq!(run(&["sync"]).stdout, b"alpha\n");
 
@@ -703,6 +715,116 @@ fn repository_lifecycle_preserves_selection_and_exclusions() {
     assert!(removed.status.success(), "{removed:?}");
     let snapshot: serde_json::Value = serde_json::from_slice(&removed.stdout).unwrap();
     assert_eq!(snapshot["Skills"], serde_json::json!([]));
+}
+
+#[cfg(target_os = "linux")]
+fn seed_registry_topics(cache: &std::path::Path) {
+    std::fs::write(
+        cache.join("skills-sh.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schemaRevision": 1, "updatedAt": jiff::Timestamp::now().to_string(), "topics": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
+    use std::{
+        fs, thread,
+        time::{Duration, Instant},
+    };
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let manager = home.path().join(".skills-mgr");
+    let skill = manager.join("skills/managed");
+    let cache = home.path().join("cache/skills-mgr");
+    for directory in [&project, &skill, &cache] {
+        fs::create_dir_all(directory).unwrap();
+    }
+    fs::write(
+        skill.join("SKILL.md"),
+        "---\nname: managed\ndescription: Repair me\n---\nbody\n",
+    )
+    .unwrap();
+    let selection = manager.join(".skills-mgr.json");
+    let before = br#"{"schema_revision":3,"skills":{
+      "managed":{"enabled":true},
+      "missing":{"enabled":true,"remote":{"provider":"skills.sh","id":"example/repo/missing","name":"missing","locator":"example/repo/missing"}}
+    }}"#;
+    fs::write(&selection, before).unwrap();
+    seed_registry_topics(&cache);
+    let run = |args: &[&str]| {
+        cli()
+            .env_remove("SKILLS_MGR_NO_REFRESH")
+            .env_remove("_SKILLS_MGR_REFRESH_FD")
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", cache.parent().unwrap())
+            .env("GIT_ALLOW_PROTOCOL", "")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["info"]).status.success());
+    let stamp = cache.join("refresh.completed");
+    assert!(!stamp.exists());
+    let list = run(&["list"]);
+    assert!(list.status.success(), "{list:?}");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !stamp.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let completed = fs::read(&stamp).unwrap();
+    assert!(
+        home.path()
+            .join(".claude/skills/managed/.skills-mgr-placeholder")
+            .is_file()
+    );
+    assert!(!cache.join("remote-skills").exists());
+    assert_eq!(fs::read(&selection).unwrap(), before);
+    assert_eq!(run(&["get", "managed"]).stdout, b"body\n");
+    assert_eq!(fs::read(&stamp).unwrap(), completed);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn registry_bridge_reuses_skillsmp_search_cache() {
+    use std::fs;
+    let home = tempfile::tempdir().unwrap();
+    let cache = home.path().join("cache/skills-mgr");
+    fs::create_dir_all(&cache).unwrap();
+    fs::write(cache.join("skillsmp-search.json"), serde_json::to_vec(&serde_json::json!({
+        "schemaRevision": 1,
+        "searches": {
+            "some query": {
+                "updatedAt": jiff::Timestamp::now().to_string(),
+                "skills": [
+                    {"id":"fixture-id","name":"fixture","description":"fixture result","author":"fixture-owner","githubUrl":"https://github.com/fixture/repo","stars":42},
+                    {"id":"duplicate-name","name":"fixture","author":"fixture-owner"}
+                ]
+            }
+        }
+    })).unwrap()).unwrap();
+    let mut cmd = cli();
+    cmd.current_dir(home.path())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", cache.parent().unwrap())
+        .env("SKILLSMP_API_KEY", "not a valid header");
+    let result = tui_request(
+        cmd,
+        serde_json::json!({"op":"registry", "global":false, "provider":"SkillsMP", "query":" SOME  Query  "}),
+    );
+    assert!(result.status.success(), "{result:?}");
+    let rows: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(
+        rows,
+        serde_json::json!([{"ID":"fixture-id","Name":"fixture","Description":"fixture result","Label":"fixture-owner • 42 stars","Provider":"SkillsMP","Locator":"https://github.com/fixture/repo"}])
+    );
 }
 
 #[test]
