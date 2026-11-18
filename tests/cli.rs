@@ -85,8 +85,10 @@ fn set_updates_the_selected_layer_and_owned_placeholders_without_go() {
     for harness in [".agents", ".claude"] {
         let dir = project.join(harness).join("skills/alpha");
         let stub = fs::read_to_string(dir.join("SKILL.md")).unwrap();
-        assert!(stub.contains("disable-model-invocation: true"));
-        assert!(!stub.contains("A body."));
+        assert_eq!(
+            stub,
+            "---\nname: alpha\ndescription: Test skill\ndisable-model-invocation: true\n---\n"
+        );
         assert_eq!(
             fs::read(dir.join(".skills-mgr-placeholder")).unwrap(),
             b"skills-mgr remote placeholder\n"
@@ -804,12 +806,24 @@ fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
     let manager = home.path().join(".skills-mgr");
     let skill = manager.join("skills/managed");
     let cache = home.path().join("cache/skills-mgr");
-    for directory in [&project, &skill, &cache] {
+    let placeholder = home.path().join(".claude/skills/managed");
+    for directory in [&project, &skill, &cache, &placeholder] {
         fs::create_dir_all(directory).unwrap();
     }
+    let quoted_fields = "name: \"managed\"\ndescription: \"Repair: keep \\\"# text\\\"\"\n";
     fs::write(
         skill.join("SKILL.md"),
-        "---\nname: managed\ndescription: Repair me\n---\nbody\n",
+        format!("---\n{quoted_fields}---\nbody\n"),
+    )
+    .unwrap();
+    fs::write(
+        placeholder.join("SKILL.md"),
+        format!("---\n{quoted_fields}disable-model-invocation: true\n---\n"),
+    )
+    .unwrap();
+    fs::write(
+        placeholder.join(".skills-mgr-placeholder"),
+        b"skills-mgr remote placeholder\n",
     )
     .unwrap();
     let selection = manager.join(".skills-mgr.json");
@@ -842,11 +856,22 @@ fn detached_refresh_repairs_placeholders_without_synchronizing_selections() {
         thread::sleep(Duration::from_millis(10));
     }
     let completed = fs::read(&stamp).unwrap();
-    assert!(
-        home.path()
-            .join(".claude/skills/managed/.skills-mgr-placeholder")
-            .is_file()
+    let stub = fs::read_to_string(placeholder.join("SKILL.md")).unwrap();
+    assert!(stub.starts_with("---\nname: managed\n"), "{stub}");
+    let yaml = stub
+        .strip_prefix("---\n")
+        .unwrap()
+        .strip_suffix("---\n")
+        .unwrap();
+    assert_eq!(
+        serde_saphyr::from_str::<serde_json::Value>(yaml).unwrap(),
+        serde_json::json!({
+            "name": "managed",
+            "description": "Repair: keep \"# text\"",
+            "disable-model-invocation": true
+        })
     );
+    assert!(placeholder.join(".skills-mgr-placeholder").is_file());
     assert!(!cache.join("remote-skills").exists());
     assert_eq!(fs::read(&selection).unwrap(), before);
     assert_eq!(run(&["get", "managed"]).stdout, b"body\n");

@@ -4,6 +4,7 @@ use std::{
 };
 
 use cap_std::fs::{Dir, OpenOptions, Permissions, PermissionsExt};
+use serde::Serialize;
 
 use crate::content::{self, MANIFEST, PLACEHOLDER_MARKER, PLACEHOLDER_MARKER_NAME};
 
@@ -48,18 +49,29 @@ pub(super) struct Plan {
 impl Plan {
     pub(super) fn new(base: &Path, name: &str, description: &str, enabled: bool) -> Result<Self> {
         let root = content::open_root(base)?;
-        let desired = enabled
-            .then(|| {
-                Ok::<_, serde_json::Error>(
-                    format!(
-                        "---\nname: {}\ndescription: {}\ndisable-model-invocation: true\n---\n",
-                        serde_json::to_string(name)?,
-                        serde_json::to_string(description)?,
-                    )
-                    .into_bytes(),
-                )
-            })
-            .transpose()?;
+        let desired = if enabled {
+            #[derive(Serialize)]
+            #[serde(rename_all = "kebab-case")]
+            struct Frontmatter<'a> {
+                name: &'a str,
+                description: &'a str,
+                disable_model_invocation: bool,
+            }
+
+            let mut options = serde_saphyr::SerializerOptions::default();
+            options.prefer_block_scalars = false;
+            let yaml = serde_saphyr::to_string_with_options(
+                &Frontmatter {
+                    name,
+                    description,
+                    disable_model_invocation: true,
+                },
+                options,
+            )?;
+            Some(format!("---\n{yaml}---\n").into_bytes())
+        } else {
+            None
+        };
         let mut changes = Vec::new();
         for harness in [".agents", ".claude"] {
             let dir = Path::new(harness).join("skills").join(name);
