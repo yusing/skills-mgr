@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,22 +30,24 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 		return skillEdit{}, fmt.Errorf("missing %s", file)
 	}
 	edit := skillEdit{source: discovered}
-	if discovered.RemoteKey != "" {
-		original, err := os.ReadFile(file)
+	if discovered.RemoteKey != "" || m.manager.tuiCore != "" {
+		contents, err := os.ReadFile(file)
 		if err != nil {
-			return skillEdit{}, fmt.Errorf("read remote skill: %w", err)
+			return skillEdit{}, fmt.Errorf("read skill: %w", err)
 		}
-		ref, err := m.manager.persistedRemoteRef(discovered.RemoteKey, discovered.Name)
-		if err != nil {
-			return skillEdit{}, err
+		if discovered.RemoteKey != "" {
+			ref, err := m.manager.persistedRemoteRef(discovered.RemoteKey, discovered.Name)
+			if err != nil {
+				return skillEdit{}, err
+			}
+			contents, err = m.manager.remoteStore.layeredContent(ref, contents)
+			if err != nil {
+				return skillEdit{}, err
+			}
 		}
-		contents, err := m.manager.remoteStore.layeredContent(ref, original)
+		temporary, err := os.CreateTemp("", "skills-mgr-skill-*.md")
 		if err != nil {
-			return skillEdit{}, err
-		}
-		temporary, err := os.CreateTemp("", "skills-mgr-remote-skill-*.md")
-		if err != nil {
-			return skillEdit{}, fmt.Errorf("create remote skill edit: %w", err)
+			return skillEdit{}, fmt.Errorf("create skill edit: %w", err)
 		}
 		edit.draft = temporary.Name()
 		edit.layeredDigest = sha256.Sum256(contents)
@@ -60,10 +61,10 @@ func (m model) editor(skill string) (_ skillEdit, retErr error) {
 			return skillEdit{}, err
 		}
 		if _, err := temporary.Write(contents); err != nil {
-			return skillEdit{}, fmt.Errorf("write remote skill edit: %w", err)
+			return skillEdit{}, fmt.Errorf("write skill edit: %w", err)
 		}
 		if err := temporary.Close(); err != nil {
-			return skillEdit{}, fmt.Errorf("close remote skill edit: %w", err)
+			return skillEdit{}, fmt.Errorf("close skill edit: %w", err)
 		}
 		file = edit.draft
 	}

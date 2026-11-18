@@ -95,45 +95,31 @@ impl Plan {
     }
 
     pub(super) fn publish(&self, publish: impl FnOnce() -> Result<()>) -> Result<()> {
-        let mut undo = Vec::new();
-        match self.apply(&mut undo).and_then(|()| publish()) {
-            Ok(()) => {
-                if self.desired.is_none() {
-                    for change in &self.changes {
-                        // An unrelated sidecar may keep the directory alive.
-                        let _ = self.root.remove_dir(&change.dir);
-                    }
-                }
-                Ok(())
-            }
-            Err(err) => {
-                let rollback: Vec<_> = undo
-                    .into_iter()
-                    .rev()
-                    .filter_map(|action| {
-                        let (path, result) = match &action {
-                            Undo::RemoveDir(path) => (*path, self.root.remove_dir(path)),
-                            Undo::RemoveFile(path) => (path.as_path(), self.root.remove_file(path)),
-                            Undo::Restore(path, state, removed) => {
-                                (path.as_path(), write(&self.root, path, state, *removed))
-                            }
-                        };
-                        result
-                            .err()
-                            .map(|err| format!("{}: {err}", self.base.join(path).display()))
-                    })
-                    .collect();
-                if rollback.is_empty() {
-                    Err(err)
-                } else {
-                    Err(format!(
-                        "{err}; placeholder rollback failed: {}",
-                        rollback.join("; ")
-                    )
-                    .into())
-                }
+        publish_all(std::slice::from_ref(self), publish)
+    }
+
+    fn finish(&self) {
+        if self.desired.is_none() {
+            for change in &self.changes {
+                // An unrelated sidecar may keep the directory alive.
+                let _ = self.root.remove_dir(&change.dir);
             }
         }
+    }
+
+    fn rollback(&self, undo: Vec<Undo<'_>>) -> impl Iterator<Item = String> {
+        undo.into_iter().rev().filter_map(|action| {
+            let (path, result) = match &action {
+                Undo::RemoveDir(path) => (*path, self.root.remove_dir(path)),
+                Undo::RemoveFile(path) => (path.as_path(), self.root.remove_file(path)),
+                Undo::Restore(path, state, removed) => {
+                    (path.as_path(), write(&self.root, path, state, *removed))
+                }
+            };
+            result
+                .err()
+                .map(|err| format!("{}: {err}", self.base.join(path).display()))
+        })
     }
 
     fn apply<'a>(&'a self, undo: &mut Vec<Undo<'a>>) -> Result<()> {
@@ -176,6 +162,36 @@ impl Plan {
             }
         }
         Ok(())
+    }
+}
+
+pub(super) fn publish_all(plans: &[Plan], publish: impl FnOnce() -> Result<()>) -> Result<()> {
+    let mut undo = Vec::new();
+    let applied = plans.iter().try_for_each(|plan| {
+        undo.push((plan, Vec::new()));
+        plan.apply(&mut undo.last_mut().expect("just pushed a journal").1)
+    });
+    match applied.and_then(|()| publish()) {
+        Ok(()) => {
+            plans.iter().for_each(Plan::finish);
+            Ok(())
+        }
+        Err(err) => {
+            let rollback: Vec<_> = undo
+                .into_iter()
+                .rev()
+                .flat_map(|(plan, actions)| plan.rollback(actions))
+                .collect();
+            if rollback.is_empty() {
+                Err(err)
+            } else {
+                Err(format!(
+                    "{err}; placeholder rollback failed: {}",
+                    rollback.join("; ")
+                )
+                .into())
+            }
+        }
     }
 }
 

@@ -19,7 +19,9 @@ use crate::{
 
 use super::{Result, current_manager};
 
+mod edit;
 mod placeholder;
+pub(super) use edit::{edit, edit_draft};
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
     let usage = "usage: skills-mgr set [-g] <skill> <true|false|condition|inherit>";
@@ -162,49 +164,21 @@ pub(super) fn set_enabled(
             .parse_program()
             .map_err(|err| format!("invalid selection condition: {err}"))?;
     }
-    let _guard = exclusive_lock(&coordination_dir(manager).join("managed-mutation.lock"))?;
+    let _guard = managed_lock(manager)?;
     let skill = catalog::discover(manager, &[], Some(name))?
         .remove(name)
         .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
     if expected.is_some_and(|path| skill.manifest_path() != path || skill.remote_key.is_some()) {
         return Err(format!("skill {name:?} changed ownership since the catalog was read").into());
     }
-    let _lock = selection_lock(manager, &scope.selection_dir)?;
-    let path = scope.selection_dir.join(LOCK_NAME);
-    let legacy = if scope.global && symlink_metadata(&path)?.is_none() {
-        let legacy = manager.home.join(LOCK_NAME);
-        match symlink_metadata(&legacy)? {
-            Some(metadata) if metadata.is_file() => Some(legacy),
-            Some(_) => {
-                return Err(format!(
-                    "legacy selection {} is not a regular file",
-                    legacy.display()
-                )
-                .into());
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
-    let (revision, mut lock) = selection::load_with_revision(legacy.as_deref().unwrap_or(&path))?;
-    let global = if scope.global {
-        None
-    } else {
-        selection::global_path(manager)?
-            .as_deref()
-            .map(selection::load)
-            .transpose()?
-    };
-    if revision == 1 {
-        migrate_legacy(manager, &mut lock, global.as_ref())?;
-    }
-
+    let mut write = SelectionWrite::open(manager, scope)?;
+    let lock = &mut write.layer;
     let mut entry = lock.remove(name).unwrap_or(Selection {
         enabled: None,
         remote: None,
     });
-    let inherited = global
+    let inherited = write
+        .global
         .as_ref()
         .and_then(|lock| lock.get(name)?.enabled.as_ref());
     let is_toggle = matches!(&change, EnabledChange::Toggle);
@@ -219,8 +193,7 @@ pub(super) fn set_enabled(
             Some(Enabled::Boolean(!enabled))
         }
     };
-    let changed =
-        entry.enabled != desired || revision != REVISION || (is_toggle && entry.remote.is_some());
+    let changed = entry.enabled != desired || (is_toggle && entry.remote.is_some());
     entry.enabled = desired;
     if is_toggle {
         entry.remote = None;
@@ -240,33 +213,98 @@ pub(super) fn set_enabled(
     if entry.enabled.is_some() || entry.remote.is_some() {
         lock.insert(name.to_owned(), entry);
     }
-    let publish = || {
-        if let Some(legacy) = &legacy {
-            fs::rename(legacy, &path).map_err(|err| io_error(legacy, err))?;
-        }
-        if changed && let Err(err) = save_selection(&path, &lock) {
-            if let Some(legacy) = &legacy
-                && let Err(rollback) = fs::rename(&path, legacy)
-            {
-                return Err(format!("{err}; restore {}: {rollback}", legacy.display()).into());
-            }
-            return Err(err);
-        }
-        Ok(())
-    };
+    let publish = || write.publish(changed);
     match placeholders {
         Some(plan) => plan.publish(publish),
         None => publish(),
     }?;
     Ok(ChangedSelection {
         enabled,
-        layer: lock,
-        inherited: global,
+        layer: write.layer,
+        inherited: write.global,
     })
 }
 
 fn wants_placeholder(value: &Enabled) -> bool {
     *value != Enabled::Boolean(false)
+}
+
+fn managed_lock(manager: &SkillsManager) -> Result<File> {
+    exclusive_lock(&coordination_dir(manager).join("managed-mutation.lock"))
+}
+
+fn load_global(manager: &SkillsManager) -> Result<Option<Lock>> {
+    Ok(selection::global_path(manager)?
+        .as_deref()
+        .map(selection::load)
+        .transpose()?)
+}
+
+struct SelectionWrite {
+    _guard: File,
+    path: PathBuf,
+    legacy: Option<PathBuf>,
+    revision: u32,
+    layer: Lock,
+    global: Option<Lock>,
+}
+
+impl SelectionWrite {
+    fn open(manager: &SkillsManager, scope: &Scope<'_>) -> Result<Self> {
+        let guard = selection_lock(manager, &scope.selection_dir)?;
+        let path = scope.selection_dir.join(LOCK_NAME);
+        let legacy = if scope.global && symlink_metadata(&path)?.is_none() {
+            let legacy = manager.home.join(LOCK_NAME);
+            match symlink_metadata(&legacy)? {
+                Some(metadata) if metadata.is_file() => Some(legacy),
+                Some(_) => {
+                    return Err(format!(
+                        "legacy selection {} is not a regular file",
+                        legacy.display()
+                    )
+                    .into());
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let (revision, mut layer) =
+            selection::load_with_revision(legacy.as_deref().unwrap_or(&path))?;
+        let global = if scope.global {
+            None
+        } else {
+            load_global(manager)?
+        };
+        if revision == 1 {
+            migrate_legacy(manager, &mut layer, global.as_ref())?;
+        }
+        Ok(Self {
+            _guard: guard,
+            path,
+            legacy,
+            revision,
+            layer,
+            global,
+        })
+    }
+
+    fn publish(&self, changed: bool) -> Result<()> {
+        if let Some(legacy) = &self.legacy {
+            fs::rename(legacy, &self.path).map_err(|err| io_error(legacy, err))?;
+        }
+        if (changed || self.revision != REVISION)
+            && let Err(err) = save_selection(&self.path, &self.layer)
+        {
+            if let Some(legacy) = &self.legacy
+                && let Err(rollback) = fs::rename(&self.path, legacy)
+            {
+                return Err(format!("{err}; restore {}: {rollback}", legacy.display()).into());
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
 }
 
 fn migrate_legacy(manager: &SkillsManager, lock: &mut Lock, global: Option<&Lock>) -> Result<()> {

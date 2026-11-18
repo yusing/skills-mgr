@@ -167,6 +167,91 @@ fn tui_selection_requests_reject_stale_owners_and_return_configured_values() {
     assert_eq!(configured["skills"]["alpha"]["enabled"], "test -f marker");
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn local_edit_preserves_the_manifest_owner_and_moves_its_selection() {
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let skill = home.path().join(".skills-mgr/skills/alpha");
+    let manifest = skill.join("SKILL.md");
+    let input = home.path().join("draft.md");
+    let selection = project.join(".skills-mgr.json");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&skill).unwrap();
+    let original = "---\nname: alpha\ndescription: Before\n---\nOriginal.\n";
+    fs::write(&manifest, original).unwrap();
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o640)).unwrap();
+    let run = |args: &[&str]| {
+        cli()
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let set = run(&["set", "alpha", "true"]);
+    assert!(set.status.success(), "{set:?}");
+    let inspected = run(&["inspect", "alpha"]);
+    assert!(inspected.status.success(), "{inspected:?}");
+    let report: serde_json::Value = serde_json::from_slice(&inspected.stdout).unwrap();
+    let digest = report["resolved"]["sha256"]
+        .as_str()
+        .unwrap()
+        .to_uppercase();
+    let edit = |digest: &str| {
+        run(&[
+            "edit",
+            "alpha",
+            "--file",
+            input.to_str().unwrap(),
+            "--expect-sha256",
+            digest,
+        ])
+    };
+    let revised = "---\nname: beta\ndescription: After\n---\nRevised.\n";
+    fs::write(&input, revised).unwrap();
+    let before = fs::read(&selection).unwrap();
+    let stale = edit(&"0".repeat(64));
+    assert!(!stale.status.success());
+    assert!(stale.stdout.is_empty());
+    assert_eq!(fs::read(&selection).unwrap(), before);
+    assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
+    let conflict = project.join(".claude/skills/beta");
+    fs::create_dir_all(&conflict).unwrap();
+    fs::write(conflict.join("SKILL.md"), "Unmanaged notes").unwrap();
+    let blocked = edit(&digest);
+    assert!(!blocked.status.success());
+    assert_eq!(fs::read(&selection).unwrap(), before);
+    assert_eq!(fs::read_to_string(&manifest).unwrap(), original);
+    assert!(!project.join(".agents/skills/beta").exists());
+    assert!(project.join(".agents/skills/alpha/SKILL.md").exists());
+    assert_eq!(
+        fs::read(conflict.join("SKILL.md")).unwrap(),
+        b"Unmanaged notes"
+    );
+    fs::remove_file(conflict.join("SKILL.md")).unwrap();
+
+    let edited = edit(&digest);
+    assert!(edited.status.success(), "{edited:?}");
+    assert_eq!(edited.stdout, b"Updated beta\n");
+    assert_eq!(fs::read_to_string(&manifest).unwrap(), revised);
+    assert_eq!(
+        fs::metadata(&manifest).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert_eq!(run(&["get", "beta"]).stdout, b"Revised.\n");
+    assert!(project.join(".agents/skills/beta/SKILL.md").is_file());
+    assert!(!project.join(".agents/skills/alpha").exists());
+    let selection: serde_json::Value =
+        serde_json::from_slice(&fs::read(selection).unwrap()).unwrap();
+    assert_eq!(selection["skills"]["beta"]["enabled"], true);
+    assert!(selection["skills"].get("alpha").is_none());
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();

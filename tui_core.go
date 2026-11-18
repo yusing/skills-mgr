@@ -17,6 +17,11 @@ type tuiCoreSelection struct {
 	ProjectExpressions map[string]string
 }
 
+type tuiCoreSnapshot struct {
+	Skills []discoveredSkill
+	tuiCoreSelection
+}
+
 func (s tuiCoreSelection) state() selectionState {
 	return selectionState{
 		selected:           s.Selected,
@@ -33,6 +38,8 @@ type tuiCoreRequest struct {
 	Name   string        `json:"name,omitempty"`
 	Path   string        `json:"path,omitempty"`
 	Value  *enabledValue `json:"value,omitempty"`
+	Draft  string        `json:"draft,omitempty"`
+	Digest string        `json:"digest,omitempty"`
 }
 
 func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState, error) {
@@ -50,10 +57,7 @@ func (m *manager) tuiSnapshot(project string) ([]discoveredSkill, selectionState
 		selection, err := m.selectionState(project, nil)
 		return append(discovered, native...), selection, err
 	}
-	var snapshot struct {
-		Skills []discoveredSkill
-		tuiCoreSelection
-	}
+	var snapshot tuiCoreSnapshot
 	err := m.callTUICore(project, tuiCoreRequest{Op: "snapshot"}, &snapshot)
 	return snapshot.Skills, snapshot.state(), err
 }

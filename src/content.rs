@@ -195,6 +195,27 @@ pub(crate) fn patched_metadata(contents: &[u8]) -> Option<Metadata> {
     metadata(frontmatter(&mut &*contents).ok()?)
 }
 
+#[cfg(all(feature = "cli", unix))]
+pub(crate) fn edited_metadata(mut contents: &[u8]) -> Result<Metadata> {
+    let metadata =
+        metadata(frontmatter(&mut contents).map_err(|err| io_error(Path::new(MANIFEST), err))?)
+            .ok_or_else(|| {
+                invalid_data(
+                    Path::new(MANIFEST),
+                    "edited SKILL.md needs valid name and description frontmatter",
+                )
+            })?;
+    if contents.iter().all(u8::is_ascii_whitespace)
+        || std::str::from_utf8(contents).is_ok_and(|body| body.trim().is_empty())
+    {
+        return Err(invalid_data(
+            Path::new(MANIFEST),
+            "missing body or frontmatter-only placeholder",
+        ));
+    }
+    Ok(metadata)
+}
+
 pub(crate) fn get(
     manager: &SkillsManager,
     skill: &Skill,

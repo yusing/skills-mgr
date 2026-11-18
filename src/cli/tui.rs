@@ -37,6 +37,14 @@ enum Request {
         name: String,
         path: PathBuf,
     },
+    #[cfg(unix)]
+    Edit {
+        global: bool,
+        name: String,
+        path: PathBuf,
+        draft: PathBuf,
+        digest: String,
+    },
 }
 
 pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
@@ -73,6 +81,19 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
             let changed =
                 mutation::set_enabled(&manager, &scope, &name, Some(&path), EnabledChange::Toggle)?;
             reply(out, &changed.enabled.expect("toggle always sets a Boolean"))
+        }
+        #[cfg(unix)]
+        Request::Edit {
+            global,
+            name,
+            path,
+            draft,
+            digest,
+        } => {
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            mutation::edit_draft(&manager, &scope, &name, &path, &digest, &draft)?;
+            reply(out, &build_snapshot(&manager, scope.global, false)?)
         }
     }
 }
@@ -180,6 +201,10 @@ struct SelectionView {
 }
 
 fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Result<()> {
+    reply(out, &build_snapshot(manager, global, true)?)
+}
+
+fn build_snapshot(manager: &SkillsManager, global: bool, include_native: bool) -> Result<Snapshot> {
     let skills = catalog::discover(manager, &[], None)?;
     let global_lock = selection::global_path(manager)?
         .as_deref()
@@ -193,22 +218,24 @@ fn snapshot(out: &mut impl Write, manager: &SkillsManager, global: bool) -> Resu
     };
     let selection = selection_view(global_lock, project_lock, global, &skills);
     let missing = native::missing_remote(manager, None)?;
-    let claude = catalog::claude_plugins(manager, None, true)?;
-    let grok = native::grok(manager, None)?;
-    let rows = skills
+    let mut rows = skills
         .into_values()
         .map(|skill| (skill, false))
         .chain(missing.into_iter().map(|skill| (skill, true)))
-        .chain(claude.into_iter().chain(grok).map(|skill| (skill, false)))
         .map(|(skill, missing)| Row::from_skill(manager, skill, missing))
         .collect::<Result<Vec<_>>>()?;
-    reply(
-        out,
-        &Snapshot {
-            skills: rows,
-            selection,
-        },
-    )
+    if include_native {
+        for skill in catalog::claude_plugins(manager, None, true)?
+            .into_iter()
+            .chain(native::grok(manager, None)?)
+        {
+            rows.push(Row::from_skill(manager, skill, false)?);
+        }
+    }
+    Ok(Snapshot {
+        skills: rows,
+        selection,
+    })
 }
 
 fn selection_view(
