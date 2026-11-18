@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-
 	"fmt"
-
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -84,7 +83,7 @@ func (m *model) selectTab(tab int) tea.Cmd {
 		}
 		m.status = "loading SkillsMP"
 		m.syncViewport()
-		return m.startSkillsMPCatalog()
+		return m.startRegistrySearch(skillsMPTab, nil)
 	default:
 		m.applyCatalog()
 		m.status = fmt.Sprintf("%d skills", len(m.skills))
@@ -121,7 +120,7 @@ func (m *model) filterChanged() tea.Cmd {
 				return nil
 			}
 			m.status = "loading SkillsMP"
-			return m.startSkillsMPCatalog()
+			return m.startRegistrySearch(skillsMPTab, nil)
 		}
 		m.registrySkills = nil
 		m.registryError = ""
@@ -133,7 +132,7 @@ func (m *model) filterChanged() tea.Cmd {
 }
 
 func (m *model) reloadRemoteCache() {
-	cache, err := loadRemoteCache(m.manager.paths.remoteRegistry)
+	cache, err := loadRemoteCache(filepath.Join(m.manager.cacheDir, "skills-sh.json"))
 	if err != nil {
 		m.remoteTopics = nil
 		m.remoteError = err.Error()
@@ -162,7 +161,7 @@ func (m *model) reloadSkillsMPCache() skillsMPCache {
 	if m.manager == nil {
 		return skillsMPCache{}
 	}
-	cache, err := loadSkillsMPCache(m.manager.paths.skillsMP)
+	cache, err := loadSkillsMPCache(filepath.Join(m.manager.cacheDir, "skillsmp.json"))
 	if err != nil {
 		m.registrySkills = nil
 		m.registryError = err.Error()
@@ -173,40 +172,22 @@ func (m *model) reloadSkillsMPCache() skillsMPCache {
 	return cache
 }
 
-func (m *model) startRegistrySearch(tab int, query string) tea.Cmd {
+func (m *model) startRegistrySearch(tab int, query *string) tea.Cmd {
+	if m.manager == nil {
+		return nil
+	}
 	request := m.registryRequest
 	ctx, cancel := context.WithCancel(context.Background())
 	m.registryCancel = cancel
 	return func() tea.Msg {
 		defer cancel()
-		if m.manager != nil && m.manager.tuiCore != "" {
-			return m.coreRegistry(ctx, request, tab, &query)
+		result := registrySearchDone{request: request, tab: tab}
+		if query != nil {
+			result.query = *query
 		}
-		provider := m.registryProvider(tab)
-		if provider == nil {
-			return registrySearchDone{
-				request: request, tab: tab, query: query,
-				err: fmt.Errorf("%s provider is unavailable", registryName(tab)),
-			}
-		}
-		skills, err := provider.search(ctx, query)
-		return registrySearchDone{
-			request: request, tab: tab, query: query, skills: skills, err: err,
-		}
-	}
-}
-
-func (m model) registryProvider(tab int) registrySearchProvider {
-	if m.manager == nil {
-		return nil
-	}
-	switch tab {
-	case remoteTab:
-		return m.manager.remote
-	case skillsMPTab:
-		return m.manager.skillsMP
-	default:
-		return nil
+		op := tuiCoreRequest{Op: "registry", Provider: registryName(tab), Query: query}
+		result.err = m.manager.callTUICoreContext(ctx, m.project, op, &result.skills)
+		return result
 	}
 }
 
@@ -218,39 +199,6 @@ func registryName(tab int) string {
 		return "SkillsMP"
 	}
 	return "registry"
-}
-
-func (m *model) startSkillsMPCatalog() tea.Cmd {
-	request := m.registryRequest
-	ctx, cancel := context.WithCancel(context.Background())
-	m.registryCancel = cancel
-	return func() tea.Msg {
-		defer cancel()
-		if m.manager != nil && m.manager.tuiCore != "" {
-			return m.coreRegistry(ctx, request, skillsMPTab, nil)
-		}
-		if m.manager == nil || m.manager.skillsMP == nil {
-			return registrySearchDone{
-				request: request, tab: skillsMPTab,
-				err: fmt.Errorf("SkillsMP provider is unavailable"),
-			}
-		}
-		skills, err := m.manager.skillsMP.catalog(ctx)
-		return registrySearchDone{
-			request: request, tab: skillsMPTab,
-			skills: presentSkillsMP(skills), err: err,
-		}
-	}
-}
-
-func (m *model) coreRegistry(ctx context.Context, request uint64, tab int, query *string) registrySearchDone {
-	op := tuiCoreRequest{Op: "registry", Provider: registryName(tab), Query: query}
-	result := registrySearchDone{request: request, tab: tab}
-	if query != nil {
-		result.query = *query
-	}
-	result.err = m.manager.callTUICoreContext(ctx, m.project, op, &result.skills)
-	return result
 }
 
 func (m *model) cancelRegistryRequest() {

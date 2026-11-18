@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,28 +14,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
-
-type editExecTestModel struct {
-	current model
-	command tea.Cmd
-}
-
-func (m editExecTestModel) Init() tea.Cmd {
-	return m.command
-}
-
-func (m editExecTestModel) Update(message tea.Msg) (tea.Model, tea.Cmd) {
-	updated, command := m.current.Update(message)
-	m.current = updated.(model)
-	if _, ok := message.(editDone); ok {
-		return m, tea.Quit
-	}
-	return m, command
-}
-
-func (m editExecTestModel) View() string {
-	return ""
-}
 
 func TestSkillListScrollsToKeepCursorVisible(t *testing.T) {
 	current := model{
@@ -162,11 +137,9 @@ func TestTabsNavigateWithArrowKeys(t *testing.T) {
 }
 
 func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
-	manager := newTestManager(t)
-	manager.paths.skillsMP = filepath.Join(t.TempDir(), "skillsmp.json")
-	manager.skillsMP = newSkillsMPRegistry(manager.paths.skillsMP, "")
-	if err := saveSkillsMPCache(manager.paths.skillsMP, skillsMPCache{
-		SchemaRevision: skillsMPSchemaRevision,
+	manager := &manager{cacheDir: t.TempDir()}
+	writeTestCache(t, filepath.Join(manager.cacheDir, "skillsmp.json"), skillsMPCache{
+		SchemaRevision: 1,
 		UpdatedAt:      time.Now(),
 		Skills: []skillsMPSkill{
 			{ID: "alpha-id", Name: "alpha", Author: "owner", Stars: 42},
@@ -175,11 +148,9 @@ func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
 				Stars: 42,
 			},
 		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	current := model{
-		manager: manager, skills: skillNames(1), selected: map[string]bool{},
+		manager: manager, project: manager.cacheDir, skills: skillNames(1), selected: map[string]bool{},
 		width: 60, height: 10,
 	}
 	current.tab = remoteTab
@@ -195,27 +166,11 @@ func TestSkillsMPTabLoadsDefaultCache(t *testing.T) {
 	}
 }
 
-func TestSkillsMPTabFetchesAndCachesDefaultCatalogOnDemand(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		requests++
-		if request.URL.Path != "/api/skills" {
-			t.Errorf("request path = %q", request.URL.Path)
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"skills": []map[string]any{{
-				"id": "fresh-id", "name": "fresh", "author": "remote", "stars": 12,
-			}},
-		})
-	}))
-	defer server.Close()
-	manager := newTestManager(t)
-	manager.paths.skillsMP = filepath.Join(t.TempDir(), "skillsmp.json")
-	manager.skillsMP = newSkillsMPRegistry(manager.paths.skillsMP, "")
-	manager.skillsMP.baseURL = server.URL
-	manager.skillsMP.client = server.Client()
+func TestSkillsMPTabLoadsAbsentCatalogOnDemand(t *testing.T) {
+	manager := fakeRegistryCore(t, "SkillsMP", "",
+		registrySearchSkill{ID: "fresh-id", Name: "fresh", Provider: "SkillsMP"})
 	current := model{
-		manager: manager, skills: skillNames(1), selected: map[string]bool{},
+		manager: manager, project: manager.cacheDir, skills: skillNames(1), selected: map[string]bool{},
 		width: 60, height: 10,
 	}
 
@@ -227,41 +182,17 @@ func TestSkillsMPTabFetchesAndCachesDefaultCatalogOnDemand(t *testing.T) {
 	}
 	updated, _ = current.Update(command())
 	current = updated.(model)
-	if requests != 1 || current.itemCount() != 1 ||
+	if current.itemCount() != 1 ||
 		!strings.Contains(current.View(), "fresh") {
 		t.Fatalf("on-demand catalog was not rendered:\n%s", current.View())
 	}
-	cache, err := loadSkillsMPCache(manager.paths.skillsMP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cache.Skills) != 1 || cache.Skills[0].ID != "fresh-id" {
-		t.Fatalf("on-demand cache = %#v", cache)
-	}
 }
 
-func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/api/v1/skills/search" ||
-			request.URL.Query().Get("q") != "beta" {
-			t.Errorf("request URL = %s", request.URL.String())
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"success": true,
-			"data": map[string]any{
-				"skills": []map[string]any{{
-					"id": "beta-id", "name": "beta", "author": "remote", "stars": 7,
-				}},
-			},
-		})
-	}))
-	defer server.Close()
-	manager := newTestManager(t)
-	manager.skillsMP = newSkillsMPRegistry("", "")
-	manager.skillsMP.baseURL = server.URL
-	manager.skillsMP.client = server.Client()
+func TestSkillsMPFilterStartsOnlySettledSearch(t *testing.T) {
+	manager := fakeRegistryCore(t, "SkillsMP", "beta",
+		registrySearchSkill{ID: "beta-id", Name: "beta", Label: "remote • 7 stars", Provider: "SkillsMP"})
 	current := model{
-		manager: manager, tab: skillsMPTab, filtering: true,
+		manager: manager, project: manager.cacheDir, tab: skillsMPTab, filtering: true,
 		width: 60, height: 10,
 	}
 
@@ -284,7 +215,7 @@ func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
 	})
 	current = updated.(model)
 	if staleSearch != nil {
-		t.Fatal("stale debounced query started an API request")
+		t.Fatal("stale debounced query started a core request")
 	}
 	updated, search := current.Update(registrySearchRequested{
 		request: current.registryRequest,
@@ -293,7 +224,7 @@ func TestSkillsMPFilterUsesSearchAPI(t *testing.T) {
 	})
 	current = updated.(model)
 	if search == nil {
-		t.Fatal("settled debounced query did not start an API request")
+		t.Fatal("settled debounced query did not start a core request")
 	}
 	updated, _ = current.Update(search())
 	current = updated.(model)
@@ -456,17 +387,14 @@ func TestRemoteSkillsExpandProviderMetadata(t *testing.T) {
 }
 
 func TestRemoteTabReloadsRegistryCache(t *testing.T) {
-	manager := newTestManager(t)
-	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")
-	if err := saveRemoteCache(manager.paths.remoteRegistry, remoteRegistryCache{
-		SchemaRevision: remoteRegistrySchemaRevision,
+	manager := &manager{cacheDir: t.TempDir()}
+	writeTestCache(t, filepath.Join(manager.cacheDir, "skills-sh.json"), remoteRegistryCache{
+		SchemaRevision: 1,
 		Topics: []remoteTopic{{
 			Slug: "testing", Name: "Testing",
 			Skills: []remoteSkill{{ID: "owner/repo/fresh", Name: "fresh"}},
 		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
 	current := model{
 		manager:  manager,
 		skills:   skillNames(1),
@@ -488,9 +416,10 @@ func TestRemoteTabReloadsRegistryCache(t *testing.T) {
 }
 
 func TestRemoteTabClearsStaleTopicsWhenCacheReloadFails(t *testing.T) {
-	manager := newTestManager(t)
-	manager.paths.remoteRegistry = filepath.Join(t.TempDir(), "skills-sh.json")
-	writeFile(t, manager.paths.remoteRegistry, "{invalid")
+	manager := &manager{cacheDir: t.TempDir()}
+	if err := os.WriteFile(filepath.Join(manager.cacheDir, "skills-sh.json"), []byte("{invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	current := model{
 		manager: manager,
 		remoteTopics: []remoteTopic{{
@@ -636,27 +565,11 @@ func TestFilterInputActivatesByMouseAndCanBeCleared(t *testing.T) {
 }
 
 func TestSkillsShFilterUsesSharedRequestSearch(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		requests++
-		if request.URL.Path != "/api/search" ||
-			request.URL.Query().Get("q") != "beta testing" {
-			t.Errorf("request URL = %s", request.URL.String())
-		}
-		_ = json.NewEncoder(response).Encode(map[string]any{
-			"skills": []map[string]any{{
-				"id": "owner/repo/beta", "name": "beta",
-				"source": "owner/repo", "installs": 17,
-			}},
-		})
-	}))
-	defer server.Close()
-	manager := newTestManager(t)
-	manager.remote = newRemoteRegistry("")
-	manager.remote.baseURL = server.URL
-	manager.remote.client = server.Client()
+	manager := fakeRegistryCore(t, "skills.sh", "beta testing",
+		registrySearchSkill{ID: "owner/repo/beta", Name: "beta", Label: "owner/repo • 17 installs", Provider: "skills.sh"})
 	current := model{
 		manager: manager,
+		project: manager.cacheDir,
 		tab:     remoteTab,
 		remoteTopics: []remoteTopic{{
 			Slug: "testing", Name: "Testing",
@@ -687,7 +600,7 @@ func TestSkillsShFilterUsesSharedRequestSearch(t *testing.T) {
 	updated, _ = current.Update(search())
 	current = updated.(model)
 	view := current.View()
-	if requests != 1 || current.itemCount() != 1 ||
+	if current.itemCount() != 1 ||
 		!strings.Contains(view, "beta") ||
 		!strings.Contains(view, "owner/repo • 17 installs") ||
 		strings.Contains(view, "collision") {
@@ -923,13 +836,13 @@ func TestEveryRenderedLineFitsNarrowTerminal(t *testing.T) {
 		current := model{
 			project: strings.Repeat("project/", 20),
 			skills: []discoveredSkill{{
-				Name:        strings.Repeat("n", maxSkillNameLen),
+				Name:        strings.Repeat("n", 80),
 				Description: strings.Repeat("wide 世界 ", 20),
 				Path:        "/" + strings.Repeat("long-path/", 20) + "SKILL.md",
 				Source:      "plugin",
 			}},
 			selected: map[string]bool{},
-			expanded: strings.Repeat("n", maxSkillNameLen),
+			expanded: strings.Repeat("n", 80),
 			status:   "error: " + strings.Repeat("failed ", 20),
 			width:    width,
 			height:   30,
@@ -970,17 +883,15 @@ func TestEditDoneRefreshesMetadataByCanonicalPath(t *testing.T) {
 }
 
 func TestTUITogglesLocalModelInvocation(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeFile(
-		t,
-		filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md"),
-		skillFile("alpha", "Alpha.", "body"),
-	)
-	current, err := newModel(manager, project)
-	if err != nil {
-		t.Fatal(err)
+	skills := []discoveredSkill{{Name: "alpha", Path: "/skills/alpha/SKILL.md", Source: "user"}}
+	reply := modelInvocationResult{
+		Skill: "alpha", Disabled: true,
+		Skills:   []discoveredSkill{{Name: "alpha", Path: "/skills/alpha/SKILL.md", Source: "user", DisableModelInvocation: true}},
+		Selected: map[string]bool{"alpha": true},
 	}
+	manager := fakeCore(t, "toggle_invocation", reply)
+	current := model{manager: manager, project: t.TempDir(), allSkills: skills, skills: skills,
+		selected: map[string]bool{"alpha": true}}
 	current.width = 120
 	current.height = 10
 	if !strings.Contains(current.View(), "m model toggle") {
@@ -1072,523 +983,6 @@ func TestEnabledEditKeepsEditedSkillSelectedAfterReordering(t *testing.T) {
 			current.skills[indices[current.cursor]].Name,
 		)
 	}
-}
-
-func TestRefreshEditedSkillMigratesRenamedSelection(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", ""))
-
-	skills, selection, err := manager.refreshEditedSkill(project, "alpha", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(skills) != 1 || skills[0].Name != "renamed" || skills[0].Description != "New." {
-		t.Fatalf("skills = %#v", skills)
-	}
-	if !selection.selected["renamed"] {
-		t.Fatalf("renamed skill is not enabled: %#v", selection.selected)
-	}
-	if _, exists := selection.selected["alpha"]; exists {
-		t.Fatalf("obsolete selection was retained: %#v", selection.selected)
-	}
-
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasBooleanSelection(value, "renamed", true) {
-		t.Fatalf("persisted selection = %#v", value)
-	}
-	var output strings.Builder
-	if err := manager.listContext(t.Context(), project, &output); err != nil {
-		t.Fatalf("list after rename: %v", err)
-	}
-	if !strings.Contains(output.String(), `name="renamed"`) {
-		t.Fatalf("list omitted renamed skill:\n%s", output.String())
-	}
-}
-
-func TestRefreshEditedManagedSkillUpdatesPlaceholderDescription(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{".agents", ".claude"} {
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			wantPlaceholder("alpha", "New."),
-		)
-	}
-}
-
-func TestRefreshEditedManagedSkillReplacesRenamedPlaceholders(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{".agents", ".claude"} {
-		if _, err := os.Stat(filepath.Join(project, root, "skills", "alpha")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("old placeholder survived rename in %s: %v", root, err)
-		}
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
-			wantPlaceholder("renamed", "New."),
-		)
-	}
-}
-func TestRefreshEditedManagedSkillRenamesLegacySelections(t *testing.T) {
-	tests := []struct {
-		name string
-		lock string
-	}{
-		{
-			name: "legacy revision",
-			lock: `{"schema_revision":1,"skills":{"alpha":true}}`,
-		},
-		{
-			name: "previous revision",
-			lock: `{"schema_revision":2,"skills":{"alpha":{"enabled":true}}}`,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			manager := newTestManager(t)
-			project := t.TempDir()
-			path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-			writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-			writeFile(t, filepath.Join(project, lockName), test.lock)
-			if err := manager.setRemotePlaceholders(
-				project,
-				"alpha",
-				"name: alpha\ndescription: Old.\n",
-				true,
-			); err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, path, skillFile("renamed", "New.", "body\n"))
-
-			if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-				t.Fatal(err)
-			}
-
-			value, err := loadLock(project)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if value.SchemaRevision != lockSchemaRevision ||
-				!hasBooleanSelection(value, "renamed", true) {
-				t.Fatalf("renamed migrated selection = %#v", value)
-			}
-			if _, exists := value.enabled("alpha"); exists {
-				t.Fatalf("renamed migrated selection retained alpha: %#v", value)
-			}
-		})
-	}
-}
-
-func TestRefreshEditedManagedSkillTreatsPlaceholderRootAliasAsSameRoot(t *testing.T) {
-	manager := newTestManager(t)
-	project := filepath.Join(t.TempDir(), "project")
-	if err := os.Symlink(manager.paths.placeholderDir, project); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, root := range []string{".agents", ".claude"} {
-		if _, err := os.Stat(filepath.Join(project, root, "skills", "alpha")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("old aliased placeholder survived rename in %s: %v", root, err)
-		}
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
-			wantPlaceholder("renamed", "New."),
-		)
-	}
-}
-
-func TestRefreshEditedManagedSkillKeepsGlobalAndHomeProjectPlaceholders(t *testing.T) {
-	manager := newTestManager(t)
-	project := manager.paths.placeholderDir
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	manager.global = true
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	manager.global = false
-	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{".agents", ".claude"} {
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			wantPlaceholder("alpha", "New."),
-		)
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "renamed", "SKILL.md"),
-			wantPlaceholder("renamed", "New."),
-		)
-	}
-}
-
-func TestRefreshEditedManagedSkillKeepsHomeProjectOnlyPlaceholder(t *testing.T) {
-	manager := newTestManager(t)
-	project := manager.paths.placeholderDir
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-	for _, root := range []string{".agents", ".claude"} {
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			wantPlaceholder("alpha", "New."),
-		)
-	}
-}
-
-func TestRefreshEditedManagedSkillRestoresUpdatedPlaceholderOnCollision(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(
-		t,
-		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
-		wantPlaceholder("alpha", "Old."),
-	)
-	writeFile(
-		t,
-		filepath.Join(project, ".agents", "skills", "alpha", ".skills-mgr-placeholder"),
-		remotePlaceholderMarker,
-	)
-	conflict := filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md")
-	writeFile(t, conflict, skillFile("alpha", "Conflict.", "body\n"))
-	writeFile(t, path, skillFile("alpha", "New.", "body\n"))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err == nil {
-		t.Fatal("managed placeholder refresh succeeded despite collision")
-	}
-	assertFile(
-		t,
-		filepath.Join(project, ".agents", "skills", "alpha", "SKILL.md"),
-		wantPlaceholder("alpha", "Old."),
-	)
-	assertFile(t, conflict, skillFile("alpha", "Conflict.", "body\n"))
-}
-
-func TestRefreshEditedManagedSkillRejectsRenameCollisionBeforeSelectionMutation(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.managedSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", "body\n"))
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := manager.setRemotePlaceholders(
-		project,
-		"alpha",
-		"name: alpha\ndescription: Old.\n",
-		true,
-	); err != nil {
-		t.Fatal(err)
-	}
-	conflict := filepath.Join(project, ".claude", "skills", "renamed", "SKILL.md")
-	writeFile(t, conflict, skillFile("renamed", "Conflict.", "body\n"))
-	writeFile(t, path, skillFile("renamed", "New.", "body\n"))
-
-	lockPath := filepath.Join(project, lockName)
-	beforeInfo, err := os.Stat(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err == nil {
-		t.Fatal("managed rename refresh succeeded despite collision")
-	}
-	afterInfo, err := os.Stat(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !os.SameFile(beforeInfo, afterInfo) {
-		t.Fatal("managed rename collision rewrote selection before placeholder validation")
-	}
-	assertLock(t, project, map[string]bool{"alpha": true})
-	for _, root := range []string{".agents", ".claude"} {
-		assertFile(
-			t,
-			filepath.Join(project, root, "skills", "alpha", "SKILL.md"),
-			wantPlaceholder("alpha", "Old."),
-		)
-	}
-	if _, err := os.Stat(filepath.Join(project, ".agents", "skills", "renamed")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("failed rename left new placeholder behind: %v", err)
-	}
-	assertFile(t, conflict, skillFile("renamed", "Conflict.", "body\n"))
-}
-
-func TestRefreshEditedSkillMigratesRenamedEnabledExpression(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(project, testLock(nil, map[string]string{"alpha": "[[ -f go.mod ]]"}, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", ""))
-
-	if _, _, err := manager.refreshEditedSkill(project, "alpha", path); err != nil {
-		t.Fatal(err)
-	}
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current, exists := value.enabled("renamed"); !exists ||
-		current.Expression != "[[ -f go.mod ]]" {
-		t.Fatalf("renamed condition = %#v", value)
-	}
-	if _, exists := value.enabled("alpha"); exists {
-		t.Fatalf("obsolete condition was retained: %#v", value)
-	}
-}
-
-func TestRefreshEditedSkillRejectsEnabledExpressionCollisions(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		global     bool
-		oldEnabled enabledValue
-		newEnabled enabledValue
-	}{
-		{
-			name:       "project old expression",
-			oldEnabled: enabledValue{Expression: "[[ -f go.mod ]]"},
-			newEnabled: enabledValue{Boolean: new(true)},
-		},
-		{
-			name:       "project new expression",
-			oldEnabled: enabledValue{Boolean: new(true)},
-			newEnabled: enabledValue{Expression: "[[ -f package.json ]]"},
-		},
-		{
-			name:       "global old expression",
-			global:     true,
-			oldEnabled: enabledValue{Expression: "[[ -f go.mod ]]"},
-			newEnabled: enabledValue{Boolean: new(true)},
-		},
-		{
-			name:       "global new expression",
-			global:     true,
-			oldEnabled: enabledValue{Boolean: new(true)},
-			newEnabled: enabledValue{Expression: "[[ -f package.json ]]"},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			manager := newTestManager(t)
-			manager.global = test.global
-			project := t.TempDir()
-			path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-			writeFile(t, path, skillFile("alpha", "Old.", ""))
-			lockDir := project
-			if test.global {
-				lockDir = manager.paths.globalLockDir
-			}
-			value := newLock()
-			value.setEnabled("alpha", test.oldEnabled)
-			value.setEnabled("renamed", test.newEnabled)
-			if err := saveLock(lockDir, value); err != nil {
-				t.Fatal(err)
-			}
-			writeFile(t, path, skillFile("renamed", "New.", ""))
-
-			_, _, err := manager.refreshEditedSkill(project, "alpha", path)
-			if err == nil || !strings.Contains(err.Error(), "either value is an expression") {
-				t.Fatalf("rename collision error = %v", err)
-			}
-			got, err := loadLock(lockDir)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for name, want := range map[string]enabledValue{
-				"alpha":   test.oldEnabled,
-				"renamed": test.newEnabled,
-			} {
-				current, exists := got.enabled(name)
-				if !exists {
-					t.Fatalf("%s enabled value was removed: %#v", name, got)
-				}
-				currentJSON, _ := json.Marshal(current)
-				wantJSON, _ := json.Marshal(want)
-				if string(currentJSON) != string(wantJSON) {
-					t.Fatalf("%s enabled value = %s, want %s", name, currentJSON, wantJSON)
-				}
-			}
-		})
-	}
-}
-
-func TestRefreshEditedSkillOverridesInheritedGlobalSelection(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", ""))
-
-	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !selection.selected["renamed"] || selection.selected["alpha"] {
-		t.Fatalf("selection after inherited rename = %#v", selection.selected)
-	}
-	assertLock(t, project, map[string]bool{
-		"alpha":   false,
-		"renamed": true,
-	})
-	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
-}
-
-func TestRefreshEditedSkillPreservesProjectOverrideOfGlobalSelection(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", ""))
-
-	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.selected["renamed"] || selection.selected["alpha"] {
-		t.Fatalf("selection after overridden rename = %#v", selection.selected)
-	}
-	assertLock(t, project, map[string]bool{
-		"alpha":   false,
-		"renamed": false,
-	})
-	assertLock(t, manager.paths.globalLockDir, map[string]bool{"alpha": true})
-}
-
-func TestRefreshEditedSkillMigratesGlobalSelectionInGlobalMode(t *testing.T) {
-	manager := newTestManager(t)
-	manager.global = true
-	project := t.TempDir()
-	path := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, path, skillFile("alpha", "Old.", ""))
-	if err := saveLock(manager.paths.globalLockDir, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	writeFile(t, path, skillFile("renamed", "New.", ""))
-
-	_, selection, err := manager.refreshEditedSkill(project, "alpha", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !selection.selected["renamed"] {
-		t.Fatalf("global selection after rename = %#v", selection.selected)
-	}
-	if _, exists := selection.selected["alpha"]; exists {
-		t.Fatalf("obsolete global selection was retained: %#v", selection.selected)
-	}
-	assertLock(t, manager.paths.globalLockDir, map[string]bool{"renamed": true})
 }
 
 func TestSkillListIgnoresClicksWhileBusy(t *testing.T) {
@@ -1873,383 +1267,6 @@ func skillNames(count int) []discoveredSkill {
 	return names
 }
 
-func TestEditorTargetsCanonicalSkill(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	skill := filepath.Join(manager.paths.userSkills, "alpha", "SKILL.md")
-	writeFile(t, skill, skillFile("alpha", "Alpha.", "before"))
-	editor := filepath.Join(t.TempDir(), "editor")
-	writeExecutable(t, editor, "#!/bin/sh\nprintf edited > \"$2\"\n")
-	t.Setenv("EDITOR", editor+" --flag")
-
-	edit, err := (model{manager: manager, project: project}).editor("alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if edit.draft != "" {
-		t.Fatalf("local editor draft = %q, want none", edit.draft)
-	}
-	if err := edit.command.Run(); err != nil {
-		t.Fatal(err)
-	}
-	assertFile(t, skill, "edited")
-}
-
-func TestEditorLayersRemoteSkillThroughPatchDraft(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	ref := remoteSkillRef{
-		Provider: skillsShProvider,
-		ID:       "owner/repo/alpha",
-		Name:     "alpha",
-		Locator:  "owner/repo/alpha",
-	}
-	original := skillFile("alpha", "Remote alpha.", "before\n")
-	if _, err := manager.remoteStore.ensure(
-		t.Context(),
-		ref,
-		&staticRemoteProvider{files: []remoteSkillFile{{
-			Path: "SKILL.md", Contents: []byte(original),
-		}}},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
-		t.Fatal(err)
-	}
-	edited := skillFile("alpha", "Remote alpha.", "after\n")
-	editor := filepath.Join(t.TempDir(), "editor")
-	writeExecutable(t, editor, "#!/bin/sh\nprintf '%s' '"+edited+"' > \"$2\"\n")
-	t.Setenv("EDITOR", editor+" --flag")
-	discovered, err := manager.findSkill(project, ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	edit, err := (model{manager: manager, project: project}).editor(ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if edit.draft == "" || edit.draft == discovered.Path {
-		t.Fatalf("remote editor draft = %q", edit.draft)
-	}
-	defer os.Remove(edit.draft)
-	assertFile(t, edit.draft, original)
-	if err := edit.command.Run(); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := manager.completeSkillEdit(
-		t.Context(), project, discovered, edit.draft, edit.layeredDigest,
-	); err != nil {
-		t.Fatal(err)
-	}
-	assertFile(t, discovered.Path, original)
-
-	var output strings.Builder
-	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
-		t.Fatal(err)
-	}
-	if output.String() != "after\n" {
-		t.Fatalf("edited remote body = %q", output.String())
-	}
-	layeredEdit, err := (model{manager: manager, project: project}).editor(ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(layeredEdit.draft)
-	assertFile(t, layeredEdit.draft, edited)
-}
-
-func TestRemoteEditorRejectsConcurrentLayerReplacement(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	ref := remoteSkillRef{
-		Provider: skillsShProvider,
-		ID:       "owner/repo/alpha",
-		Name:     "alpha",
-		Locator:  "owner/repo/alpha",
-	}
-	if _, err := manager.remoteStore.ensure(
-		t.Context(),
-		ref,
-		&staticRemoteProvider{files: []remoteSkillFile{{
-			Path:     "SKILL.md",
-			Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
-		}}},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EDITOR", "true")
-	discovered, err := manager.findSkill(project, ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := (model{manager: manager, project: project}).editor(ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(first.draft)
-	second, err := (model{manager: manager, project: project}).editor(ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove(second.draft)
-	firstContents := skillFile("alpha", "Remote alpha.", "first\n")
-	if err := os.WriteFile(first.draft, []byte(firstContents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := manager.completeSkillEdit(
-		t.Context(), project, discovered, first.draft, first.layeredDigest,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		second.draft,
-		[]byte(skillFile("alpha", "Remote alpha.", "second\n")),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := manager.completeSkillEdit(
-		t.Context(), project, discovered, second.draft, second.layeredDigest,
-	); !errors.Is(err, errRemoteSkillEditConflict) {
-		t.Fatalf("stale remote edit error = %v", err)
-	}
-
-	var output strings.Builder
-	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
-		t.Fatal(err)
-	}
-	if output.String() != "first\n" {
-		t.Fatalf("concurrent edit result = %q", output.String())
-	}
-}
-
-func TestRemoteEditorUsesSourceRediscoveredAfterRefresh(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	ref := remoteSkillRef{
-		Provider: skillsShProvider,
-		ID:       "owner/repo/alpha",
-		Name:     "alpha",
-		Locator:  "owner/repo/alpha",
-	}
-	provider := &staticRemoteProvider{files: []remoteSkillFile{{
-		Path:     "SKILL.md",
-		Contents: []byte(skillFile("alpha", "Remote alpha.", "before\n")),
-	}}}
-	if _, err := manager.remoteStore.ensure(t.Context(), ref, provider); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.toggleRemote(t.Context(), project, ref); err != nil {
-		t.Fatal(err)
-	}
-	current, err := newModel(manager, project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stalePath := current.skills[0].Path
-	aged := ageRemoteRecord(t, manager.remoteStore, ref)
-	provider.files[0].Contents = []byte(skillFile("alpha", "Remote alpha.", "upstream\n"))
-	if err := manager.remoteStore.refresh(t.Context(), aged, provider); err != nil {
-		t.Fatal(err)
-	}
-	refreshed, err := manager.findSkill(project, ref.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if refreshed.Path == stalePath {
-		t.Fatal("refresh retained the original content path")
-	}
-	editor := filepath.Join(t.TempDir(), "editor")
-	writeExecutable(t, editor, `#!/bin/sh
-cat > "$1" <<'EOF'
----
-name: alpha
-description: Remote alpha.
----
-local
-EOF
-`)
-	t.Setenv("EDITOR", editor)
-	updated, command := current.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
-	current = updated.(model)
-	if command == nil || !current.busy {
-		t.Fatalf("remote editor did not start: %#v", current)
-	}
-	program := tea.NewProgram(
-		editExecTestModel{current: current, command: command},
-		tea.WithoutRenderer(),
-		tea.WithInput(strings.NewReader("")),
-		tea.WithOutput(io.Discard),
-	)
-	final, err := program.Run()
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := final.(editExecTestModel).current
-	if got.busy || got.status != "saved alpha" {
-		t.Fatalf("edit completion = %#v", got)
-	}
-
-	var output strings.Builder
-	if err := manager.getContext(t.Context(), project, ref.Name, "", &output); err != nil {
-		t.Fatal(err)
-	}
-	if output.String() != "local\n" {
-		t.Fatalf("edit after refresh = %q", output.String())
-	}
-}
-
-func TestEnabledEditorUpdatesReadOnlySkillPolicy(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin"), "admin")
-	if err := saveLock(project, testLock(map[string]bool{"admin": false}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	editor := filepath.Join(t.TempDir(), "editor")
-	writeExecutable(t, editor, "#!/bin/sh\nprintf '%s\\n' '[ -f go.mod ]' > \"$2\"\n")
-	t.Setenv("EDITOR", editor+" --flag")
-	current := model{manager: manager, project: project}
-	command, draft, err := current.enabledEditor("admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(draft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("draft mode = %o, want 600", info.Mode().Perm())
-	}
-	if err := command.Run(); err != nil {
-		t.Fatal(err)
-	}
-	skill, err := manager.findSkill(project, "admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := manager.applyEnabledDraft(project, skill, draft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(draft); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("enabled editor draft was not removed: %v", err)
-	}
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current, exists := value.enabled("admin"); !exists ||
-		current.Expression != "[ -f go.mod ]" ||
-		current.Boolean != nil {
-		t.Fatalf("enabled expression = %#v", value)
-	}
-	if state.expressions["admin"] != "[ -f go.mod ]" {
-		t.Fatalf("selection state = %#v", state)
-	}
-}
-
-func TestEnabledEditorKeepsShellOperatorsReadable(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	want := `(command -vq herdr || false) && [ "$PWD" == "$HOME" ]`
-	if err := saveLock(project, testLock(nil, map[string]string{"alpha": want}, nil)); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("EDITOR", "true")
-	_, draft, err := (model{manager: manager, project: project}).enabledEditor("alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(draft) })
-	data, err := os.ReadFile(draft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != want+"\n" {
-		t.Fatalf("enabled editor draft = %q", data)
-	}
-	if _, err := manager.applyEnabledDraft(
-		project,
-		discoveredSkill{Name: "alpha"},
-		draft,
-	); err != nil {
-		t.Fatal(err)
-	}
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current, exists := value.enabled("alpha"); !exists || current.Expression != want {
-		t.Fatalf("saved enabled expression = %#v", value)
-	}
-}
-
-func TestEmptyEnabledEditorDraftRemovesProjectOverride(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
-	if err := saveLock(manager.paths.globalLockDir, testLock(nil, map[string]string{"alpha": "[[ -f go.mod ]]"}, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if err := saveLock(project, testLock(map[string]bool{"alpha": false}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	draft := filepath.Join(t.TempDir(), "enabled.json")
-	writeFile(t, draft, "\n")
-	skill, err := manager.findSkill(project, "alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := manager.applyEnabledDraft(project, skill, draft)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, exists := value.enabled("alpha"); exists {
-		t.Fatalf("project override was retained: %#v", value)
-	}
-	if state.expressions["alpha"] != "[[ -f go.mod ]]" {
-		t.Fatalf("global condition was not inherited: %#v", state)
-	}
-}
-
-func TestInvalidEnabledEditorDraftPreservesPolicy(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.userSkills, "alpha"), "alpha")
-	if err := saveLock(project, testLock(map[string]bool{"alpha": true}, nil, nil)); err != nil {
-		t.Fatal(err)
-	}
-	draft := filepath.Join(t.TempDir(), "enabled.json")
-	writeFile(t, draft, "\"unterminated\n")
-	skill, err := manager.findSkill(project, "alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := manager.applyEnabledDraft(project, skill, draft); err == nil ||
-		!strings.Contains(err.Error(), "enabled") {
-		t.Fatalf("applyEnabledDraft error = %v", err)
-	}
-	value, err := loadLock(project)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasBooleanSelection(value, "alpha", true) {
-		t.Fatalf("invalid draft changed policy: %#v", value)
-	}
-	if _, err := os.Stat(draft); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("invalid enabled draft was not removed: %v", err)
-	}
-}
-
 func TestToggleErrorPreservesSelection(t *testing.T) {
 	current := model{
 		selected: map[string]bool{"alpha": true},
@@ -2273,18 +1290,6 @@ func TestToggleErrorPreservesSelection(t *testing.T) {
 	}
 }
 
-func TestEditorRejectsNonEditableSkillSource(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin"), "admin")
-	t.Setenv("EDITOR", "editor")
-
-	_, err := (model{manager: manager, project: project}).editor("admin")
-	if err == nil || !strings.Contains(err.Error(), "not editable") {
-		t.Fatalf("error = %v, want non-editable source error", err)
-	}
-}
-
 func TestApplyCatalogClearsWhenDiscoveryEmpty(t *testing.T) {
 	current := model{
 		skills: []discoveredSkill{{Name: "stale", Source: "user"}},
@@ -2296,26 +1301,17 @@ func TestApplyCatalogClearsWhenDiscoveryEmpty(t *testing.T) {
 }
 
 func TestTUICatalogFiltersAgentPrivateSkills(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.userSkills, "common"), "common")
-	writeSkill(t, filepath.Join(project, ".agents", "skills", "local"), "local")
-	writeSkill(t, filepath.Join(project, ".claude", "skills", "project-claude"), "project-claude")
-	writeSkill(t, filepath.Join(project, ".grok", "skills", "project-grok"), "project-grok")
-	writeSkill(t, filepath.Join(project, ".codex", "skills", "project-codex"), "project-codex")
-	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", "codex-only"), "codex-only")
-	writeSkill(
-		t,
-		filepath.Join(manager.paths.codexHome, "plugins", "cache", "publisher", "plugin", "hash", "skills", "plugin-only"),
-		"plugin-only",
-	)
-	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", ".system", "builtin"), "builtin")
-	writeSkill(t, filepath.Join(manager.paths.adminSkills, "admin-only"), "admin-only")
-
-	current, err := newModel(manager, project)
-	if err != nil {
-		t.Fatal(err)
-	}
+	current := model{allSkills: []discoveredSkill{
+		{Name: "admin-only", Source: "admin"},
+		{Name: "builtin", Source: "bundled"},
+		{Name: "codex-only", Source: "codex"},
+		{Name: "common", Source: "user"},
+		{Name: "local", Source: "project"},
+		{Name: "plugin-only", Source: "plugin"},
+		{Name: "project-claude", Source: "claude"},
+		{Name: "project-codex", Source: "codex"},
+		{Name: "project-grok", Source: "grok"},
+	}}
 
 	tests := []struct {
 		name        string
@@ -2396,18 +1392,10 @@ func TestTUICatalogFiltersAgentPrivateSkills(t *testing.T) {
 }
 
 func TestCodexSubtabsCycleWithBrackets(t *testing.T) {
-	manager := newTestManager(t)
-	project := t.TempDir()
-	writeSkill(t, filepath.Join(manager.paths.codexHome, "skills", "user-skill"), "user-skill")
-	writeSkill(
-		t,
-		filepath.Join(manager.paths.codexHome, "plugins", "cache", "publisher", "plugin", "hash", "skills", "plugin-skill"),
-		"plugin-skill",
-	)
-	current, err := newModel(manager, project)
-	if err != nil {
-		t.Fatal(err)
-	}
+	current := model{allSkills: []discoveredSkill{
+		{Name: "plugin-skill", Source: "plugin"},
+		{Name: "user-skill", Source: "codex"},
+	}}
 	current.width = 80
 	current.height = 16
 	updated, _ := current.Update(tea.KeyMsg{Type: tea.KeyRight})
@@ -2448,4 +1436,52 @@ func TestCodexSubtabsCycleWithBrackets(t *testing.T) {
 	if current.sourceSubtabs[codexTab] != userSourceSubtab {
 		t.Fatalf("wrap forward = %d, want User", current.sourceSubtabs[codexTab])
 	}
+}
+
+func writeTestCache(t *testing.T, path string, cache any) {
+	t.Helper()
+	contents, err := json.Marshal(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fakeRegistryCore(t *testing.T, provider, query string, skill registrySearchSkill) *manager {
+	t.Helper()
+	expected := fmt.Sprintf(`"provider":%q`, provider)
+	if query != "" {
+		expected += fmt.Sprintf(`,"query":%q`, query)
+	}
+	return fakeCoreRequest(t, "registry", expected, []registrySearchSkill{skill})
+}
+
+func fakeCore(t *testing.T, op string, reply any) *manager {
+	t.Helper()
+	return fakeCoreRequest(t, op, "", reply)
+}
+
+func fakeCoreRequest(t *testing.T, op, expected string, reply any) *manager {
+	t.Helper()
+	// Test the model's real subprocess call without invoking providers.
+	dir := t.TempDir()
+	core := filepath.Join(dir, "skills-mgr")
+	response := filepath.Join(dir, "response.json")
+	writeTestCache(t, response, reply)
+	t.Setenv("SKILLS_MGR_TEST_CORE_RESPONSE", response)
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+[ "$1" = "__tui" ]
+request=$(cat)
+case "$request" in
+  *'"op":"%s"'*'%s'*) cat "$SKILLS_MGR_TEST_CORE_RESPONSE" ;;
+  *) printf 'unexpected request: %%s\n' "$request" >&2; exit 1 ;;
+esac
+`, op, expected)
+	if err := os.WriteFile(core, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return &manager{tuiCore: core, cacheDir: dir}
 }

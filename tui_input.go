@@ -234,7 +234,6 @@ func updateKey(m model, message tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return editDone{skill: skill.Name, editorErr: err}
 			}
 			skills, selection, refreshErr := m.manager.completeSkillEdit(
-				context.Background(),
 				m.project,
 				edit.source,
 				edit.draft,
@@ -286,36 +285,19 @@ func toggleSelectedSkill(m model) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		enabled := m.remoteSelected[ref.key()]
-		refresh := false
+
 		status := "disabling "
 		if !enabled {
-			var err error
-			if m.manager.tuiCore != "" {
-				refresh = true
-			} else if m.manager.remoteStore != nil {
-				refresh, err = m.manager.remoteStore.needsRefresh(ref)
-			} else {
-				return m, nil
-			}
-			if err != nil {
-				m.status = "error: " + err.Error()
-				return m, nil
-			}
-			status = "enabling "
-			if refresh {
-				status = "installing "
-			}
+			status = "installing "
 		}
 		m.busy = true
 		m.status = status + ref.Name
 		ctx, cancel := context.WithCancel(context.Background())
 		m.busyCancel = cancel
-		if refresh {
+
+		if !enabled {
 			m.progressTitle = "Installing " + ref.Name
-			m.progressDetail = "Cloning with git --depth 1…"
-			if m.manager.tuiCore != "" {
-				m.progressDetail = "Checking cached content and downloading if needed…"
-			}
+			m.progressDetail = "Checking cached content and downloading if needed…"
 		}
 		return m, func() tea.Msg {
 			result, err := m.manager.tuiToggleRemote(

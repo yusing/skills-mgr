@@ -212,23 +212,17 @@ func isLocalTab(tab int) bool {
 	}
 }
 
-func (m model) catalogHarnesses() []listHarness {
-	switch m.tab {
-	case codexTab:
-		return []listHarness{listHarnessCodex}
-	case grokTab:
-		return []listHarness{listHarnessGrok}
-	case claudeTab:
-		return []listHarness{listHarnessClaude}
-	default:
-		return nil
-	}
-}
-
 func (m *model) applyCatalog() {
-	skills := catalogSkills(m.allSkills, m.catalogHarnesses())
+
+	source := ""
 	if subtabs := sourceSubtabsFor(m.tab); len(subtabs) > 0 {
-		skills = filterAgentSource(skills, subtabs[m.sourceSubtabs[m.tab]].source)
+		source = subtabs[m.sourceSubtabs[m.tab]].source
+	}
+	skills := make([]discoveredSkill, 0, len(m.allSkills))
+	for _, skill := range m.allSkills {
+		if (source != "" && source == skill.Source) || (source == "" && sourceAgent(skill.Source) == "") {
+			skills = append(skills, skill)
+		}
 	}
 	m.skills = skills
 }
@@ -244,14 +238,17 @@ func (m model) chromeHeight() int {
 	return m.headerHeight() + tuiFooterHeight
 }
 
-func filterAgentSource(skills []discoveredSkill, want string) []discoveredSkill {
-	filtered := make([]discoveredSkill, 0, len(skills))
-	for _, skill := range skills {
-		if skill.Source == want {
-			filtered = append(filtered, skill)
-		}
+func sourceAgent(source string) string {
+	switch source {
+	case "codex", "admin", "bundled", "plugin":
+		return "codex"
+	case "claude", "claude-plugin":
+		return "claude"
+	case "grok", "grok-plugin", "grok-bundled":
+		return "grok"
+	default:
+		return ""
 	}
-	return filtered
 }
 
 func sourceSubtabsFor(tab int) []sourceSubtab {
@@ -458,7 +455,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			message.tab != m.tab {
 			break
 		}
-		return m, m.startRegistrySearch(message.tab, message.query)
+		return m, m.startRegistrySearch(message.tab, &message.query)
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height

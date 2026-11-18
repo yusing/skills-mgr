@@ -13,11 +13,29 @@ installs skills from [skills.sh](https://skills.sh),
 
 ## Quick Start
 
-Requirements: Go 1.26 or newer, and Git for installing remote skills.
+### Install
 
-```sh
-go install github.com/yusing/skills-mgr@latest
+Download the archive for Linux or macOS (x86-64 or ARM64) from
+[GitHub Releases](https://github.com/yusing/skills-mgr/releases). Extract it
+and put both executables from its `bin/` directory in the same directory on
+your `PATH`. Keep them from the same release: `skills-mgr` runs the CLI and
+launches `skills-mgr-tui` next to it only when you open the interface.
+
+```toml
+# With mise, in mise.toml:
+[tools]
+"github:yusing/skills-mgr" = "latest"
 ```
+
+You don't need Go or Rust for the release bundle. Installing or updating
+remote skills needs Git. Shell selection expressions need Bash.
+
+If upgrading from `go install`, replace that installation with the bundle
+(or switch the mise entry from the Go backend to the GitHub backend). Check
+with `command -v skills-mgr` that the old executable is not taking precedence.
+Keep your existing selections, skill directories, and cache in place.
+
+### Enable and read a skill
 
 From the project whose selection you want to manage, open the interface:
 
@@ -145,7 +163,8 @@ skills apply and serves only those, and can install from skills.sh itself.
 
 ### The Interactive Interface
 
-The interface needs a terminal. Its tabs, selected with `←` and `→`:
+The interface needs a terminal and the companion from the same release. Its
+tabs, selected with `←` and `→`:
 
 | Tab | Contents |
 | --- | --- |
@@ -640,8 +659,9 @@ shows a `[content missing]` row you can uninstall.
 
 ## Background Refresh
 
-Any command except `info` and help may start a detached background runner, at most once
-every five minutes. It refreshes skills.sh metadata, updates
+The interface and CLI commands that read or manage skills may start a
+detached background runner, at most once every five minutes. It refreshes
+skills.sh metadata, updates
 installed remote skills older than three hours, and repairs manager-home
 placeholders. It never downloads new skills. Failures go to `refresh.log` in
 the user cache `skills-mgr` directory.
@@ -652,19 +672,25 @@ other foreground effects such as migration of a legacy global selection.
 
 ## Development
 
-The repository uses [Shadowtree](https://github.com/yusing/shadowtree) recipes.
+Build a local pair with stable Rust and Go 1.26 or newer:
+
+```sh
+mkdir -p bin
+cargo build --locked --features cli --bin skills-mgr --target-dir target
+cp target/debug/skills-mgr bin/
+go build -o bin/skills-mgr-tui .
+./bin/skills-mgr
+```
+
+Run `cargo test --locked --features cli` for the Rust core and
+`shadowtree check` for the Go companion's vet and tests. To exercise both
+binaries through a terminal, run `python3 tests/release_smoke.py bin`.
 Design notes are in [`doc/`](doc/).
 
-| Command | Result |
-| --- | --- |
-| `shadowtree build` | Compile all packages |
-| `shadowtree test` | Run the test suite |
-| `shadowtree check` | Run `go vet`, then the tests |
-| `shadowtree test-race` | Run tests with the race detector |
-| `shadowtree lint` | Run `golangci-lint` |
-| `shadowtree fmt` | Format the source |
-| `shadowtree tidy` | Tidy `go.mod` and `go.sum` |
-| `shadowtree install` | Install the checkout |
+The release workflow builds and smoke-tests the bundles from a version tag.
+Pushing a tag builds artifacts but doesn't publish them. To publish, dispatch
+the workflow on that tag with `publish` enabled; it releases only after all
+target bundles pass.
 
 ## License
 

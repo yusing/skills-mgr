@@ -281,7 +281,10 @@ pub(super) fn launch(global: bool) -> Result<()> {
     let exe = env::current_exe()?.canonicalize()?;
     let tui = exe.with_file_name(format!("skills-mgr-tui{}", env::consts::EXE_SUFFIX));
     let mut command = Command::new(&tui);
-    command.env("_SKILLS_MGR_TUI_CORE", exe);
+    let cache = dirs::cache_dir().ok_or(crate::Error::MissingDirectory("cache"))?;
+    command
+        .env("_SKILLS_MGR_TUI_CORE", exe)
+        .env("_SKILLS_MGR_TUI_CACHE", cache.join("skills-mgr"));
     if global {
         command.arg("-g");
     }
