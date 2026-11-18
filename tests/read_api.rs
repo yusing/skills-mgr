@@ -455,6 +455,79 @@ fn claude_plugin_files_are_read_without_a_harness_process() {
 }
 
 #[test]
+fn selected_remote_wins_over_unmarked_codex_copy() {
+    for (scope, lock, selection) in [
+        (
+            "project",
+            "project/.skills-mgr.json",
+            r#"{"schema_revision":3,"skills":{"example":{"enabled":true}}}"#,
+        ),
+        (
+            "home",
+            "home/.skills-mgr/.skills-mgr.json",
+            r#"{"schema_revision":1,"skills":{"example":true}}"#,
+        ),
+    ] {
+        let f = Fixture::new();
+        f.write(lock, selection);
+        f.skill(
+            &format!("{scope}/.codex/skills/example"),
+            "example",
+            "Stale\n",
+        );
+        f.write(
+            "cache/skills-mgr/remote-skills/entries/5bcce21409e160edd1439c35cada2399a44b43655f9b06a754e274a350345a69.json",
+            r#"{"schemaRevision":1,"provider":"repository","id":"example-id","name":"example","locator":"https://example.invalid/example","content":"content/generation","fetchedAt":"2026-08-12T12:00:00Z"}"#,
+        );
+        assert_eq!(f.manager.get("example").unwrap(), b"Stale\n");
+        f.write(
+            "cache/skills-mgr/remote-skills/content/generation/SKILL.md",
+            "---\nname: example\ndescription: Canonical remote\n---\nRemote\nSecond line\n",
+        );
+
+        let listed = f.manager.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].description, "Canonical remote", "{scope}");
+        assert_eq!(
+            f.manager.list_for(Harness::Claude).unwrap()[0].description,
+            listed[0].description
+        );
+        assert_eq!(f.manager.get("example").unwrap(), b"Remote\nSecond line\n");
+        assert_eq!(
+            f.manager.get_lines("example", 2..=2).unwrap(),
+            b"Second line\n"
+        );
+
+        f.write(
+            lock,
+            r#"{"schema_revision":3,"skills":{"example":{"enabled":true,"remote":{"provider":"repository","id":"example-id","name":"example","locator":"https://example.invalid/example"}}}}"#,
+        );
+        f.write(
+            "cache/skills-mgr/remote-skills/entries/ed5b01661dd73ccbb3e07f174ffa9d1af7b367f32cac82c2d0a5ade931967201.json",
+            r#"{"schemaRevision":1,"provider":"repository","id":"alternate-id","name":"example","locator":"https://example.invalid/alternate","content":"content/alternate","fetchedAt":"2026-08-12T12:00:00Z"}"#,
+        );
+        f.skill(
+            "cache/skills-mgr/remote-skills/content/alternate",
+            "example",
+            "Unselected provider copy\n",
+        );
+        assert_eq!(f.manager.list().unwrap()[0].description, "Canonical remote");
+        assert_eq!(f.manager.get("example").unwrap(), b"Remote\nSecond line\n");
+
+        f.skill(
+            "project/.agents/skills/example",
+            "example",
+            "Project owner\n",
+        );
+        assert_eq!(
+            f.manager.list().unwrap()[0].description,
+            "Useful example skill"
+        );
+        assert_eq!(f.manager.get("example").unwrap(), b"Project owner\n");
+    }
+}
+
+#[test]
 fn uses_persisted_remote_content_and_applies_local_patches() {
     let f = Fixture::new();
     let root = "cache/skills-mgr/remote-skills";

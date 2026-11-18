@@ -210,7 +210,11 @@ pub(super) fn inspect(out: &mut impl Write, args: &[OsString]) -> Result<()> {
         } else if skill.source.is_project()
             || (matches!(
                 skill.source,
-                Source::Native(_) | Source::Bundled | Source::Admin | Source::CodexPlugin
+                Source::Native(_)
+                    | Source::CodexDirectory
+                    | Source::Bundled
+                    | Source::Admin
+                    | Source::CodexPlugin
             ) && !at_home(&manager)
                 && skill.root.starts_with(&manager.project))
         {

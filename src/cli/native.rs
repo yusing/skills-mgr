@@ -12,15 +12,14 @@ use crate::{
     catalog::{self, Native, Skill, Source},
     content::Metadata,
     remote,
-    selection::Selections,
 };
 
 use super::Result;
 
 pub(super) fn resolve(manager: &SkillsManager, name: &str) -> Result<(Skill, bool)> {
     let mut inaccessible = false;
-    if let Some(skill) = catalog::discover(manager, &[], Some(name))?.remove(name) {
-        if Selections::load(manager)?.enabled(manager, &skill)? {
+    if let Some((skill, enabled)) = catalog::find_filesystem(manager, name)? {
+        if enabled {
             return Ok((skill, false));
         }
         inaccessible = true;

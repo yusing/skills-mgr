@@ -19,6 +19,7 @@ pub(crate) enum Source {
     User,
     Managed,
     Native(Harness),
+    CodexDirectory,
     Admin,
     Bundled,
     CodexPlugin,
@@ -38,7 +39,9 @@ impl Source {
     fn visible_to(self, harnesses: &[Harness]) -> bool {
         let harness = match self {
             Self::Native(harness) => harness,
-            Self::Admin | Self::Bundled | Self::CodexPlugin => Harness::Codex,
+            Self::CodexDirectory | Self::Admin | Self::Bundled | Self::CodexPlugin => {
+                Harness::Codex
+            }
             Self::ClaudePlugin => Harness::Claude,
             #[cfg(feature = "cli")]
             Self::GrokPlugin | Self::GrokBundled => Harness::Grok,
@@ -53,7 +56,7 @@ impl Source {
             Self::Project => "project",
             Self::User => "user",
             Self::Managed => "managed",
-            Self::Native(Harness::Codex) => "codex",
+            Self::Native(Harness::Codex) | Self::CodexDirectory => "codex",
             Self::Native(Harness::Claude) => "claude",
             Self::Native(Harness::Grok) => "grok",
             Self::Admin => "admin",
@@ -70,7 +73,12 @@ impl Source {
     pub(crate) fn editable(self) -> bool {
         matches!(
             self,
-            Self::Project | Self::User | Self::Managed | Self::Native(_) | Self::Remote(_)
+            Self::Project
+                | Self::User
+                | Self::Managed
+                | Self::Native(_)
+                | Self::Remote(_)
+                | Self::CodexDirectory
         )
     }
 }
@@ -105,8 +113,9 @@ pub(crate) fn list_harnesses(
     manager: &SkillsManager,
     harnesses: &[Harness],
 ) -> Result<Vec<ListedSkill>> {
-    let skills = discover(manager, harnesses, None)?;
-    let mut selected = Selections::load(manager)?;
+    let mut loaded = Some(Selections::load(manager)?);
+    let skills = discover_with_selection(manager, harnesses, None, &mut loaded)?;
+    let selected = selections(manager, &mut loaded)?;
     let serves_claude = harnesses.contains(&Harness::Claude) && claude_skill_tool_denied(manager)?;
     let mut visible = std::collections::BTreeSet::new();
     for harness in harnesses.iter().copied() {
@@ -133,10 +142,9 @@ pub(crate) fn list_harnesses(
 }
 
 pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
-    let mut skills = discover(manager, &[], Some(name))?;
-    let disabled = match skills.remove(name) {
-        Some(skill) if Selections::load(manager)?.enabled(manager, &skill)? => return Ok(skill),
-        Some(_) => true,
+    let disabled = match find_filesystem(manager, name)? {
+        Some((skill, true)) => return Ok(skill),
+        Some((_, false)) => true,
         None => false,
     };
     match claude_plugins(manager, Some(name), false) {
@@ -153,6 +161,29 @@ pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
     } else {
         Err(Error::NotFound(name.into()))
     }
+}
+
+pub(crate) fn find_filesystem(
+    manager: &SkillsManager,
+    name: &str,
+) -> Result<Option<(Skill, bool)>> {
+    let mut loaded = None;
+    let mut skills = discover_with_selection(manager, &[], Some(name), &mut loaded)?;
+    let Some(skill) = skills.remove(name) else {
+        return Ok(None);
+    };
+    let enabled = selections(manager, &mut loaded)?.enabled(manager, &skill)?;
+    Ok(Some((skill, enabled)))
+}
+
+fn selections<'a>(
+    manager: &SkillsManager,
+    loaded: &'a mut Option<Selections>,
+) -> Result<&'a mut Selections> {
+    if loaded.is_none() {
+        *loaded = Some(Selections::load(manager)?);
+    }
+    Ok(loaded.as_mut().unwrap())
 }
 
 impl Skill {
@@ -263,10 +294,20 @@ fn reference_files(
     Ok(())
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn discover(
     manager: &SkillsManager,
     harnesses: &[Harness],
     name: Option<&str>,
+) -> Result<BTreeMap<String, Skill>> {
+    discover_with_selection(manager, harnesses, name, &mut None)
+}
+
+fn discover_with_selection(
+    manager: &SkillsManager,
+    harnesses: &[Harness],
+    name: Option<&str>,
+    loaded: &mut Option<Selections>,
 ) -> Result<BTreeMap<String, Skill>> {
     let mut discovery = Discovery::new(name);
     let project = &manager.project;
@@ -289,32 +330,45 @@ pub(crate) fn discover(
             Source::Native(Harness::Grok),
             false,
         ),
-        (
-            project.join(".codex/skills"),
-            Source::Native(Harness::Codex),
-            true,
-        ),
+        (project.join(".codex/skills"), Source::CodexDirectory, true),
         (
             manager.codex_home.join("skills"),
-            Source::Native(Harness::Codex),
+            Source::CodexDirectory,
             true,
         ),
     ] {
         if source.visible_to(harnesses) && discovery.root(&root, source, system)? {
+            let name = name.expect("root stops only for a named lookup");
+            if matches!(discovery.skills[name].source, Source::CodexDirectory)
+                && selections(manager, loaded)?.may_prefer_remote(name)
+            {
+                // Keep the Codex copy if the persisted selection is unavailable.
+                break;
+            }
             return Ok(discovery.skills);
         }
     }
     let codex = Source::Native(Harness::Codex);
-    if codex.visible_to(harnesses) && discovery.codex_extras(manager)? {
+    if (name.is_none() || discovery.skills.is_empty())
+        && codex.visible_to(harnesses)
+        && discovery.codex_extras(manager)?
+    {
         return Ok(discovery.skills);
     }
     for entry in remote::entries(manager, name)? {
+        let prefer = (discovery
+            .skills
+            .get(&entry.name)
+            .is_some_and(|skill| matches!(skill.source, Source::CodexDirectory))
+            && selections(manager, loaded)?.prefers_remote(&entry.name, &entry.key))
+        .then_some(entry.name.as_str());
         if discovery.add(
             entry.root,
             Source::Remote(entry.provider),
             Some(entry.key),
             entry.hide,
             None,
+            prefer,
         )? {
             break;
         }
@@ -344,7 +398,7 @@ impl<'a> Discovery<'a> {
             } else if (kind.is_dir() || kind.is_symlink())
                 && let Ok(root) = fs::canonicalize(&path)
             {
-                self.add(root, source, None, None, Some(&path))?
+                self.add(root, source, None, None, Some(&path), None)?
             } else {
                 false
             };
@@ -390,6 +444,7 @@ impl<'a> Discovery<'a> {
         remote_key: Option<String>,
         hidden: Option<bool>,
         _entry_path: Option<&Path>,
+        preferred_remote: Option<&str>,
     ) -> Result<bool> {
         let dir = match content::open_root(&root) {
             Ok(dir) => dir,
@@ -415,7 +470,10 @@ impl<'a> Discovery<'a> {
             return Ok(false);
         };
         if self.target.is_some_and(|name| name != metadata.name)
-            || self.skills.contains_key(&metadata.name)
+            || self.skills.get(&metadata.name).is_some_and(|existing| {
+                !matches!(existing.source, Source::CodexDirectory)
+                    || preferred_remote != Some(metadata.name.as_str())
+            })
         {
             return Ok(false);
         }

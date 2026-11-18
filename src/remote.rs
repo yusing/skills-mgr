@@ -91,6 +91,7 @@ struct Override {
 
 pub(crate) struct Entry {
     pub key: String,
+    pub name: String,
     pub provider: Provider,
     pub root: PathBuf,
     pub hide: Option<bool>,
@@ -114,6 +115,7 @@ pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec
             .transpose()?;
         discovered.push(Entry {
             key,
+            name: record.reference.name,
             provider: record.reference.provider,
             root,
             hide,

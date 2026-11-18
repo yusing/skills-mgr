@@ -1,6 +1,6 @@
 [package]
 name = "skills-mgr"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Read the skills-mgr catalog and skill files from Rust without subprocesses"
 license = "MIT"

@@ -46,7 +46,7 @@ pub(crate) type Lock = BTreeMap<String, Selection>;
 
 #[derive(Default)]
 pub(crate) struct Selections {
-    entries: BTreeMap<String, Enabled>,
+    entries: Lock,
     conditions: crate::condition::Conditions,
 }
 
@@ -61,12 +61,46 @@ impl Selections {
     }
 
     fn apply(&mut self, path: &Path) -> Result<()> {
-        self.entries.extend(
-            load(path)?
-                .into_iter()
-                .filter_map(|(name, entry)| entry.enabled.map(|value| (name, value))),
-        );
+        for (name, selection) in load(path)? {
+            use std::collections::btree_map::Entry;
+            match self.entries.entry(name) {
+                Entry::Vacant(entry) => {
+                    entry.insert(selection);
+                }
+                Entry::Occupied(mut entry) => {
+                    let existing = entry.get_mut();
+                    if selection.enabled.is_some() {
+                        existing.enabled = selection.enabled;
+                    }
+                    if selection.remote.is_some() {
+                        existing.remote = selection.remote;
+                    }
+                }
+            }
+        }
         Ok(())
+    }
+
+    fn configured_remote(&self, name: &str) -> Option<&Selection> {
+        self.entries.get(name).filter(|entry| {
+            matches!(
+                entry.enabled,
+                Some(Enabled::Boolean(true) | Enabled::Condition(_))
+            )
+        })
+    }
+
+    pub(crate) fn may_prefer_remote(&self, name: &str) -> bool {
+        self.configured_remote(name).is_some()
+    }
+
+    pub(crate) fn prefers_remote(&self, name: &str, key: &str) -> bool {
+        self.configured_remote(name).is_some_and(|entry| {
+            entry
+                .remote
+                .as_ref()
+                .is_none_or(|remote| remote.key() == key)
+        })
     }
 
     pub(crate) fn enabled(&mut self, manager: &SkillsManager, skill: &Skill) -> Result<bool> {
@@ -74,7 +108,9 @@ impl Selections {
             &mut self.conditions,
             manager,
             &skill.metadata.name,
-            self.entries.get(&skill.metadata.name),
+            self.entries
+                .get(&skill.metadata.name)
+                .and_then(|entry| entry.enabled.as_ref()),
             skill.source.is_project() || skill.metadata.hide,
         )
     }
