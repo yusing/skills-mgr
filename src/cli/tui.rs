@@ -51,6 +51,12 @@ enum Request {
         name: String,
         path: PathBuf,
     },
+    #[cfg(unix)]
+    ToggleInvocation {
+        global: bool,
+        name: String,
+        path: PathBuf,
+    },
 }
 
 pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
@@ -119,6 +125,29 @@ pub(super) fn dispatch(out: &mut impl Write) -> Result<()> {
                 &Location {
                     skill: name,
                     managed,
+                    snapshot: build_snapshot(&manager, scope.global, false)?,
+                },
+            )
+        }
+        #[cfg(unix)]
+        Request::ToggleInvocation { global, name, path } => {
+            #[derive(Serialize)]
+            #[serde(rename_all = "PascalCase")]
+            struct Invocation {
+                skill: String,
+                disabled: bool,
+                #[serde(flatten)]
+                snapshot: Snapshot,
+            }
+            super::cancel::install()?;
+            let manager = current_manager()?;
+            let scope = Scope::new(&manager, global)?;
+            let disabled = mutation::toggle_invocation(&manager, &name, &path)?;
+            reply(
+                out,
+                &Invocation {
+                    skill: name,
+                    disabled,
                     snapshot: build_snapshot(&manager, scope.global, false)?,
                 },
             )

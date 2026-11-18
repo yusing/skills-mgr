@@ -1,10 +1,12 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
-    fs::{self, DirBuilder, File, Metadata, OpenOptions, Permissions},
+    fs::{self, DirBuilder, File, Metadata, OpenOptions, Permissions, TryLockError},
     io::{self, Write},
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
+    thread,
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -22,7 +24,7 @@ use super::{Result, current_manager};
 mod edit;
 mod placeholder;
 mod relocate;
-pub(super) use edit::{edit, edit_draft};
+pub(super) use edit::{edit, edit_draft, toggle_invocation};
 pub(super) use relocate::{adopt, relocate};
 
 pub(super) fn set(out: &mut impl Write, args: &[OsString]) -> Result<()> {
@@ -121,8 +123,14 @@ fn exclusive_lock(path: &Path) -> Result<File> {
         .mode(0o600)
         .open(path)
         .map_err(|err| io_error(path, err))?;
-    file.lock().map_err(|err| io_error(path, err))?;
-    Ok(file)
+    loop {
+        super::cancel::check()?;
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(25)),
+            Err(TryLockError::Error(err)) => return Err(io_error(path, err).into()),
+        }
+    }
 }
 
 fn selection_lock(manager: &SkillsManager, dir: &Path) -> Result<File> {

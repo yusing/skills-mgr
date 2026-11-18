@@ -6,6 +6,8 @@ use std::{
     process::ExitCode,
 };
 
+#[cfg(unix)]
+mod cancel;
 mod inspect;
 #[cfg(unix)]
 mod mutation;

@@ -1,16 +1,16 @@
 use std::{
     ffi::OsString,
-    fs::{self, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use sha2::{Digest, Sha256};
 
 use crate::{
     SkillsManager, catalog,
-    catalog::Source,
+    catalog::{Skill, Source},
     content::{self, Metadata},
     io_error,
     remote::hex_digest,
@@ -18,8 +18,8 @@ use crate::{
 };
 
 use super::{
-    Result, Scope, SelectionWrite, atomic_write, current_manager, global_flag, managed_lock,
-    placeholder, same_identity, wants_placeholder,
+    Result, Scope, SelectionWrite, atomic_write, coordination_dir, current_manager, exclusive_lock,
+    global_flag, managed_lock, placeholder, same_identity, wants_placeholder,
 };
 
 pub(in crate::cli) fn edit(out: &mut impl Write, args: &[OsString]) -> Result<()> {
@@ -116,29 +116,12 @@ fn edit_local(
     let skill = catalog::discover(manager, &[], Some(name))?
         .remove(name)
         .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
-    if !skill.source.editable() {
-        return Err(format!("skill {name:?} is not editable at its discovered source").into());
-    }
     if skill.remote_key.is_some() {
         return Err("remote manifest edits are not yet handled by the Rust command".into());
     }
-    let manifest = skill.manifest_path();
-    let path = manifest
-        .canonicalize()
-        .map_err(|err| io_error(&manifest, err))?;
-    if owner.is_some_and(|owner| path != owner) {
-        return Err(format!("skill {name:?} changed ownership since editing began").into());
-    }
-    if !path.starts_with(&skill.root) {
-        return Err(format!("skill {name:?} source is outside its discovered directory").into());
-    }
-    let before = fs::metadata(&path).map_err(|err| io_error(&path, err))?;
-    if !before.is_file() {
-        return Err(format!("skill source {} is not a regular file", path.display()).into());
-    }
-    let original = fs::read(&path).map_err(|err| io_error(&path, err))?;
+    let manifest = LocalManifest::open(manager, &skill, owner)?;
     if let Some(expected) = expected {
-        let digest = hex_digest(&Sha256::digest(&original));
+        let digest = hex_digest(&Sha256::digest(&manifest.original));
         if !expected.eq_ignore_ascii_case(&digest) {
             return Err(format!(
                 "skill {name:?} changed: expected SHA256 {expected}, found {digest}"
@@ -165,22 +148,16 @@ fn edit_local(
     } else {
         Vec::new()
     };
-    let mode = before.permissions().mode() & 0o777;
     placeholder::publish_all(&plans, || {
-        let current = fs::metadata(&path).map_err(|err| io_error(&path, err))?;
-        if !same_identity(&before, &current)
-            || before.permissions() != current.permissions()
-            || fs::read(&path).map_err(|err| io_error(&path, err))? != original
-        {
-            return Err(format!("skill {name:?} changed during edit").into());
-        }
-        atomic_write(&path, contents, mode)?;
+        manifest.replace(contents)?;
         if let Err(err) = selection.publish(changed) {
             let rollback = (|| {
-                if fs::read(&path).map_err(|err| io_error(&path, err))? != contents {
+                if fs::read(&manifest.path).map_err(|err| io_error(&manifest.path, err))?
+                    != contents
+                {
                     return Err("source changed during edit rollback".into());
                 }
-                atomic_write(&path, &original, mode)
+                atomic_write(&manifest.path, &manifest.original, manifest.mode())
             })();
             return match rollback {
                 Ok(()) => Err(err),
@@ -189,6 +166,86 @@ fn edit_local(
         }
         Ok(())
     })
+}
+
+pub(in crate::cli) fn toggle_invocation(
+    manager: &SkillsManager,
+    name: &str,
+    owner: &Path,
+) -> Result<bool> {
+    let _guard = managed_lock(manager)?;
+    let skill = catalog::discover(manager, &[], Some(name))?
+        .remove(name)
+        .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
+    if skill.remote_key.is_some() {
+        return Err(format!("skill {name:?} changed ownership since the catalog was read").into());
+    }
+    let manifest = LocalManifest::open(manager, &skill, Some(owner))?;
+    let (updated, disabled) = content::toggled_invocation(&manifest.original)?;
+    crate::cli::cancel::check()?;
+    manifest.replace(&updated)?;
+    Ok(disabled)
+}
+
+struct LocalManifest {
+    _guard: File,
+    path: PathBuf,
+    original: Vec<u8>,
+    before: fs::Metadata,
+}
+
+impl LocalManifest {
+    fn open(manager: &SkillsManager, skill: &Skill, owner: Option<&Path>) -> Result<Self> {
+        let name = &skill.metadata.name;
+        if !skill.source.editable() {
+            return Err(format!("skill {name:?} is not editable at its discovered source").into());
+        }
+        let discovered = skill.manifest_path();
+        let path = discovered
+            .canonicalize()
+            .map_err(|err| io_error(&discovered, err))?;
+        if owner.is_some_and(|owner| owner != discovered && owner != path) {
+            return Err(
+                format!("skill {name:?} changed ownership since the catalog was read").into(),
+            );
+        }
+        if !path.starts_with(&skill.root) {
+            return Err(
+                format!("skill {name:?} source is outside its discovered directory").into(),
+            );
+        }
+        let key = hex_digest(&Sha256::digest(path.as_os_str().as_encoded_bytes()));
+        let guard = exclusive_lock(
+            &coordination_dir(manager).join(format!("skill-model-invocation-{key}.lock")),
+        )?;
+        let before = fs::metadata(&path).map_err(|err| io_error(&path, err))?;
+        if !before.is_file() {
+            return Err(format!("skill source {} is not a regular file", path.display()).into());
+        }
+        let original = fs::read(&path).map_err(|err| io_error(&path, err))?;
+        Ok(Self {
+            _guard: guard,
+            path,
+            original,
+            before,
+        })
+    }
+
+    fn mode(&self) -> u32 {
+        self.before.permissions().mode() & 0o777
+    }
+
+    fn replace(&self, contents: &[u8]) -> Result<()> {
+        let path = &self.path;
+        let current = fs::metadata(path).map_err(|err| io_error(path, err))?;
+        if !same_identity(&self.before, &current)
+            || self.before.permissions() != current.permissions()
+            || fs::read(path).map_err(|err| io_error(path, err))? != self.original
+        {
+            return Err(format!("skill source {} changed during edit", path.display()).into());
+        }
+        atomic_write(path, contents, self.mode())
+    }
 }
 
 fn rename_selection(selection: &mut SelectionWrite, old: &str, new: &str) -> Result<bool> {

@@ -13,6 +13,11 @@ use serde_saphyr::granit_parser::{Event, Parser};
 
 use crate::{Error, Result, SkillsManager, catalog::Skill, invalid_data, io_error};
 
+#[cfg(all(feature = "cli", unix))]
+mod invocation;
+#[cfg(all(feature = "cli", unix))]
+pub(crate) use invocation::toggled_invocation;
+
 pub(crate) const MANIFEST: &str = "SKILL.md";
 pub(crate) const PLACEHOLDER_MARKER_NAME: &str = ".skills-mgr-placeholder";
 pub(crate) const PLACEHOLDER_MARKER: &[u8] = b"skills-mgr remote placeholder\n";

@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 type tuiCoreSelection struct {
@@ -74,6 +76,10 @@ func (m *manager) tuiToggle(project string, skill discoveredSkill) (bool, error)
 }
 
 func (m *manager) callTUICore(project string, input tuiCoreRequest, response any) error {
+	return m.callTUICoreContext(context.Background(), project, input, response)
+}
+
+func (m *manager) callTUICoreContext(ctx context.Context, project string, input tuiCoreRequest, response any) error {
 	if !filepath.IsAbs(m.tuiCore) {
 		return errors.New("skills-mgr core path is not absolute")
 	}
@@ -82,11 +88,15 @@ func (m *manager) callTUICore(project string, input tuiCoreRequest, response any
 	if err != nil {
 		return err
 	}
-	command := exec.Command(m.tuiCore, "__tui")
+	command := exec.CommandContext(ctx, m.tuiCore, "__tui")
+	command.Cancel = func() error { return command.Process.Signal(syscall.SIGTERM) }
 	command.Dir = project
 	command.Stdin = bytes.NewReader(request)
 	output, err := command.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok && len(exit.Stderr) != 0 {
 			return fmt.Errorf("Rust %s: %s", input.Op, bytes.TrimSpace(exit.Stderr))
 		}
