@@ -24,6 +24,7 @@ use super::{Result, current_manager};
 mod edit;
 mod placeholder;
 mod relocate;
+mod store;
 pub(super) use edit::{edit, edit_draft, toggle_invocation};
 pub(super) use relocate::{adopt, relocate};
 

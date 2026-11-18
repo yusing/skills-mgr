@@ -34,9 +34,9 @@ impl Provider {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemoteRef {
     pub provider: Provider,
-    id: String,
+    pub id: String,
     pub name: String,
-    locator: String,
+    pub locator: String,
 }
 
 impl RemoteRef {
@@ -82,11 +82,11 @@ pub(crate) struct Record {
     _exclude: Option<Vec<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct Override {
-    schema_revision: u32,
-    disable_model_invocation: bool,
+pub(crate) struct Override {
+    pub schema_revision: u32,
+    pub disable_model_invocation: bool,
 }
 
 pub(crate) struct Entry {
@@ -104,15 +104,7 @@ pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec
         let Some(root) = content_root(&store, &record.content)? else {
             continue;
         };
-        let path = store.join("entries").join(&key).with_extension("override");
-        let hide = read_metadata::<Override>(&path)?
-            .map(|metadata| {
-                if metadata.schema_revision != 1 {
-                    return Err(invalid_data(&path, "unsupported remote override revision"));
-                }
-                Ok(metadata.disable_model_invocation)
-            })
-            .transpose()?;
+        let hide = invocation_override(&store, &key)?;
         discovered.push(Entry {
             key,
             name: record.reference.name,
@@ -122,6 +114,18 @@ pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec
         });
     }
     Ok(discovered)
+}
+
+pub(crate) fn invocation_override(store: &Path, key: &str) -> Result<Option<bool>> {
+    let path = store.join("entries").join(key).with_extension("override");
+    read_metadata::<Override>(&path)?
+        .map(|metadata| {
+            if metadata.schema_revision != 1 {
+                return Err(invalid_data(&path, "unsupported remote override revision"));
+            }
+            Ok(metadata.disable_model_invocation)
+        })
+        .transpose()
 }
 
 pub(crate) fn store_path(manager: &SkillsManager) -> PathBuf {
@@ -137,18 +141,9 @@ pub(crate) fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, S
         {
             continue;
         }
-        let Some(record) = read_metadata::<Record>(&path)? else {
+        let Some((record, key)) = read_record(&path)? else {
             continue;
         };
-        let key = record.reference.key();
-        if record.schema_revision != 1
-            || !record.reference.valid()
-            || record.fetched_at.is_empty()
-            || record.fetched_at == "0001-01-01T00:00:00Z"
-            || path.file_stem().is_none_or(|name| name != key.as_str())
-        {
-            return Err(invalid_data(&path, "invalid remote cache identity"));
-        }
         if name.is_none_or(|name| name == record.reference.name) {
             records.push((record, key));
         }
@@ -158,6 +153,33 @@ pub(crate) fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, S
             .cmp(&(b.reference.provider.label(), &b.reference.id))
     });
     Ok(records)
+}
+
+fn read_record(path: &Path) -> Result<Option<(Record, String)>> {
+    let Some(record) = read_metadata::<Record>(path)? else {
+        return Ok(None);
+    };
+    let key = record.reference.key();
+    if record.schema_revision != 1
+        || !record.reference.valid()
+        || record.fetched_at.is_empty()
+        || record.fetched_at == "0001-01-01T00:00:00Z"
+        || path.file_stem().is_none_or(|name| name != key.as_str())
+    {
+        return Err(invalid_data(path, "invalid remote cache identity"));
+    }
+    Ok(Some((record, key)))
+}
+
+#[cfg(all(feature = "cli", unix))]
+pub(crate) fn record_by_key(store: &Path, key: &str) -> Result<Option<Record>> {
+    if key.len() != 64 || !key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid_data(store, "invalid remote cache key"));
+    }
+    Ok(
+        read_record(&store.join("entries").join(key).with_extension("json"))?
+            .map(|(record, _)| record),
+    )
 }
 
 pub(crate) fn content_root(store: &Path, relative: &Path) -> Result<Option<PathBuf>> {

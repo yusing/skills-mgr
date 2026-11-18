@@ -19,15 +19,15 @@ func (m *manager) completeSkillEdit(
 	draft string,
 	layeredDigest [sha256.Size]byte,
 ) ([]discoveredSkill, selectionState, error) {
+	if m.tuiCore != "" {
+		var snapshot tuiCoreSnapshot
+		err := m.callTUICore(project, tuiCoreRequest{
+			Op: "edit", Name: edited.Name, Path: edited.Path,
+			Draft: draft, Digest: fmt.Sprintf("%x", layeredDigest),
+		}, &snapshot)
+		return snapshot.Skills, snapshot.state(), err
+	}
 	if edited.RemoteKey == "" {
-		if m.tuiCore != "" {
-			var snapshot tuiCoreSnapshot
-			err := m.callTUICore(project, tuiCoreRequest{
-				Op: "edit", Name: edited.Name, Path: edited.Path,
-				Draft: draft, Digest: fmt.Sprintf("%x", layeredDigest),
-			}, &snapshot)
-			return snapshot.Skills, snapshot.state(), err
-		}
 		return m.refreshEditedSkill(project, edited.Name, edited.Path)
 	}
 	if draft == "" {

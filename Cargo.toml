@@ -8,7 +8,7 @@ repository = "https://github.com/yusing/skills-mgr"
 include = ["/src", "/tests", "/completion.fish", "/README.md", "/LICENSE"]
 
 [features]
-cli = ["dep:tempfile"]
+cli = ["dep:tempfile", "diffy/std"]
 
 [[bin]]
 name = "skills-mgr"

@@ -328,6 +328,102 @@ fn adopt_moves_shared_skills_as_one_transaction() {
     assert!(!project.join(".skills-mgr.json").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_edit_saves_and_replaces_only_the_local_patch() {
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    let home = tempfile::tempdir().unwrap();
+    let project = home.path().join("project");
+    let cache = home.path().join("cache");
+    let store = cache.join("skills-mgr/remote-skills");
+    let root = store.join("content/alpha");
+    let id = "owner/repo/alpha";
+    let digest = |bytes: &[u8]| {
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    let key = digest(format!("skills.sh\0{id}").as_bytes());
+    let patch = home
+        .path()
+        .join(".skills-mgr/skills/.remote-patches")
+        .join(format!("{key}.patch"));
+    let manifest = root.join("SKILL.md");
+    let draft = home.path().join("draft.md");
+    let original = b"---\nname: alpha\ndescription: Original wording\n---\nProvider instructions";
+    let edited = b"---\nname: alpha\ndescription: Edited wording\n---\nLocal instructions";
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(store.join("entries")).unwrap();
+    fs::write(&manifest, original).unwrap();
+    fs::write(
+        store.join("entries").join(format!("{key}.json")),
+        serde_json::json!({
+            "schemaRevision":1, "provider":"skills.sh", "id":id, "name":"alpha", "locator":id,
+            "fetchedAt":"2026-11-18T00:00:00Z", "content":"content/alpha"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        cli()
+            .current_dir(&project)
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join(".codex"))
+            .env("XDG_CACHE_HOME", &cache)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let select = run(&["set", "alpha", "true"]);
+    assert!(select.status.success(), "{select:?}");
+    let edit = |digest: &str| {
+        run(&[
+            "edit",
+            "alpha",
+            "--file",
+            draft.to_str().unwrap(),
+            "--expect-sha256",
+            digest,
+        ])
+    };
+    let base = digest(original);
+    let edited_digest = digest(edited);
+    fs::write(&draft, edited).unwrap();
+    let save = edit(&base);
+    assert!(save.status.success(), "{save:?}");
+    let diff = fs::read_to_string(&patch).unwrap();
+    assert!(diff.contains("--- a/SKILL.md\n+++ b/SKILL.md\n"));
+    assert!(diff.contains("-Provider instructions\n"));
+    assert!(diff.contains("+Local instructions\n"));
+    assert_eq!(fs::read(&manifest).unwrap(), original);
+    let read = run(&["get", "alpha"]);
+    assert!(read.status.success(), "{read:?}");
+    assert_eq!(read.stdout, b"Local instructions");
+    assert!(String::from_utf8_lossy(&run(&["list"]).stdout).contains("Edited wording"));
+    assert!(!edit(&base).status.success(), "stale concurrent draft");
+    assert_eq!(fs::read_to_string(&patch).unwrap(), diff);
+    fs::write(
+        &draft,
+        b"---\nname: renamed\ndescription: Cannot rename\n---\nBody\n",
+    )
+    .unwrap();
+    assert!(
+        !edit(&edited_digest).status.success(),
+        "identity-changing draft"
+    );
+    assert_eq!(fs::read_to_string(&patch).unwrap(), diff);
+
+    fs::write(&draft, original).unwrap();
+    let revert = edit(&edited_digest);
+    assert!(revert.status.success(), "{revert:?}");
+    assert!(!patch.exists());
+    assert_eq!(fs::read(&manifest).unwrap(), original);
+}
+
 #[test]
 fn help_and_fish_completion_do_not_need_a_companion() {
     let output = cli().args(["help", "get"]).output().unwrap();

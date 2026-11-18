@@ -359,11 +359,12 @@ func (m *manager) toggleModelInvocation(
 	project string,
 	expected discoveredSkill,
 ) (modelInvocationResult, error) {
-	if m.tuiCore != "" && expected.RemoteKey == "" {
+	if m.tuiCore != "" {
 		var result modelInvocationResult
 		err := m.callTUICoreContext(ctx, project, tuiCoreRequest{
 			Op: "toggle_invocation", Name: expected.Name, Path: expected.Path,
 		}, &result)
+		result.RemoteKey = expected.RemoteKey
 		return result, err
 	}
 	current, err := m.findSkill(project, expected.Name)

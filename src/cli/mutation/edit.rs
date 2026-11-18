@@ -17,6 +17,7 @@ use crate::{
     selection::{Enabled, Lock, Selection},
 };
 
+use super::store::Store;
 use super::{
     Result, Scope, SelectionWrite, atomic_write, coordination_dir, current_manager, exclusive_lock,
     global_flag, managed_lock, placeholder, same_identity, wants_placeholder,
@@ -116,8 +117,8 @@ fn edit_local(
     let skill = catalog::discover(manager, &[], Some(name))?
         .remove(name)
         .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
-    if skill.remote_key.is_some() {
-        return Err("remote manifest edits are not yet handled by the Rust command".into());
+    if let Some(key) = &skill.remote_key {
+        return Store::new(manager).save_patch(&skill, key, owner, expected, contents, metadata);
     }
     let manifest = LocalManifest::open(manager, &skill, owner)?;
     if let Some(expected) = expected {
@@ -177,8 +178,8 @@ pub(in crate::cli) fn toggle_invocation(
     let skill = catalog::discover(manager, &[], Some(name))?
         .remove(name)
         .ok_or_else(|| format!("skill {name:?} was not discovered"))?;
-    if skill.remote_key.is_some() {
-        return Err(format!("skill {name:?} changed ownership since the catalog was read").into());
+    if let Some(key) = &skill.remote_key {
+        return Store::new(manager).toggle_invocation(&skill, key, owner);
     }
     let manifest = LocalManifest::open(manager, &skill, Some(owner))?;
     let (updated, disabled) = content::toggled_invocation(&manifest.original)?;
