@@ -187,7 +187,15 @@ impl Evidence {
     }
 
     pub(super) fn scan(manager: &SkillsManager) -> io::Result<Self> {
+        let admit = |path: &Path| {
+            manager
+                .authority
+                .as_ref()
+                .map_or(Ok(()), |a| a.check_read(path))
+        };
+        admit(&manager.project)?;
         let project = manager.project.canonicalize()?;
+        admit(&project.join(".git"))?;
         let recursive = manager.home.canonicalize().ok().as_ref() != Some(&project);
         let mut evidence = Self::default();
         let mut tracked = HashSet::new();
@@ -205,23 +213,19 @@ impl Evidence {
                     }
                 }
             }
+            admit(&git.join("index"))?;
+            admit(&git.join("info/exclude"))?;
             load_rules(&mut rules, &root, &git.join("info/exclude"))?;
             let ancestors: Vec<_> = project.ancestors().take_while(|p| *p != root).collect();
             for dir in ancestors.into_iter().rev() {
                 let parent = dir.parent().unwrap();
+                admit(&parent.join(".gitignore"))?;
                 load_rules(&mut rules, parent, &parent.join(".gitignore"))?;
                 ignored |= is_ignored(&rules, dir, true);
             }
         }
         if !ignored || tracked.contains(&project) {
-            evidence.walk(
-                &project,
-                manager.strict,
-                recursive,
-                &mut rules,
-                &tracked,
-                ignored,
-            )?;
+            evidence.walk(&project, manager, recursive, &mut rules, &tracked, ignored)?;
         }
         evidence.manifests.sort();
         Ok(evidence)
@@ -230,18 +234,28 @@ impl Evidence {
     fn walk(
         &mut self,
         dir: &Path,
-        strict: bool,
+        manager: &SkillsManager,
         recursive: bool,
         rules: &mut Vec<Gitignore>,
         tracked: &HashSet<PathBuf>,
         parent_ignored: bool,
     ) -> io::Result<()> {
+        let admit = |path: &Path| {
+            manager
+                .authority
+                .as_ref()
+                .map_or(Ok(()), |a| a.check_read(path))
+        };
+        admit(dir)?;
         let entries = match fs::read_dir(dir) {
-            Err(e) if !strict && e.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
+            Err(e) if !manager.strict && e.kind() == io::ErrorKind::PermissionDenied => {
+                return Ok(());
+            }
             result => result?,
         };
         let depth = rules.len();
         if !parent_ignored {
+            admit(&dir.join(".gitignore"))?;
             load_rules(rules, dir, &dir.join(".gitignore"))?;
         }
         for entry in entries {
@@ -262,8 +276,9 @@ impl Evidence {
                 continue;
             }
             if is_dir {
-                self.walk(&path, strict, true, rules, tracked, ignored)?;
+                self.walk(&path, manager, true, rules, tracked, ignored)?;
             } else {
+                admit(&path)?;
                 self.record(path);
             }
         }

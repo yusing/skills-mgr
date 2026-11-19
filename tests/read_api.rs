@@ -793,3 +793,55 @@ fn strict_discovery_does_not_replace_denied_manifest_with_an_alternate() {
     fs::remove_file(&preferred).unwrap();
     assert_eq!(strict.get("shared").unwrap(), b"Alternate");
 }
+
+#[test]
+fn caller_admission_precedes_missing_roots_and_reached_catalog_commands() {
+    struct Authority {
+        denied: PathBuf,
+    }
+    impl skills_mgr::QueryAuthority for Authority {
+        fn check_read(&self, path: &std::path::Path) -> std::io::Result<()> {
+            if path == self.denied {
+                return Err(std::io::ErrorKind::PermissionDenied.into());
+            }
+            Ok(())
+        }
+        fn execute(
+            &self,
+            _cwd: &std::path::Path,
+            _command: &std::path::Path,
+            _: &[String],
+            _: bool,
+        ) -> std::io::Result<(i32, Vec<u8>)> {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+    }
+    let f = Fixture::new();
+    f.skill("home/.agents/skills/alternate", "shared", "Alternate");
+    f.write(
+        "project/.skills-mgr.json",
+        r#"{"schema_revision":1,"skills":{"shared":true}}"#,
+    );
+    let path = f.temp.path().join("project/.agents/skills");
+    let manager = f.manager.with_authority(std::sync::Arc::new(Authority {
+        denied: path.clone(),
+    }));
+    assert!(
+        matches!(manager.get("shared"), Err(Error::Io {path: p, source}) if p == path && source.kind() == std::io::ErrorKind::PermissionDenied)
+    );
+    #[cfg(unix)]
+    {
+        let f = Fixture::new();
+        f.skill("project/.agents/skills/shared", "shared", "Body");
+        f.write(
+            "project/.skills-mgr.json",
+            r#"{"schema_revision":3,"skills":{"shared":{"enabled":"false || /bin/true"}}}"#,
+        );
+        let manager = f.manager.with_authority(std::sync::Arc::new(Authority {
+            denied: PathBuf::new(),
+        }));
+        assert!(
+            matches!(manager.list_xml(&[Harness::Codex]), Err(Error::Condition {source, ..}) if source.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+    }
+}

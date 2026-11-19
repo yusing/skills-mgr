@@ -41,6 +41,7 @@ impl ProjectPredicates<'_> {
             (
                 SkillsManager {
                     strict: self.manager.strict,
+                    authority: self.manager.authority.clone(),
                     ..SkillsManager::new(cwd, &self.manager.home, &self.manager.cache)
                 },
                 Conditions::default(),
@@ -55,6 +56,26 @@ impl ProjectPredicates<'_> {
 }
 
 impl Builtins for ProjectPredicates<'_> {
+    fn check_read(&self, path: &Path) -> io::Result<()> {
+        self.manager
+            .authority
+            .as_ref()
+            .map_or(Ok(()), |authority| authority.check_read(path))
+    }
+
+    fn external(
+        &self,
+        cwd: &Path,
+        executable: &Path,
+        args: &[String],
+        capture: bool,
+    ) -> Option<io::Result<(i32, Vec<u8>)>> {
+        self.manager
+            .authority
+            .as_ref()
+            .map(|a| a.execute(cwd, executable, args, capture))
+    }
+
     fn contains(&self, name: &str) -> bool {
         is_project_predicate(name)
     }

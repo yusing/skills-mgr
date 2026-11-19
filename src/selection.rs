@@ -56,7 +56,9 @@ impl Selections {
         if let Some(global) = global_path(manager)? {
             selected.apply(&global)?;
         }
-        selected.apply(&manager.project.join(LOCK_NAME))?;
+        let local = manager.project.join(LOCK_NAME);
+        manager.admit(&local)?;
+        selected.apply(&local)?;
         Ok(selected)
     }
 
@@ -204,15 +206,18 @@ pub fn evaluate(
 }
 
 pub(crate) fn is_enabled(manager: &SkillsManager) -> Result<bool> {
+    manager.admit(&manager.project.join(LOCK_NAME))?;
     Ok(present(&manager.project.join(LOCK_NAME))? || global_path(manager)?.is_some())
 }
 
 pub fn global_path(manager: &SkillsManager) -> Result<Option<PathBuf>> {
     let current = manager.manager_home().join(LOCK_NAME);
+    manager.admit(&current)?;
     if present(&current)? {
         return Ok(Some(current));
     }
     let legacy = manager.home.join(LOCK_NAME);
+    manager.admit(&legacy)?;
     Ok(present(&legacy)?.then_some(legacy))
 }
 

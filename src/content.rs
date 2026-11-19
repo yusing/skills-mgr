@@ -243,6 +243,7 @@ pub fn get_with_patch_error(
     lines: Option<RangeInclusive<usize>>,
     report_original: bool,
 ) -> Result<(Vec<u8>, Option<Error>)> {
+    manager.admit(&skill.root.join(relative))?;
     let root = open_root(&skill.root)?;
     let path = skill.root.join(relative);
     let file = open_file(&root, relative).map_err(|e| io_error(&path, e))?;

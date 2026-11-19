@@ -75,8 +75,24 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Policy hooks for a caller running this SDK inside a filesystem sandbox.
+/// The sandbox enforces actual I/O; admission distinguishes a hidden path from
+/// a genuine miss. The executor must enforce the caller's command authority
+/// and return status and optional stdout without retrying a rejected command.
+pub trait QueryAuthority: Send + Sync {
+    fn check_read(&self, path: &Path) -> io::Result<()>;
+    fn execute(
+        &self,
+        cwd: &Path,
+        executable: &Path,
+        args: &[String],
+        capture: bool,
+    ) -> io::Result<(i32, Vec<u8>)>;
+}
+
 /// A read-only view of a project's skills, including inherited user selections.
 pub struct SkillsManager {
+    authority: Option<std::sync::Arc<dyn QueryAuthority>>,
     strict: bool,
     project: PathBuf,
     home: PathBuf,
@@ -113,6 +129,7 @@ impl SkillsManager {
     ) -> Self {
         let home = home.into();
         Self {
+            authority: None,
             strict: false,
             project: project.into(),
             codex_home: home.join(".codex"),
@@ -130,6 +147,21 @@ impl SkillsManager {
     pub fn with_strict_discovery(mut self) -> Self {
         self.strict = true;
         self
+    }
+
+    /// Apply path admission and delegate every reached external command.
+    /// Does not itself create a sandbox or change the default CLI.
+    pub fn with_authority(mut self, authority: std::sync::Arc<dyn QueryAuthority>) -> Self {
+        self.strict = true;
+        self.authority = Some(authority);
+        self
+    }
+
+    fn admit(&self, path: &Path) -> Result<()> {
+        if let Some(authority) = &self.authority {
+            authority.check_read(path).map_err(|e| io_error(path, e))?;
+        }
+        Ok(())
     }
 
     /// Whether a project, global, or legacy global selection file is present.

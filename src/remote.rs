@@ -100,10 +100,12 @@ pub(crate) struct Entry {
 pub(crate) fn entries(manager: &SkillsManager, name: Option<&str>) -> Result<Vec<Entry>> {
     let store = store_path(manager);
     let mut discovered = Vec::new();
-    for (record, key) in records(&store, name)? {
+    for (record, key) in records_admitted(&store, name, Some(manager))? {
+        manager.admit(&store.join(&record.content))?;
         let Some(root) = content_root(&store, &record.content)? else {
             continue;
         };
+        manager.admit(&store.join("entries").join(&key).with_extension("override"))?;
         let hide = invocation_override(&store, &key)?;
         discovered.push(Entry {
             key,
@@ -132,7 +134,19 @@ pub fn store_path(manager: &SkillsManager) -> PathBuf {
     manager.cache.join("skills-mgr/remote-skills")
 }
 
+#[cfg(feature = "cli-support")]
 pub fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, String)>> {
+    records_admitted(store, name, None)
+}
+
+fn records_admitted(
+    store: &Path,
+    name: Option<&str>,
+    manager: Option<&SkillsManager>,
+) -> Result<Vec<(Record, String)>> {
+    if let Some(manager) = manager {
+        manager.admit(&store.join("entries"))?;
+    }
     let mut records = Vec::new();
     for item in catalog::entries(&store.join("entries"), false)? {
         let path = item.path();
@@ -140,6 +154,9 @@ pub fn records(store: &Path, name: Option<&str>) -> Result<Vec<(Record, String)>
             || item.file_type().map_err(|e| io_error(&path, e))?.is_dir()
         {
             continue;
+        }
+        if let Some(manager) = manager {
+            manager.admit(&path)?;
         }
         let Some((record, key)) = read_record(&path)? else {
             continue;
@@ -236,6 +253,7 @@ pub struct Patch {
 
 pub fn patch(manager: &SkillsManager, key: &str) -> Result<Option<Patch>> {
     let path = patch_path(manager, key);
+    manager.admit(&path)?;
     match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err(Error::StaleRemotePatch(path)),

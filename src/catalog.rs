@@ -197,7 +197,7 @@ impl Skill {
         let description = self
             .patched_description(manager, &dir)?
             .unwrap_or(self.metadata.description);
-        let references = listed_references(&self.root, &dir, manager.strict)?;
+        let references = listed_references(&self.root, &dir, Some(manager))?;
         Ok(ListedSkill {
             name: self.metadata.name,
             description: summarize_description(&description),
@@ -255,12 +255,16 @@ fn summarize_description(description: &str) -> String {
 
 #[cfg(feature = "cli-support")]
 pub fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {
-    listed_references(root, dir, false)
+    listed_references(root, dir, None)
 }
 
-fn listed_references(root: &Path, dir: &cap_std::fs::Dir, strict: bool) -> Result<Vec<String>> {
+fn listed_references(
+    root: &Path,
+    dir: &cap_std::fs::Dir,
+    manager: Option<&SkillsManager>,
+) -> Result<Vec<String>> {
     let mut paths = Vec::new();
-    reference_files(root, dir, Path::new(""), strict, &mut paths)?;
+    reference_files(root, dir, Path::new(""), manager, &mut paths)?;
     paths.sort();
     Ok(paths)
 }
@@ -276,7 +280,7 @@ fn reference_files(
     root: &Path,
     dir: &cap_std::fs::Dir,
     parent: &Path,
-    strict: bool,
+    manager: Option<&SkillsManager>,
     output: &mut Vec<String>,
 ) -> Result<()> {
     let top = parent.as_os_str().is_empty();
@@ -294,13 +298,16 @@ fn reference_files(
             continue;
         }
         let relative = parent.join(name);
+        if let Some(manager) = manager {
+            manager.admit(&root.join(&relative))?;
+        }
         let kind = entry
             .file_type()
             .map_err(|e| io_error(&root.join(&relative), e))?;
         if kind.is_dir() && (!top || name == "references") {
-            reference_files(root, dir, &relative, strict, output)?;
+            reference_files(root, dir, &relative, manager, output)?;
         } else if name.ends_with(".md")
-            && optional_access(dir.metadata(&relative), strict)
+            && optional_access(dir.metadata(&relative), manager.is_some_and(|m| m.strict))
                 .map_err(|e| io_error(&root.join(&relative), e))?
                 .is_some_and(|info| info.is_file())
         {
@@ -331,14 +338,14 @@ pub fn discover_local(manager: &SkillsManager, name: &str) -> Result<bool> {
 
 #[cfg(all(feature = "cli-support", unix))]
 pub fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
-    let mut discovery = Discovery::new(None, manager.strict);
+    let mut discovery = Discovery::new(None, manager);
     discovery.root(&manager.home.join(".agents/skills"), Source::User, false)?;
     Ok(discovery.skills)
 }
 
 #[cfg(all(feature = "cli-support", unix))]
 pub fn managed_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
-    let mut discovery = Discovery::new(None, manager.strict);
+    let mut discovery = Discovery::new(None, manager);
     discovery.root(
         &manager.manager_home().join("skills"),
         Source::Managed,
@@ -379,13 +386,13 @@ fn discover_with_selection(
 }
 
 fn discovery_roots<'a>(
-    manager: &SkillsManager,
+    manager: &'a SkillsManager,
     harnesses: &[Harness],
     name: Option<&'a str>,
     loaded: &mut Option<Selections>,
     prefer_remote: bool,
 ) -> Result<(Discovery<'a>, bool)> {
-    let mut discovery = Discovery::new(name, manager.strict);
+    let mut discovery = Discovery::new(name, manager);
     let project = &manager.project;
     let home = &manager.home;
     for (root, source, system) in [
@@ -436,28 +443,30 @@ fn discovery_roots<'a>(
 }
 
 struct Discovery<'a> {
-    strict: bool,
+    manager: &'a SkillsManager,
     target: Option<&'a str>,
     skills: BTreeMap<String, Skill>,
 }
 
 impl<'a> Discovery<'a> {
-    fn new(target: Option<&'a str>, strict: bool) -> Self {
+    fn new(target: Option<&'a str>, manager: &'a SkillsManager) -> Self {
         Self {
-            strict,
+            manager,
             target,
             skills: BTreeMap::new(),
         }
     }
 
     fn root(&mut self, root: &Path, source: Source, system: bool) -> Result<bool> {
-        for entry in discovery_entries(root, self.strict)? {
+        self.manager.admit(root)?;
+        for entry in discovery_entries(root, self.manager.strict)? {
             let path = entry.path();
+            self.manager.admit(&path)?;
             let kind = entry.file_type().map_err(|e| io_error(&path, e))?;
             let found = if system && entry.file_name() == ".system" {
                 self.root(&path, Source::Bundled, false)?
             } else if (kind.is_dir() || kind.is_symlink())
-                && let Some(root) = optional_access(fs::canonicalize(&path), self.strict)
+                && let Some(root) = optional_access(fs::canonicalize(&path), self.manager.strict)
                     .map_err(|e| io_error(&path, e))?
             {
                 self.add(root, source, None, None, Some(&path), None)?
@@ -485,7 +494,8 @@ impl<'a> Discovery<'a> {
             return self.root(root, Source::CodexPlugin, false);
         }
         if depth < 10 {
-            for entry in discovery_entries(root, self.strict)? {
+            self.manager.admit(root)?;
+            for entry in discovery_entries(root, self.manager.strict)? {
                 if entry
                     .file_type()
                     .map_err(|e| io_error(&entry.path(), e))?
@@ -508,26 +518,30 @@ impl<'a> Discovery<'a> {
         _entry_path: Option<&Path>,
         preferred_remote: Option<&str>,
     ) -> Result<bool> {
+        self.manager.admit(&root)?;
         let dir = match content::open_root(&root) {
             Ok(dir) => dir,
             Err(Error::Io { source, .. })
                 if skippable_root(&source)
-                    && (!self.strict || source.kind() != io::ErrorKind::PermissionDenied) =>
+                    && (!self.manager.strict
+                        || source.kind() != io::ErrorKind::PermissionDenied) =>
             {
                 return Ok(false);
             }
             Err(err) => return Err(err),
         };
         let marker_path = Path::new(content::PLACEHOLDER_MARKER_NAME);
-        if let Some(file) = optional_access(content::open_file(&dir, marker_path), self.strict)
-            .map_err(|e| io_error(&root.join(marker_path), e))?
+        self.manager.admit(&root.join(marker_path))?;
+        if let Some(file) =
+            optional_access(content::open_file(&dir, marker_path), self.manager.strict)
+                .map_err(|e| io_error(&root.join(marker_path), e))?
         {
             let mut marker = Vec::new();
             use io::Read;
             if optional_access(
                 file.take(content::PLACEHOLDER_MARKER.len() as u64 + 1)
                     .read_to_end(&mut marker),
-                self.strict,
+                self.manager.strict,
             )
             .map_err(|e| io_error(&root.join(marker_path), e))?
             .is_some()
@@ -537,8 +551,9 @@ impl<'a> Discovery<'a> {
             }
         }
         let manifest = root.join(MANIFEST);
-        let Some(mut metadata) =
-            content::discover_manifest(&dir, self.strict).map_err(|e| io_error(&manifest, e))?
+        self.manager.admit(&manifest)?;
+        let Some(mut metadata) = content::discover_manifest(&dir, self.manager.strict)
+            .map_err(|e| io_error(&manifest, e))?
         else {
             return Ok(false);
         };
@@ -572,7 +587,7 @@ fn native_visible(
     manager: &SkillsManager,
     harness: Option<Harness>,
 ) -> Result<BTreeMap<String, Skill>> {
-    let mut native = Discovery::new(None, manager.strict);
+    let mut native = Discovery::new(None, manager);
     let project = &manager.project;
     let home = &manager.home;
     match harness {
@@ -652,6 +667,7 @@ fn claude_skill_tool_denied(manager: &SkillsManager) -> Result<bool> {
         manager.project.join(".claude/settings.json"),
         manager.project.join(".claude/settings.local.json"),
     ] {
+        manager.admit(&path)?;
         if read_json::<Settings>(&path)?
             .and_then(|s| s.permissions?.deny)
             .is_some_and(|deny| deny.iter().any(|v| v == "Skill"))
@@ -676,9 +692,13 @@ pub fn claude_plugins(
     let claude = manager.home.join(".claude");
     let mut skills = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    manager.admit(&claude.join("settings.json"))?;
     if let Some(settings) = read_json::<Settings>(&claude.join("settings.json"))?
-        && let Some(plugins) =
-            read_json::<ClaudePlugins>(&claude.join("plugins/installed_plugins.json"))?
+        && let Some(plugins) = {
+            let path = claude.join("plugins/installed_plugins.json");
+            manager.admit(&path)?;
+            read_json::<ClaudePlugins>(&path)?
+        }
     {
         for (id, installs) in plugins.plugins {
             let enabled = settings
@@ -690,7 +710,7 @@ pub fn claude_plugins(
                 continue;
             }
             for install in installs {
-                let mut discovery = Discovery::new(name, manager.strict);
+                let mut discovery = Discovery::new(name, manager);
                 discovery.root(
                     &install.install_path.join("skills"),
                     Source::ClaudePlugin,

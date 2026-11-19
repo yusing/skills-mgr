@@ -20,6 +20,22 @@ pub trait Builtins {
     fn contains(&self, name: &str) -> bool;
     fn run(&mut self, cwd: &Path, name: &str, args: &[String]) -> io::Result<i32>;
 
+    /// Admit filesystem probes before the shell interprets their results.
+    fn check_read(&self, _path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Override reached external commands, after expansion and PATH resolution.
+    fn external(
+        &self,
+        _cwd: &Path,
+        _program: &Path,
+        _args: &[String],
+        _capture: bool,
+    ) -> Option<io::Result<(i32, Vec<u8>)>> {
+        None
+    }
+
     /// Evaluate a host-specific pipeline without moving data or spawning
     /// processes. Return `None` if the pipeline is unsupported.
     fn pipeline(&mut self, _cwd: &Path, _p: &ast::Pipeline) -> io::Result<Option<i32>> {
@@ -206,7 +222,7 @@ impl Evaluator<'_> {
                 [flag, target] if flag == "-v" => {
                     if builtin(target) || self.builtins.contains(target) {
                         write_output(output, format!("{target}\n").as_bytes());
-                    } else if let Some(path) = self.executable(target) {
+                    } else if let Some(path) = self.executable(target)? {
                         write_output(output, format!("{}\n", path.display()).as_bytes());
                     } else {
                         return Ok(1);
@@ -253,6 +269,7 @@ impl Evaluator<'_> {
         // a symlink. A component must still exist and be searchable to enter it.
         for part in target.components() {
             if part == Component::ParentDir {
+                self.builtins.check_read(&cwd)?;
                 if !cwd.join(".").is_dir() {
                     return Ok(1);
                 }
@@ -261,6 +278,7 @@ impl Evaluator<'_> {
                 cwd.push(part);
             }
         }
+        self.builtins.check_read(&cwd)?;
         if !cwd.join(".").is_dir() {
             return Ok(1);
         }
@@ -269,9 +287,17 @@ impl Evaluator<'_> {
     }
 
     fn external(&self, name: &str, args: &[String], output: &mut Output<'_>) -> io::Result<i32> {
-        let Some(executable) = self.executable(name) else {
+        let Some(executable) = self.executable(name)? else {
             return Ok(127);
         };
+        if let Some(outcome) =
+            self.builtins
+                .external(&self.cwd, &executable, args, output.is_some())
+        {
+            let (status, bytes) = outcome?;
+            write_output(output, &bytes);
+            return Ok(status);
+        }
         let mut command = Command::new(executable);
         command
             .args(args)
@@ -300,17 +326,25 @@ impl Evaluator<'_> {
         }))
     }
 
-    fn executable(&self, name: &str) -> Option<PathBuf> {
+    fn executable(&self, name: &str) -> io::Result<Option<PathBuf>> {
         if name.is_empty() {
-            return None;
+            return Ok(None);
         }
         if name.contains(std::path::MAIN_SEPARATOR) || name.contains('/') {
             let path = self.cwd.join(name);
-            return is_executable(&path).then_some(path);
+            self.builtins.check_read(&path)?;
+            return Ok(is_executable(&path).then_some(path));
         }
-        env::split_paths(&env::var_os("PATH")?)
-            .map(|dir| self.cwd.join(dir).join(name))
-            .find(|path| is_executable(path))
+        if let Some(paths) = env::var_os("PATH") {
+            for dir in env::split_paths(&paths) {
+                let path = self.cwd.join(dir).join(name);
+                self.builtins.check_read(&path)?;
+                if is_executable(&path) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
     }
 
     fn expand(&mut self, raw: &str, command_word: bool) -> io::Result<String> {
@@ -431,6 +465,14 @@ impl Evaluator<'_> {
 
     fn unary(&self, op: &Unary, value: &str) -> io::Result<bool> {
         let path = || self.cwd.join(value);
+        if !value.is_empty()
+            && !matches!(
+                op,
+                Unary::StringHasZeroLength | Unary::StringHasNonZeroLength
+            )
+        {
+            self.builtins.check_read(&path())?;
+        }
         Ok(match op {
             Unary::FileExists => !value.is_empty() && path().exists(),
             Unary::FileExistsAndIsRegularFile => path().is_file(),
