@@ -20,6 +20,10 @@ pub trait Builtins {
     fn contains(&self, name: &str) -> bool;
     fn run(&mut self, cwd: &Path, name: &str, args: &[String]) -> io::Result<i32>;
 
+    fn variable(&self, name: &str) -> Option<std::ffi::OsString> {
+        env::var_os(name)
+    }
+
     /// Admit filesystem probes before the shell interprets their results.
     fn check_read(&self, _path: &Path) -> io::Result<()> {
         Ok(())
@@ -335,7 +339,7 @@ impl Evaluator<'_> {
             self.builtins.check_read(&path)?;
             return Ok(is_executable(&path).then_some(path));
         }
-        if let Some(paths) = env::var_os("PATH") {
+        if let Some(paths) = self.builtins.variable("PATH") {
             for dir in env::split_paths(&paths) {
                 let path = self.cwd.join(dir).join(name);
                 self.builtins.check_read(&path)?;
@@ -419,7 +423,10 @@ impl Evaluator<'_> {
         match name {
             "PWD" => Some(self.cwd.to_string_lossy().into_owned()),
             "HOME" => Some(self.home.to_string_lossy().into_owned()),
-            _ => env::var(name).ok(),
+            _ => self
+                .builtins
+                .variable(name)
+                .and_then(|s| s.into_string().ok()),
         }
     }
 

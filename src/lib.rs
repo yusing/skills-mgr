@@ -80,6 +80,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// a genuine miss. The executor must enforce the caller's command authority
 /// and return status and optional stdout without retrying a rejected command.
 pub trait QueryAuthority: Send + Sync {
+    /// Environment used for condition expansions and executable discovery.
+    fn variable(&self, name: &str) -> Option<std::ffi::OsString> {
+        std::env::var_os(name)
+    }
     fn check_read(&self, path: &Path) -> io::Result<()>;
     fn execute(
         &self,

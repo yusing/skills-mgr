@@ -56,6 +56,13 @@ impl ProjectPredicates<'_> {
 }
 
 impl Builtins for ProjectPredicates<'_> {
+    fn variable(&self, name: &str) -> Option<std::ffi::OsString> {
+        match self.manager.authority.as_ref() {
+            Some(authority) => authority.variable(name),
+            None => std::env::var_os(name),
+        }
+    }
+
     fn check_read(&self, path: &Path) -> io::Result<()> {
         self.manager
             .authority
