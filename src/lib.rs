@@ -77,6 +77,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// A read-only view of a project's skills, including inherited user selections.
 pub struct SkillsManager {
+    strict: bool,
     project: PathBuf,
     home: PathBuf,
     cache: PathBuf,
@@ -112,6 +113,7 @@ impl SkillsManager {
     ) -> Self {
         let home = home.into();
         Self {
+            strict: false,
             project: project.into(),
             codex_home: home.join(".codex"),
             home,
@@ -120,6 +122,14 @@ impl SkillsManager {
             #[cfg(feature = "cli-support")]
             condition_fallback: None,
         }
+    }
+
+    /// Propagate permission denials instead of skipping inaccessible discovery
+    /// candidates. Use in a caller-enforced sandbox to keep denied reads
+    /// distinct from missing skills. This does not sandbox the process.
+    pub fn with_strict_discovery(mut self) -> Self {
+        self.strict = true;
+        self
     }
 
     /// Whether a project, global, or legacy global selection file is present.

@@ -39,7 +39,10 @@ impl ProjectPredicates<'_> {
         }
         let (manager, conditions) = self.local.get_or_insert_with(|| {
             (
-                SkillsManager::new(cwd, &self.manager.home, &self.manager.cache),
+                SkillsManager {
+                    strict: self.manager.strict,
+                    ..SkillsManager::new(cwd, &self.manager.home, &self.manager.cache)
+                },
                 Conditions::default(),
             )
         });

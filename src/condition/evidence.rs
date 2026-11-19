@@ -214,7 +214,14 @@ impl Evidence {
             }
         }
         if !ignored || tracked.contains(&project) {
-            evidence.walk(&project, recursive, &mut rules, &tracked, ignored)?;
+            evidence.walk(
+                &project,
+                manager.strict,
+                recursive,
+                &mut rules,
+                &tracked,
+                ignored,
+            )?;
         }
         evidence.manifests.sort();
         Ok(evidence)
@@ -223,13 +230,14 @@ impl Evidence {
     fn walk(
         &mut self,
         dir: &Path,
+        strict: bool,
         recursive: bool,
         rules: &mut Vec<Gitignore>,
         tracked: &HashSet<PathBuf>,
         parent_ignored: bool,
     ) -> io::Result<()> {
         let entries = match fs::read_dir(dir) {
-            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
+            Err(e) if !strict && e.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
             result => result?,
         };
         let depth = rules.len();
@@ -254,7 +262,7 @@ impl Evidence {
                 continue;
             }
             if is_dir {
-                self.walk(&path, true, rules, tracked, ignored)?;
+                self.walk(&path, strict, true, rules, tracked, ignored)?;
             } else {
                 self.record(path);
             }

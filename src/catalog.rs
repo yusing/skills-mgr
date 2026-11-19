@@ -161,7 +161,7 @@ pub(crate) fn find(manager: &SkillsManager, name: &str) -> Result<Skill> {
                 return Ok(plugin);
             }
         }
-        Err(err) if !disabled => return Err(err),
+        Err(err) if manager.strict || !disabled => return Err(err),
         Err(_) => {}
     }
     if disabled {
@@ -197,7 +197,7 @@ impl Skill {
         let description = self
             .patched_description(manager, &dir)?
             .unwrap_or(self.metadata.description);
-        let references = references(&self.root, &dir)?;
+        let references = listed_references(&self.root, &dir, manager.strict)?;
         Ok(ListedSkill {
             name: self.metadata.name,
             description: summarize_description(&description),
@@ -253,9 +253,14 @@ fn summarize_description(description: &str) -> String {
     description.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[cfg(feature = "cli-support")]
 pub fn references(root: &Path, dir: &cap_std::fs::Dir) -> Result<Vec<String>> {
+    listed_references(root, dir, false)
+}
+
+fn listed_references(root: &Path, dir: &cap_std::fs::Dir, strict: bool) -> Result<Vec<String>> {
     let mut paths = Vec::new();
-    reference_files(root, dir, Path::new(""), &mut paths)?;
+    reference_files(root, dir, Path::new(""), strict, &mut paths)?;
     paths.sort();
     Ok(paths)
 }
@@ -271,6 +276,7 @@ fn reference_files(
     root: &Path,
     dir: &cap_std::fs::Dir,
     parent: &Path,
+    strict: bool,
     output: &mut Vec<String>,
 ) -> Result<()> {
     let top = parent.as_os_str().is_empty();
@@ -292,8 +298,11 @@ fn reference_files(
             .file_type()
             .map_err(|e| io_error(&root.join(&relative), e))?;
         if kind.is_dir() && (!top || name == "references") {
-            reference_files(root, dir, &relative, output)?;
-        } else if name.ends_with(".md") && dir.metadata(&relative).is_ok_and(|info| info.is_file())
+            reference_files(root, dir, &relative, strict, output)?;
+        } else if name.ends_with(".md")
+            && optional_access(dir.metadata(&relative), strict)
+                .map_err(|e| io_error(&root.join(&relative), e))?
+                .is_some_and(|info| info.is_file())
         {
             output.push(
                 relative
@@ -322,14 +331,14 @@ pub fn discover_local(manager: &SkillsManager, name: &str) -> Result<bool> {
 
 #[cfg(all(feature = "cli-support", unix))]
 pub fn user_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
-    let mut discovery = Discovery::new(None);
+    let mut discovery = Discovery::new(None, manager.strict);
     discovery.root(&manager.home.join(".agents/skills"), Source::User, false)?;
     Ok(discovery.skills)
 }
 
 #[cfg(all(feature = "cli-support", unix))]
 pub fn managed_skills(manager: &SkillsManager) -> Result<BTreeMap<String, Skill>> {
-    let mut discovery = Discovery::new(None);
+    let mut discovery = Discovery::new(None, manager.strict);
     discovery.root(
         &manager.manager_home().join("skills"),
         Source::Managed,
@@ -376,7 +385,7 @@ fn discovery_roots<'a>(
     loaded: &mut Option<Selections>,
     prefer_remote: bool,
 ) -> Result<(Discovery<'a>, bool)> {
-    let mut discovery = Discovery::new(name);
+    let mut discovery = Discovery::new(name, manager.strict);
     let project = &manager.project;
     let home = &manager.home;
     for (root, source, system) in [
@@ -427,26 +436,29 @@ fn discovery_roots<'a>(
 }
 
 struct Discovery<'a> {
+    strict: bool,
     target: Option<&'a str>,
     skills: BTreeMap<String, Skill>,
 }
 
 impl<'a> Discovery<'a> {
-    fn new(target: Option<&'a str>) -> Self {
+    fn new(target: Option<&'a str>, strict: bool) -> Self {
         Self {
+            strict,
             target,
             skills: BTreeMap::new(),
         }
     }
 
     fn root(&mut self, root: &Path, source: Source, system: bool) -> Result<bool> {
-        for entry in entries(root, true)? {
+        for entry in discovery_entries(root, self.strict)? {
             let path = entry.path();
             let kind = entry.file_type().map_err(|e| io_error(&path, e))?;
             let found = if system && entry.file_name() == ".system" {
                 self.root(&path, Source::Bundled, false)?
             } else if (kind.is_dir() || kind.is_symlink())
-                && let Ok(root) = fs::canonicalize(&path)
+                && let Some(root) = optional_access(fs::canonicalize(&path), self.strict)
+                    .map_err(|e| io_error(&path, e))?
             {
                 self.add(root, source, None, None, Some(&path), None)?
             } else {
@@ -473,7 +485,7 @@ impl<'a> Discovery<'a> {
             return self.root(root, Source::CodexPlugin, false);
         }
         if depth < 10 {
-            for entry in entries(root, true)? {
+            for entry in discovery_entries(root, self.strict)? {
                 if entry
                     .file_type()
                     .map_err(|e| io_error(&entry.path(), e))?
@@ -498,23 +510,35 @@ impl<'a> Discovery<'a> {
     ) -> Result<bool> {
         let dir = match content::open_root(&root) {
             Ok(dir) => dir,
-            Err(Error::Io { source, .. }) if skippable_root(&source) => return Ok(false),
+            Err(Error::Io { source, .. })
+                if skippable_root(&source)
+                    && (!self.strict || source.kind() != io::ErrorKind::PermissionDenied) =>
+            {
+                return Ok(false);
+            }
             Err(err) => return Err(err),
         };
-        if let Ok(file) = content::open_file(&dir, Path::new(content::PLACEHOLDER_MARKER_NAME)) {
+        let marker_path = Path::new(content::PLACEHOLDER_MARKER_NAME);
+        if let Some(file) = optional_access(content::open_file(&dir, marker_path), self.strict)
+            .map_err(|e| io_error(&root.join(marker_path), e))?
+        {
             let mut marker = Vec::new();
             use io::Read;
-            if file
-                .take(content::PLACEHOLDER_MARKER.len() as u64 + 1)
-                .read_to_end(&mut marker)
-                .is_ok()
+            if optional_access(
+                file.take(content::PLACEHOLDER_MARKER.len() as u64 + 1)
+                    .read_to_end(&mut marker),
+                self.strict,
+            )
+            .map_err(|e| io_error(&root.join(marker_path), e))?
+            .is_some()
                 && marker == content::PLACEHOLDER_MARKER
             {
                 return Ok(false);
             }
         }
         let manifest = root.join(MANIFEST);
-        let Some(mut metadata) = content::discover(&dir).map_err(|e| io_error(&manifest, e))?
+        let Some(mut metadata) =
+            content::discover_manifest(&dir, self.strict).map_err(|e| io_error(&manifest, e))?
         else {
             return Ok(false);
         };
@@ -548,7 +572,7 @@ fn native_visible(
     manager: &SkillsManager,
     harness: Option<Harness>,
 ) -> Result<BTreeMap<String, Skill>> {
-    let mut native = Discovery::new(None);
+    let mut native = Discovery::new(None, manager.strict);
     let project = &manager.project;
     let home = &manager.home;
     match harness {
@@ -666,7 +690,7 @@ pub fn claude_plugins(
                 continue;
             }
             for install in installs {
-                let mut discovery = Discovery::new(name);
+                let mut discovery = Discovery::new(name, manager.strict);
                 discovery.root(
                     &install.install_path.join("skills"),
                     Source::ClaudePlugin,
@@ -708,6 +732,15 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         .map_err(|e| invalid_data(path, e))
 }
 
+fn discovery_entries(root: &Path, strict: bool) -> Result<Vec<fs::DirEntry>> {
+    match entries(root, !strict) {
+        Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotADirectory => {
+            Ok(Vec::new())
+        }
+        result => result,
+    }
+}
+
 pub(crate) fn entries(root: &Path, skip_unreadable: bool) -> Result<Vec<fs::DirEntry>> {
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -723,6 +756,13 @@ pub(crate) fn entries(root: &Path, skip_unreadable: bool) -> Result<Vec<fs::DirE
         .map_err(|e| io_error(root, e))?;
     entries.sort_by_key(|entry| entry.file_name());
     Ok(entries)
+}
+
+fn optional_access<T>(result: io::Result<T>, strict: bool) -> io::Result<Option<T>> {
+    match result {
+        Err(e) if strict && e.kind() == io::ErrorKind::PermissionDenied => Err(e),
+        result => Ok(result.ok()),
+    }
 }
 
 fn skippable_root(error: &io::Error) -> bool {

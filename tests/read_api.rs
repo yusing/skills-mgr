@@ -763,3 +763,33 @@ fn uses_persisted_remote_content_and_applies_local_patches() {
             .ends_with(b"---\nNew content")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn strict_discovery_does_not_replace_denied_manifest_with_an_alternate() {
+    use std::{io, os::unix::fs::PermissionsExt};
+
+    let f = Fixture::new();
+    let preferred = f.skill("project/.agents/skills/preferred", "shared", "Project");
+    f.skill("home/.agents/skills/alternate", "shared", "Alternate");
+    f.write(
+        "project/.skills-mgr.json",
+        r#"{"schema_revision":1,"skills":{"shared":true}}"#,
+    );
+    fs::set_permissions(&preferred, fs::Permissions::from_mode(0)).unwrap();
+    if fs::File::open(&preferred).is_ok() {
+        return; // Privileged users can still read mode-000 files.
+    }
+    assert_eq!(f.manager.get("shared").unwrap(), b"Alternate");
+    let strict = f.manager.with_strict_discovery();
+    for error in [
+        strict.get("shared").unwrap_err(),
+        strict.list_xml(&[Harness::Codex]).unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, Error::Io { path, source } if path == preferred && source.kind() == io::ErrorKind::PermissionDenied)
+        );
+    }
+    fs::remove_file(&preferred).unwrap();
+    assert_eq!(strict.get("shared").unwrap(), b"Alternate");
+}

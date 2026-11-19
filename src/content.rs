@@ -126,17 +126,23 @@ pub fn open_file(root: &Dir, relative: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+#[cfg(feature = "cli-support")]
 pub fn discover(root: &Dir) -> io::Result<Option<Metadata>> {
+    discover_manifest(root, false)
+}
+
+pub(super) fn discover_manifest(root: &Dir, strict: bool) -> io::Result<Option<Metadata>> {
     let file = match open_file(root, Path::new(MANIFEST)) {
         Ok(file) => file,
         Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound
-                    | io::ErrorKind::PermissionDenied
-                    | io::ErrorKind::InvalidInput
-                    | io::ErrorKind::NotADirectory
-            ) =>
+            if (!strict || e.kind() != io::ErrorKind::PermissionDenied)
+                && matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::PermissionDenied
+                        | io::ErrorKind::InvalidInput
+                        | io::ErrorKind::NotADirectory
+                ) =>
         {
             return Ok(None);
         }
