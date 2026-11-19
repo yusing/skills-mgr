@@ -770,7 +770,10 @@ fn strict_discovery_does_not_replace_denied_manifest_with_an_alternate() {
     use std::{io, os::unix::fs::PermissionsExt};
 
     let f = Fixture::new();
-    let preferred = f.skill("project/.agents/skills/preferred", "shared", "Project");
+    let preferred = f
+        .skill("project/.agents/skills/preferred", "shared", "Project")
+        .canonicalize()
+        .unwrap();
     f.skill("home/.agents/skills/alternate", "shared", "Alternate");
     f.write(
         "project/.skills-mgr.json",
@@ -831,11 +834,15 @@ fn caller_admission_precedes_missing_roots_and_reached_catalog_commands() {
     );
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
+
         let f = Fixture::new();
         f.skill("project/.agents/skills/shared", "shared", "Body");
+        let probe = f.write("project/condition-probe", "");
+        fs::set_permissions(probe, fs::Permissions::from_mode(0o700)).unwrap();
         f.write(
             "project/.skills-mgr.json",
-            r#"{"schema_revision":3,"skills":{"shared":{"enabled":"false || /bin/true"}}}"#,
+            r#"{"schema_revision":3,"skills":{"shared":{"enabled":"false || ./condition-probe"}}}"#,
         );
         let manager = f.manager.with_authority(std::sync::Arc::new(Authority {
             denied: PathBuf::new(),
